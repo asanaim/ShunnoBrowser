@@ -13,7 +13,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use wry::{Rect, WebView, WebViewBuilder};
 
-const CHROME_HTML: &str = r#"<!DOCTYPE html>
+const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -171,8 +171,8 @@ const CHROME_HTML: &str = r#"<!DOCTYPE html>
 </script>
 </body>
 </html>
-"#;
-const PAGE_INJECT_SCRIPT: &str = r#"(function(){try{Object.defineProperty(document,'hidden',{get:()=>false,configurable:true});Object.defineProperty(document,'visibilityState',{get:()=>'visible',configurable:true});window.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);document.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);}catch(e){}const st=document.createElement('style');st.textContent='ytd-reel-shelf-renderer,ytd-rich-section-renderer,.ad-showing,.ytp-ad-module,ins.adsbygoogle,[id^="google_ads_"],[class*="taboola"],[class*="outbrain"]{display:none!important;}';document.documentElement.appendChild(st);setInterval(()=>{const sk=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern');if(sk)sk.click();document.querySelectorAll('[id*="reject"],#onetrust-reject-all-handler').forEach(b=>b.click());},900);})();"#;
+"##;
+const PAGE_INJECT_SCRIPT: &str = r##"(function(){try{Object.defineProperty(document,'hidden',{get:()=>false,configurable:true});Object.defineProperty(document,'visibilityState',{get:()=>'visible',configurable:true});window.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);document.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);}catch(e){}const st=document.createElement('style');st.textContent='ytd-reel-shelf-renderer,ytd-rich-section-renderer,.ad-showing,.ytp-ad-module,ins.adsbygoogle,[id^="google_ads_"],[class*="taboola"],[class*="outbrain"]{display:none!important;}';document.documentElement.appendChild(st);setInterval(()=>{const sk=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern');if(sk)sk.click();document.querySelectorAll('[id*="reject"],#onetrust-reject-all-handler').forEach(b=>b.click());},900);})();"##;
 
 #[derive(Serialize)]
 struct TabInfo {
