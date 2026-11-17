@@ -341,7 +341,7 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "RELOAD" {
                     if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.reload();
+                        let _ = t.webview.evaluate_script("location.reload()");
                     }
                 } else if let Some(u) = cmd.strip_prefix("NEW_TAB:") {
                     if let Ok(new_t) = make_content_tab(u, cur_size.width, cur_size.height) {
