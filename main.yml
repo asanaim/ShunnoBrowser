@@ -1,6 +1,11 @@
-name: Build Shunno Browser Rust Windows EXE
+name: Build Shunno Scan Windows EXE
 
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,29 +23,38 @@ jobs:
       - name: Build Native Release EXE
         run: cargo build --release
 
-      - name: Prepare Release EXE
+      - name: Prepare Release Artifacts & Default Offline Models
+        shell: pwsh
         run: |
-          mkdir release-exe
-          copy target\release\ShunnoBrowser.exe release-exe\ShunnoBrowser.exe
+          New-Item -ItemType Directory -Force -Path release-exe | Out-Null
+          Copy-Item target\release\ShunnoScan.exe release-exe\ShunnoScan.exe
 
-      - name: Upload ShunnoBrowser EXE Artifact
+          New-Item -ItemType Directory -Force -Path bundle\tessdata | Out-Null
+          Copy-Item target\release\ShunnoScan.exe bundle\ShunnoScan.exe
+          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata" -OutFile "bundle\tessdata\eng.traineddata"
+          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/ben.traineddata" -OutFile "bundle\tessdata\ben.traineddata"
+          Compress-Archive -Path bundle\* -DestinationPath release-exe\ShunnoScan-Windows-Bundle.zip -Force
+
+      - name: Upload ShunnoScan Windows EXE Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShunnoBrowser-Rust-Windows-EXE
-          path: release-exe/ShunnoBrowser.exe
+          name: ShunnoScan-Rust-Windows-EXE
+          path: release-exe/ShunnoScan.exe
 
       - name: Publish 1-Click Direct Download Release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Shunno Browser v1.0 (Native Rust + Edge WebView2 + Shunno Get)"
+          name: "Shunno Scan v1.0 for Windows (Native Rust Edition)"
           make_latest: true
           body: |
-            ### Direct 1-Click Download for Windows 10 & 11 (~5.5 MB)
-            Ultra-lightweight Naked Browser Pro alternative built in pure Rust + Edge WebView2 with background YouTube audio, AdBlock, SponsorBlock, Reader Mode, and built-in 16-thread Shunno Get downloads:
-            - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
+            ### Direct 1-Click Download for Windows 10 & 11 (Native Rust)
+            Ultra-lightweight (~6 MB), standalone native Rust executable with zero external runtime dependencies:
+            - **[Download ShunnoScan.exe (Standalone 1-Click Windows EXE)](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoScan.exe)**
+            - **[Download ShunnoScan-Windows-Bundle.zip (Includes Pre-Bundled Bangla + English Offline Models)](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoScan-Windows-Bundle.zip)**
           files: |
-            release-exe/ShunnoBrowser.exe
+            release-exe/ShunnoScan.exe
+            release-exe/ShunnoScan-Windows-Bundle.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
