@@ -2,7 +2,7 @@
 name = "shunno-browser"
 version = "1.0.0"
 edition = "2021"
-description = "Shunno Browser — Native Rust NBPro + Brave Background Audio + Multi-Threaded Shunno Get"
+description = "Shunno Browser — Native Rust NBPro + Brave Background Audio + 32-Thread Shunno Get"
 build = "build.rs"
 
 [[bin]]
