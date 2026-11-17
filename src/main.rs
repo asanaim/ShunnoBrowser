@@ -223,33 +223,37 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
-        .with_title("Shunno Browser (Rust) — NBPro + Brave Background Audio + 32-Thread Shunno Get")
-        .with_inner_size(LogicalSize::new(1220.0, 800.0))
-        .build(&event_loop)
-        .unwrap();
+    let window = std::rc::Rc::new(
+        WindowBuilder::new()
+            .with_title("Shunno Browser (Rust) — NBPro + Brave Background Audio + 32-Thread Shunno Get")
+            .with_inner_size(LogicalSize::new(1220.0, 800.0))
+            .build(&event_loop)
+            .unwrap(),
+    );
 
     let win_size = window.inner_size().to_logical::<f64>(window.scale_factor());
 
     let chrome_proxy = proxy.clone();
-    let chrome_webview = WebViewBuilder::new_as_child(&window)
+    let chrome_webview = WebViewBuilder::new_as_child(window.as_ref())
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: LogicalSize::new(win_size.width, win_size.height).into(),
         })
         .with_html(CHROME_HTML)
         .with_ipc_handler(move |req| {
-            let _ = chrome_proxy.send_event(AppEvent::IpcCommand(req.body().to_string()));
+            let _ = chrome_loop_proxy.send_event(AppEvent::IpcCommand(req.body().to_string()));
         })
         .build()?;
 
     let mut tabs: Vec<BrowserTab> = Vec::new();
     let mut active_tab: usize = 0;
 
-    let make_content_tab = |url: &str, w: f64, h: f64| -> wry::Result<BrowserTab> {
-        let dl_p = proxy.clone();
-        let sync_p = proxy.clone();
-        let wv = WebViewBuilder::new_as_child(&window)
+    let tab_window = window.clone();
+    let tab_proxy = proxy.clone();
+    let make_content_tab = move |url: &str, w: f64, h: f64| -> wry::Result<BrowserTab> {
+        let dl_p = tab_proxy.clone();
+        let sync_p = tab_proxy.clone();
+        let wv = WebViewBuilder::new_as_child(tab_window.as_ref())
             .with_bounds(Rect {
                 position: LogicalPosition::new(0.0, 74.0).into(),
                 size: LogicalSize::new(w, (h - 74.0).max(100.0)).into(),
@@ -287,11 +291,13 @@ fn main() -> wry::Result<()> {
     rt_handle.spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            let _ = tick_proxy.send_event(AppEvent::SyncUi);
+            let _ = tick_loop_proxy.send_event(AppEvent::SyncUi);
         }
     });
 
+    let loop_proxy = proxy.clone();
     event_loop.run(move |event, _, control_flow| {
+        let _keep_rt_alive = &rt;
         *control_flow = ControlFlow::Wait;
         match event {
             Event::WindowEvent {
@@ -314,7 +320,7 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(AppEvent::TriggerDownload(url)) => {
                 let referer = tabs.get(active_tab).map(|t| t.url.clone());
                 engine.enqueue(&rt_handle, url, 16, referer, None);
-                let _ = proxy.send_event(AppEvent::SyncUi);
+                let _ = loop_proxy.send_event(AppEvent::SyncUi);
             }
             Event::UserEvent(AppEvent::IpcCommand(cmd)) => {
                 let cur_size = window.inner_size().to_logical::<f64>(window.scale_factor());
@@ -476,7 +482,7 @@ fn main() -> wry::Result<()> {
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
                 }
-                let _ = proxy.send_event(AppEvent::SyncUi);
+                let _ = loop_proxy.send_event(AppEvent::SyncUi);
             }
             Event::UserEvent(AppEvent::SyncUi) => {
                 let tab_infos: Vec<TabInfo> = tabs
