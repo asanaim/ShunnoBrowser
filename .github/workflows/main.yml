@@ -1,0 +1,46 @@
+name: Build Shunno Browser Rust Windows EXE
+
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Native Release EXE
+        run: cargo build --release
+
+      - name: Prepare Release EXE
+        run: |
+          mkdir release-exe
+          copy target\release\ShunnoBrowser.exe release-exe\ShunnoBrowser.exe
+
+      - name: Upload ShunnoBrowser EXE Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShunnoBrowser-Rust-Windows-EXE
+          path: release-exe/ShunnoBrowser.exe
+
+      - name: Publish 1-Click Direct Download Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Shunno Browser v1.0 (Native Rust + Edge WebView2 + Shunno Get)"
+          make_latest: true
+          body: |
+            ### Direct 1-Click Download for Windows 10 & 11 (~5.5 MB)
+            Ultra-lightweight Naked Browser Pro alternative built in pure Rust + Edge WebView2 with background YouTube audio, AdBlock, SponsorBlock, Reader Mode, and built-in 16-thread Shunno Get downloads:
+            - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
+          files: |
+            release-exe/ShunnoBrowser.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
