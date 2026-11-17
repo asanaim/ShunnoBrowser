@@ -1,0 +1,33 @@
+[package]
+name = "shunno-browser"
+version = "1.0.0"
+edition = "2021"
+description = "Shunno Browser — Native Rust NBPro + Brave Background Audio + Multi-Threaded Shunno Get"
+build = "build.rs"
+
+[[bin]]
+name = "ShunnoBrowser"
+path = "src/main.rs"
+
+[dependencies]
+tao = "0.28.0"
+wry = "0.40.0"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
+reqwest = { version = "0.12.5", default-features = false, features = ["native-tls", "stream", "gzip"] }
+futures-util = "0.3.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.8"
+hex = "0.4.3"
+url = "2.5.2"
+rand = "0.8.5"
+dirs = "5.0.1"
+
+[build-dependencies]
+winres = "0.1.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
