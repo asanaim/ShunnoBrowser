@@ -42,6 +42,8 @@ enum AppEvent {
     NativeStreamCaptured(usize, String),
     StreamSizeResolved(usize, StreamProbeResult),
     TabAudioChanged(usize, bool),
+    TabTitleChanged(usize, String),
+    TabUrlChanged(usize, String),
     RefreshChrome,
 }
 
@@ -271,6 +273,8 @@ fn create_tab_webview(
     let ipc_proxy = proxy.clone();
     let dl_proxy = proxy.clone();
     let win_proxy = proxy.clone();
+    let title_proxy = proxy.clone();
+    let nav_proxy = proxy.clone();
 
     let wv = WebViewBuilder::new_as_child(window)
         .with_bounds(Rect {
@@ -279,6 +283,15 @@ fn create_tab_webview(
         })
         .with_url(url)
         .with_initialization_script(&init_script)
+        .with_document_title_changed_handler(move |new_title| {
+            let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
+        })
+        .with_navigation_handler(move |nav_url| {
+            if nav_url.starts_with("http://") || nav_url.starts_with("https://") {
+                let _ = nav_proxy.send_event(AppEvent::TabUrlChanged(tab_id, nav_url));
+            }
+            true
+        })
         .with_ipc_handler(move |req| {
             let _ = ipc_proxy.send_event(AppEvent::ContentIpc(tab_id, req.body().clone()));
         })
@@ -384,9 +397,10 @@ fn main() -> wry::Result<()> {
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
         if let Ok(wv) = create_tab_webview(&window, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone()) {
+            let init_title = if host.is_empty() { u.clone() } else { host };
             tabs.push(BrowserTab {
                 id: tid,
-                title: u.clone(),
+                title: init_title,
                 url: u,
                 cookie: None,
                 incognito: false,
@@ -517,6 +531,52 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::RefreshChrome) => {
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::TabTitleChanged(tab_id, new_title)) => {
+                if !new_title.trim().is_empty() {
+                    if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.title = new_title;
+                    }
+                    push_chrome_state(
+                        &chrome_wv,
+                        &tabs,
+                        active_tab_idx,
+                        &site_policies,
+                        &global_settings,
+                        blocked_count,
+                        &sniffed_streams,
+                        &bookmarks,
+                        &history,
+                        &duplicate_alert,
+                        &engine,
+                    );
+                }
+            }
+
+            Event::UserEvent(AppEvent::TabUrlChanged(tab_id, new_url)) => {
+                if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.url = new_url.clone();
+                    if tab.title.is_empty() || tab.title == "New Tab" || tab.title.starts_with("http") {
+                        let h = extract_host(&new_url);
+                        if !h.is_empty() {
+                            tab.title = h;
+                        }
+                    }
+                }
                 push_chrome_state(
                     &chrome_wv,
                     &tabs,
@@ -767,7 +827,37 @@ fn main() -> wry::Result<()> {
                         let out = BrowserStorage::downloads_root_dir().join(&safe_name);
                         let _ = fs::write(out, html);
                     }
-                } else if msg.starts_with("GRAB_DONE:") {
+                } else if let Some(grab_json) = msg.strip_prefix("GRAB_RESULTS:") {
+                    if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(grab_json) {
+                        for it in items.into_iter().rev() {
+                            let u = it.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let nm = it.get("name").and_then(|v| v.as_str()).unwrap_or("Media Stream").to_string();
+                            if u.starts_with("http") && !sniffed_streams.iter().any(|s| s.url == u) {
+                                sniffed_streams.insert(
+                                    0,
+                                    SniffedStreamItem {
+                                        url: u.clone(),
+                                        name: nm,
+                                        size_label: "Probing...".to_string(),
+                                    },
+                                );
+                                let (ref_url, cookie_val) = tabs
+                                    .iter()
+                                    .find(|t| t.id == tab_id)
+                                    .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                                    .unwrap_or((None, None));
+                                let eng = engine.clone();
+                                let px = proxy.clone();
+                                rt_handle.spawn(async move {
+                                    let res = eng.probe_stream_metadata(u, ref_url, cookie_val).await;
+                                    let _ = px.send_event(AppEvent::StreamSizeResolved(tab_id, res));
+                                });
+                            }
+                        }
+                        if sniffed_streams.len() > 40 {
+                            sniffed_streams.truncate(40);
+                        }
+                    }
                     drawer_open = true;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     let _ = chrome_wv.evaluate_script("toggleDrawer('streams');");
@@ -871,6 +961,10 @@ fn main() -> wry::Result<()> {
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
                         tab.url = clean.clone();
+                        let h = extract_host(&clean);
+                        if !h.is_empty() {
+                            tab.title = h;
+                        }
                         tab.playing_audio = false;
                         let _ = tab.webview.load_url(&clean);
                     }

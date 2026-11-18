@@ -17,7 +17,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --text: #1C1C1E;
     --muted: #6E6E73;
     --input-bg: #F2F2F7;
-    --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+    --spring-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+    --spring-bounce: cubic-bezier(0.2, 0.9, 0.3, 1.04);
   }
   body.dark {
     --bg: #0B0B0D;
@@ -35,14 +36,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --input-bg: #2C2C2E;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
-  html, body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; transition: background 0.24s var(--ease-spring), color 0.24s var(--ease-spring); }
+  html, body {
+    background: var(--bg); color: var(--text); overflow: hidden;
+    display: flex; flex-direction: column; height: 100vh;
+    transition: background 0.32s var(--spring-fluid), color 0.32s var(--spring-fluid);
+  }
 
   .chrome-top {
     background: var(--surface);
     z-index: 10;
   }
 
-  /* Polished Tab Strip — Single Iconic Emblem (Zero Duplicate Text) + Smooth Tab Transitions */
+  /* Tab Strip */
   .tab-bar {
     display: flex; align-items: center; gap: 6px; padding: 5px 10px 4px 10px;
     background: var(--tab-bg); border-bottom: 1px solid var(--border); height: 38px; overflow: hidden;
@@ -52,57 +57,57 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: linear-gradient(135deg, #0D47A1, #0A84FF);
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0; box-shadow: 0 2px 6px rgba(10,132,255,0.32);
-    transition: transform 0.2s var(--ease-spring), box-shadow 0.2s var(--ease-spring);
+    transition: transform 0.28s var(--spring-bounce), box-shadow 0.28s var(--spring-fluid);
   }
   .logo-badge:hover {
-    transform: scale(1.06);
-    box-shadow: 0 3px 10px rgba(10,132,255,0.45);
+    transform: scale(1.07);
+    box-shadow: 0 4px 12px rgba(10,132,255,0.46);
   }
 
   #tabs-container {
     display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
   }
 
-  @keyframes tabSlideIn {
-    from { opacity: 0; transform: translateY(5px) scale(0.95); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
+  @keyframes tabSpringIn {
+    0%   { opacity: 0; transform: translateY(6px) scale(0.92); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .tab {
     display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 9px;
     background: rgba(128,128,128,0.13); color: var(--text); font-size: 12px; cursor: pointer;
-    flex: 1 1 165px; min-width: 36px; max-width: 195px; overflow: hidden;
-    animation: tabSlideIn 0.2s var(--ease-spring);
-    transition: background 0.18s var(--ease-spring), transform 0.16s var(--ease-spring), box-shadow 0.2s var(--ease-spring), color 0.18s ease;
+    flex: 1 1 175px; min-width: 40px; max-width: 210px; overflow: hidden;
+    animation: tabSpringIn 0.28s var(--spring-bounce);
+    transition: background 0.24s var(--spring-fluid), transform 0.22s var(--spring-bounce), box-shadow 0.26s var(--spring-fluid);
   }
   .tab:hover { background: rgba(128,128,128,0.22); }
-  .tab:active { transform: scale(0.97); }
+  .tab:active { transform: scale(0.96); }
   .tab.active {
     background: var(--surface); color: var(--text); font-weight: 600;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.14);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.13);
   }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; border: 1px solid #48484A; }
 
   .tab-audio {
     font-size: 11px; padding: 0 4px; border-radius: 4px; flex-shrink: 0;
     background: rgba(10,132,255,0.14); color: var(--blue);
-    transition: background 0.15s ease, transform 0.15s var(--ease-spring);
+    transition: background 0.2s var(--spring-fluid), transform 0.2s var(--spring-bounce);
   }
-  .tab-audio:hover { background: var(--blue); color: #fff; transform: scale(1.08); }
+  .tab-audio:hover { background: var(--blue); color: #fff; transform: scale(1.1); }
   .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .tab-close {
     font-size: 10.5px; color: var(--muted); padding: 1px 4px; border-radius: 4px; flex-shrink: 0;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background 0.18s ease, color 0.18s ease;
   }
   .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
 
   .tab-add {
     border: none; background: rgba(128,128,128,0.15); color: var(--blue); font-weight: 700;
     font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
-    transition: background 0.16s ease, transform 0.14s var(--ease-spring);
+    transition: background 0.22s var(--spring-fluid), transform 0.2s var(--spring-bounce);
   }
   .tab-add:hover { background: var(--surface); transform: translateY(-0.5px); }
-  .tab-add:active { transform: scale(0.94); }
+  .tab-add:active { transform: scale(0.93); }
 
   /* Minimalist Navigation Toolbar */
   .nav-bar {
@@ -113,37 +118,37 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     border: none; background: var(--input-bg); color: var(--text); font-size: 13.5px; font-weight: 600;
     padding: 6px 11px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
     white-space: nowrap;
-    transition: background 0.16s var(--ease-spring), transform 0.14s var(--ease-spring), color 0.16s ease, box-shadow 0.18s ease;
+    transition: background 0.24s var(--spring-fluid), transform 0.2s var(--spring-bounce), color 0.24s ease, box-shadow 0.24s ease;
   }
   .nav-btn:hover { filter: brightness(0.96); transform: translateY(-0.5px); }
-  .nav-btn:active { transform: scale(0.95); }
+  .nav-btn:active { transform: scale(0.94); }
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
   .nav-btn.green { background: var(--green-soft); color: #24B44B; }
 
   .search-picker {
     border: none; background: var(--input-bg); color: var(--text); font-size: 12px; font-weight: 600;
     padding: 6px 8px; border-radius: 10px; outline: none; cursor: pointer; max-width: 120px;
-    transition: background 0.16s ease;
+    transition: background 0.22s var(--spring-fluid);
   }
   .url-wrap {
     flex: 1; display: flex; align-items: center; background: var(--input-bg);
     border-radius: 11px; padding: 0 12px; height: 35px; border: 1px solid transparent; min-width: 120px;
-    transition: background 0.18s var(--ease-spring), border-color 0.18s var(--ease-spring), box-shadow 0.2s var(--ease-spring);
+    transition: background 0.26s var(--spring-fluid), border-color 0.26s var(--spring-fluid), box-shadow 0.28s var(--spring-fluid);
   }
-  .url-wrap:focus-within { background: var(--surface); border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,0.18); }
+  .url-wrap:focus-within { background: var(--surface); border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(10,132,255,0.2); }
   #url-input {
     border: none; background: transparent; outline: none; width: 100%;
     font-size: 13px; color: var(--text); user-select: text;
   }
 
-  /* Smooth Animated Right Docked Panel */
-  @keyframes panelGlideIn {
-    from { opacity: 0; transform: translateX(22px); }
-    to   { opacity: 1; transform: translateX(0); }
+  /* Fluid Spring-Physics Docked Side Panel */
+  @keyframes sheetSpringEnter {
+    0%   { opacity: 0; transform: translateX(28px) scale(0.975); }
+    100% { opacity: 1; transform: translateX(0) scale(1); }
   }
-  @keyframes cardReveal {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
+  @keyframes cardSpringStep {
+    0%   { opacity: 0; transform: translateY(10px) scale(0.985); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .dock-panel {
@@ -158,38 +163,43 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     padding: 12px;
     overflow-y: auto;
     overflow-x: hidden;
-    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
+    will-change: transform, opacity;
+    transform-origin: top right;
+    box-shadow: -10px 0 30px rgba(0, 0, 0, 0.08);
   }
   .dock-panel.open {
     display: flex;
-    animation: panelGlideIn 0.24s var(--ease-spring);
+    animation: sheetSpringEnter 0.36s var(--spring-fluid) forwards;
   }
 
   .card {
-    background: var(--surface); border-radius: 13px; padding: 11px 12px; margin-bottom: 10px;
+    background: var(--surface); border-radius: 14px; padding: 12px 13px; margin-bottom: 10px;
     border: 1px solid var(--border); min-width: 0;
-    animation: cardReveal 0.22s var(--ease-spring);
-    transition: background 0.2s ease, border-color 0.2s ease;
+    animation: cardSpringStep 0.34s var(--spring-fluid) backwards;
+    transition: background 0.24s var(--spring-fluid), border-color 0.24s var(--spring-fluid), transform 0.22s var(--spring-fluid);
   }
+  .card:nth-child(2) { animation-delay: 0.03s; }
+  .card:nth-child(3) { animation-delay: 0.06s; }
+  .card:nth-child(4) { animation-delay: 0.09s; }
   .card:last-child { margin-bottom: 0; }
   .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap; }
   .card-title { font-size: 13px; font-weight: 700; }
   .grid-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .toggle-tile {
     display: flex; justify-content: space-between; align-items: center; gap: 4px;
-    padding: 7px 8px; border-radius: 9px; background: var(--input-bg); font-size: 11.5px; font-weight: 600;
+    padding: 7px 9px; border-radius: 10px; background: var(--input-bg); font-size: 11.5px; font-weight: 600;
     min-width: 0;
-    transition: background 0.16s ease;
+    transition: background 0.22s var(--spring-fluid);
   }
   .toggle-tile span {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .pill-btn {
     border: none; border-radius: 8px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
-    transition: background 0.16s var(--ease-spring), transform 0.12s var(--ease-spring), color 0.16s ease;
+    transition: background 0.22s var(--spring-fluid), transform 0.18s var(--spring-bounce), color 0.2s ease;
   }
   .pill-btn:hover { filter: brightness(0.95); }
-  .pill-btn:active { transform: scale(0.94); }
+  .pill-btn:active { transform: scale(0.93); }
   .pill-blue { background: var(--blue); color: #fff; }
   .pill-soft { background: var(--blue-soft); color: var(--blue); }
   .pill-green { background: var(--green-soft); color: #24B44B; }
@@ -200,16 +210,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .text-box {
     flex: 1; min-width: 110px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; user-select: text;
-    transition: border-color 0.16s ease, background 0.16s ease;
+    transition: border-color 0.22s var(--spring-fluid), background 0.22s var(--spring-fluid), box-shadow 0.22s ease;
   }
-  .text-box:focus { border-color: var(--blue); background: var(--surface); }
+  .text-box:focus { border-color: var(--blue); background: var(--surface); box-shadow: 0 0 0 2.5px rgba(10,132,255,0.16); }
   .select-box {
     padding: 7px 9px; border-radius: 9px; border: 1px solid var(--border);
     font-size: 12px; background: var(--input-bg); color: var(--text);
   }
 
   .prog-track { width: 100%; height: 6px; background: var(--input-bg); border-radius: 4px; overflow: hidden; margin: 6px 0; }
-  .prog-fill { height: 100%; background: var(--blue); transition: width 0.25s var(--ease-spring), background 0.2s ease; }
+  .prog-fill { height: 100%; background: var(--blue); transition: width 0.32s var(--spring-fluid), background 0.24s ease; }
   .prog-fill.done { background: var(--green); }
   .meta { font-size: 11px; color: var(--muted); }
   .list-row {
@@ -222,7 +232,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <body>
 
   <div class="chrome-top">
-    <!-- 1. Tab Strip: Single Geometric Zero Emblem + Auto-Resizing Tabs + Adjacent New Tab Buttons -->
+    <!-- 1. Tab Strip -->
     <div class="tab-bar" id="tab-bar">
       <div class="logo-badge" title="Shunno Browser">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -245,7 +255,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <div class="url-wrap">
         <input id="url-input" placeholder="Search or enter website URL..."
-               onkeydown="if(event.key==='Enter') send('NAV:' + this.value)" />
+               onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
       </div>
 
       <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')" title="Detected Media Streams">🎯 0</button>
@@ -263,7 +273,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="card-header">
           <span class="card-title">Controls</span>
           <div style="display:flex;gap:6px;align-items:center;">
-            <span class="meta" id="version-badge" style="font-weight:700;">v1.3.0</span>
+            <span class="meta" id="version-badge" style="font-weight:700;">v1.4.0</span>
             <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Toggle Full Screen (F11)">⛶ F11</button>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
           </div>
@@ -325,12 +335,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel C: Detected Media Streams -->
+    <!-- Panel C: Detected Media & Grabbed Page Links -->
     <div id="panel-streams" style="display:none">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">🎯 Detected Media Streams</span>
-          <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+          <span class="card-title">🎯 Detected Media &amp; Page Links</span>
+          <div style="display:flex;gap:5px;">
+            <button class="pill-btn pill-soft" onclick="send('GRAB_PAGE_LINKS')">↻ Rescan</button>
+            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+          </div>
         </div>
         <div id="streams-list"></div>
       </div>
@@ -360,7 +373,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel E: Shunno Get Downloads (with Site Grabber, Batch Queue, Duplicate Detection & Auto-Cleanup) -->
+    <!-- Panel E: Shunno Get Downloads -->
     <div id="panel-downloads" style="display:none">
       <div class="card">
         <div class="card-header">
@@ -368,7 +381,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
             <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
             <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
-            <button class="pill-btn pill-soft" onclick="send('GRAB_PAGE_LINKS')" title="IDM Site Grabber: Scan all links & media on active page">🕸️ Grab Page</button>
+            <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Scan all downloadable links & media on active page">🕸️ Grab Page</button>
             <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items from list">🧹 Clean</button>
             <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
               <option value="0">Unlimited</option>
@@ -414,6 +427,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (window.ipc) window.ipc.postMessage(msg);
   }
 
+  function navigateFromBar() {
+    const input = document.getElementById('url-input');
+    const val = input.value.trim();
+    if (!val) return;
+    input.blur();
+    send('NAV:' + val);
+  }
+
+  function triggerGrabPage() {
+    toggleDrawer('streams');
+    send('GRAB_PAGE_LINKS');
+  }
+
   function toggleDrawer(name) {
     if (activeDrawer === name) {
       closeDrawer();
@@ -429,7 +455,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     if (wasClosed) {
       drawer.classList.remove('open');
-      void drawer.offsetWidth; // trigger smooth entrance animation
+      void drawer.offsetWidth;
       drawer.classList.add('open');
     } else {
       drawer.classList.add('open');
@@ -494,7 +520,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.3.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.4.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -558,7 +584,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
-      ? '<div class="meta">No media streams intercepted on this page yet.</div>'
+      ? '<div class="meta">Scanning page for videos, audio, and downloadable files... If none appear, the page has no direct file links.</div>'
       : state.streams.map(s => `
           <div class="list-row">
             <div style="overflow:hidden;">

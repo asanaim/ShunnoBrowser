@@ -788,22 +788,48 @@
   };
 
   window.__shunnoGrabAllPageLinks = function() {
-    const found = new Set();
+    const found = [];
+    const seen = new Set();
+    function pushItem(url, nameHint, extHint) {
+      if (!url || !String(url).startsWith('http') || String(url).startsWith('blob:')) return;
+      const u = String(url);
+      if (seen.has(u)) return;
+      seen.add(u);
+      const clean = u.split('?')[0];
+      let name = nameHint || 'Media / File';
+      try {
+        const seg = decodeURIComponent(clean.split('/').pop() || '');
+        if (seg && seg.length > 2) name = seg;
+      } catch (e) {}
+      found.push({ url: u, name: name, ext: extHint || 'FILE' });
+    }
+
+    if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {
+      window.__shunnoYtStreams.forEach(s => pushItem(s.url, s.name, s.ext));
+    }
+    capturedStreams.forEach(s => pushItem(s.url, s.name, s.ext));
+
     document.querySelectorAll('a[href], video[src], audio[src], source[src]').forEach(el => {
       const raw = el.href || el.src;
       if (!raw || !String(raw).startsWith('http')) return;
       const clean = String(raw).split('?')[0].toLowerCase();
-      if (ALL_EXTS.some(ext => clean.endsWith(ext))) {
-        found.add(String(raw));
+      const matchedExt = ALL_EXTS.find(ext => clean.endsWith(ext));
+      if (matchedExt || el.hasAttribute('download') || el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
+        const label = (el.textContent || '').trim() || el.getAttribute('download') || '';
+        pushItem(raw, label, (matchedExt || '.media').toUpperCase());
       }
     });
-    if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {
-      window.__shunnoYtStreams.forEach(s => { if (s.url) found.add(s.url); });
-    }
-    capturedStreams.forEach(s => { if (s.url) found.add(s.url); });
-    found.forEach(u => addCapturedStream(u));
-    postSecure('GRAB_DONE:' + found.size);
+
+    postSecure('GRAB_RESULTS:' + JSON.stringify(found.slice(0, 60)));
   };
+
+  function sendPageMeta() {
+    postSecure('META:' + JSON.stringify({
+      title: document.title || location.hostname || location.href,
+      url: location.href,
+      cookie: document.cookie || ''
+    }));
+  }
 
   if (document.documentElement) installFloatingOverlay();
   window.addEventListener('DOMContentLoaded', () => {
@@ -813,16 +839,17 @@
     if (isYouTube && window.ytInitialPlayerResponse) {
       stripAdFields(window.ytInitialPlayerResponse);
     }
-    postSecure('META:' + JSON.stringify({
-      title: document.title,
-      url: location.href,
-      cookie: document.cookie || ''
-    }));
+    sendPageMeta();
+    const titleEl = document.querySelector('title');
+    if (titleEl) {
+      new MutationObserver(sendPageMeta).observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
     document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {
       if (el.src) inspectUrl(el.src);
     });
     installFloatingOverlay();
   });
+  window.addEventListener('load', sendPageMeta);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F11') {
