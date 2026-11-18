@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use url::Url;
 
 pub const APP_VERSION: &str = "v1.0.0";
@@ -9,7 +10,7 @@ pub const APP_VERSION: &str = "v1.0.0";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
     pub name: String,
-    pub query_url: String, // Must contain %s placeholder
+    pub query_url: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +62,7 @@ pub struct GlobalSettings {
     pub background_media_play: bool,
     pub strip_tracking_params: bool,
     pub block_popups: bool,
+    pub drop_basket_enabled: bool,
     pub default_threads: usize,
     pub speed_limit_bps: u64,
     pub active_search_engine: usize,
@@ -74,6 +76,7 @@ impl Default for GlobalSettings {
             background_media_play: true,
             strip_tracking_params: true,
             block_popups: true,
+            drop_basket_enabled: true,
             default_threads: 16,
             speed_limit_bps: 0,
             active_search_engine: 0,
@@ -122,6 +125,25 @@ impl BrowserStorage {
         dir
     }
 
+    pub fn ffmpeg_bin_dir() -> PathBuf {
+        let dir = Self::downloads_root_dir().join("bin");
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    pub fn find_ffmpeg() -> Option<PathBuf> {
+        let local_exe = Self::ffmpeg_bin_dir().join("ffmpeg.exe");
+        if local_exe.exists() {
+            return Some(local_exe);
+        }
+        if let Ok(out) = Command::new("ffmpeg").arg("-version").output() {
+            if out.status.success() {
+                return Some(PathBuf::from("ffmpeg"));
+            }
+        }
+        None
+    }
+
     pub fn user_scripts_dir() -> PathBuf {
         let dir = Self::downloads_root_dir().join("scripts");
         let _ = fs::create_dir_all(&dir);
@@ -129,8 +151,8 @@ impl BrowserStorage {
         if !readme.exists() {
             let _ = fs::write(
                 readme,
-                "Drop any .js user-script files into this folder.
-                 Optional header: // @match example.com
+                "Drop any .js user-script files into this folder.\n\
+                 Optional header: // @match example.com\n\
                  Scripts matching the active domain run automatically on page load.",
             );
         }
@@ -160,13 +182,9 @@ impl BrowserStorage {
                             true
                         };
                         if matches {
-                            combined.push_str("
-try {
-");
+                            combined.push_str("\ntry {\n");
                             combined.push_str(&code);
-                            combined.push_str("
-} catch(e) { console.error('Shunno UserScript:', e); }
-");
+                            combined.push_str("\n} catch(e) { console.error('Shunno UserScript:', e); }\n");
                         }
                     }
                 }
@@ -251,8 +269,7 @@ try {
         for b in bookmarks {
             lines.push(format!("{} | {}", b.title.replace('|', "-"), b.url));
         }
-        let _ = fs::write(&out_path, lines.join("
-"));
+        let _ = fs::write(&out_path, lines.join("\n"));
         out_path
     }
 

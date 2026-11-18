@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
@@ -40,6 +40,7 @@ struct BrowserTab {
     id: usize,
     title: String,
     url: String,
+    cookie: Option<String>,
     incognito: bool,
     webview: WebView,
 }
@@ -62,6 +63,7 @@ struct TabSummary {
 #[derive(Serialize)]
 struct ChromeSnapshot {
     version: &'static str,
+    ffmpeg_available: bool,
     tabs: Vec<TabSummary>,
     active_tab: usize,
     active_url: String,
@@ -113,7 +115,6 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     return obj;
                 }
 
-                // Hook ytInitialPlayerResponse assignment immediately
                 let _ytPlayerResp = undefined;
                 try {
                     Object.defineProperty(window, 'ytInitialPlayerResponse', {
@@ -123,7 +124,6 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     });
                 } catch(e) {}
 
-                // Hook JSON.parse for inline YouTube player payloads
                 const origParse = JSON.parse;
                 JSON.parse = function(text, reviver) {
                     const res = origParse.apply(this, arguments);
@@ -133,7 +133,6 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     return res;
                 };
 
-                // Hook Response.prototype.json for /youtubei/v1/player API calls
                 const origRespJson = Response.prototype.json;
                 Response.prototype.json = function() {
                     return origRespJson.apply(this, arguments).then(data => stripAdFields(data));
@@ -162,12 +161,14 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         );
     }
 
-    // 4. Network Sniffer + AdBlocker + Floating Download Menu with Live File Size Probing
+    // 4. Network Sniffer + AdBlocker + Floating Download Menu + Drag-and-Drop Floating Basket
     let adblock_flag = if policy.adblock { "true" } else { "false" };
+    let basket_flag = if global.drop_basket_enabled { "true" } else { "false" };
     script.push_str(&format!(
         r#"
         (function() {{
             const ADBLOCK_ON = {adblock_flag};
+            const BASKET_ON = {basket_flag};
             const AD_HOSTS = [
                 'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
                 'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
@@ -175,7 +176,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com',
                 'youtube.com/pagead/', 'youtube.com/api/stats/ads', 'youtube.com/ptracking'
             ];
-            const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
+            const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.m4s', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
             const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.apk', '.pdf', '.dmg', '.deb'];
             const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
             const capturedStreams = [];
@@ -268,7 +269,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 window.ipc.postMessage('FLOAT_DL:' + payload);
             }}
 
-            function installFloatingMenu() {{
+            function installFloatingOverlay() {{
                 if (!document.documentElement || document.getElementById('shunno-float-host')) return;
 
                 const host = document.createElement('div');
@@ -290,7 +291,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                             border: 1px solid rgba(255, 255, 255, 0.24);
                             border-radius: 10px;
                             padding: 6px 11px;
-                            font-family: "Segoe UI", sans-serif;
+                            font-family: system-ui, "Segoe UI", sans-serif;
                             font-size: 12px;
                             font-weight: 600;
                             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
@@ -323,7 +324,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                             border: 1px solid rgba(255, 255, 255, 0.24);
                             border-radius: 12px;
                             padding: 10px;
-                            font-family: "Segoe UI", sans-serif;
+                            font-family: system-ui, "Segoe UI", sans-serif;
                             font-size: 12px;
                             box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
                         }}
@@ -366,6 +367,33 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                             flex-shrink: 0;
                         }}
                         .go:hover {{ background: #30D158; color: #000; }}
+                        .basket {{
+                            position: fixed;
+                            right: 16px;
+                            bottom: 16px;
+                            pointer-events: auto;
+                            display: ${{BASKET_ON ? 'flex' : 'none'}};
+                            align-items: center;
+                            gap: 6px;
+                            background: rgba(10, 132, 255, 0.90);
+                            backdrop-filter: blur(12px);
+                            color: #fff;
+                            border: 1.5px dashed rgba(255, 255, 255, 0.65);
+                            border-radius: 14px;
+                            padding: 7px 12px;
+                            font-family: system-ui, "Segoe UI", sans-serif;
+                            font-size: 11.5px;
+                            font-weight: 700;
+                            box-shadow: 0 8px 24px rgba(10, 132, 255, 0.35);
+                            cursor: pointer;
+                            transition: all 0.15s ease;
+                        }}
+                        .basket.dragover {{
+                            background: #30D158;
+                            color: #000;
+                            transform: scale(1.08);
+                            border-style: solid;
+                        }}
                     </style>
                     <div class="pill" id="pill">
                         <span class="badge">0↓</span>
@@ -373,15 +401,50 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                         <span style="opacity:0.75">▾</span>
                     </div>
                     <div class="menu" id="menu"></div>
+                    <div class="basket" id="basket" title="Drag & drop any link or URL here to start a 16-thread download">
+                        <span>0↓</span>
+                        <span id="basket-label">Drop Link</span>
+                    </div>
                 `;
                 document.documentElement.appendChild(host);
 
                 const pill = shadow.getElementById('pill');
                 const pillText = shadow.getElementById('pill-text');
                 const menu = shadow.getElementById('menu');
+                const basket = shadow.getElementById('basket');
+                const basketLabel = shadow.getElementById('basket-label');
                 let activeItems = [];
                 let activeBaseLabel = 'Download';
                 let hideTimer = null;
+
+                basket.addEventListener('dragover', (e) => {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    basket.classList.add('dragover');
+                    basketLabel.textContent = 'Release to Get!';
+                }});
+                basket.addEventListener('dragleave', (e) => {{
+                    e.preventDefault();
+                    basket.classList.remove('dragover');
+                    basketLabel.textContent = 'Drop Link';
+                }});
+                basket.addEventListener('drop', (e) => {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    basket.classList.remove('dragover');
+                    const dropped = (e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'))) || '';
+                    const urls = dropped.split(/\r?\n/).map(s => s.trim()).filter(s => s.startsWith('http'));
+                    if (urls.length > 0) {{
+                        urls.forEach(u => triggerShunnoGet(u, 16));
+                        basketLabel.textContent = `Queued (${{urls.length}})!`;
+                        setTimeout(() => {{ basketLabel.textContent = 'Drop Link'; }}, 1400);
+                    }} else {{
+                        basketLabel.textContent = 'Drop Link';
+                    }}
+                }});
+                basket.addEventListener('click', () => {{
+                    if (window.ipc) window.ipc.postMessage('KEY:j');
+                }});
 
                 window.__shunnoRefreshFloatingPill = function(url, sizeLabel) {{
                     if (activeItems.length === 1 && activeItems[0].url === url && pill.style.display !== 'none') {{
@@ -454,7 +517,6 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     }});
                 }});
 
-                // Detect hover over video containers (including YouTube player wrappers), <video>, <audio>, and downloadable <a> links
                 document.addEventListener('mouseover', (e) => {{
                     const target = e.target;
                     if (!target || !target.closest) return;
@@ -477,7 +539,6 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                                 }});
                             }}
                             capturedStreams.forEach(s => items.push(s));
-                            // On YouTube watch pages, always offer current video page stream option if MSE blob is active
                             if (items.length === 0 && location.hostname.includes('youtube.com') && location.search.includes('v=')) {{
                                 items.push({{
                                     url: location.href,
@@ -520,13 +581,19 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 }}, true);
             }}
 
-            if (document.documentElement) installFloatingMenu();
+            if (document.documentElement) installFloatingOverlay();
             window.addEventListener('DOMContentLoaded', () => {{
-                if (window.ipc) window.ipc.postMessage('META:' + JSON.stringify({{ title: document.title, url: location.href }}));
+                if (window.ipc) {{
+                    window.ipc.postMessage('META:' + JSON.stringify({{
+                        title: document.title,
+                        url: location.href,
+                        cookie: document.cookie || ''
+                    }}));
+                }}
                 document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {{
                     if (el.src) inspectUrl(el.src);
                 }});
-                installFloatingMenu();
+                installFloatingOverlay();
             }});
 
             document.addEventListener('keydown', (e) => {{
@@ -573,7 +640,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
             (function() {
                 try {
                     Object.defineProperty(navigator, 'userAgent', {
-                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0'
                     });
                 } catch(e) {}
             })();
@@ -636,10 +703,12 @@ fn attach_native_webview2_interceptor(
     proxy: EventLoopProxy<AppEvent>,
 ) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2WebResourceResponse,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, EventRegistrationToken, ICoreWebView2_2,
+        ICoreWebView2WebResourceResponse,
     };
     use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
-    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::core::{w, Interface, PCWSTR, PWSTR};
+    use windows::Win32::System::Com::IStream;
     use wry::WebViewExtWindows;
 
     let controller = webview.controller();
@@ -647,7 +716,10 @@ fn attach_native_webview2_interceptor(
         let Ok(core) = controller.CoreWebView2() else {
             return;
         };
-        let Ok(env) = core.Environment() else {
+        let Ok(core2) = core.cast::<ICoreWebView2_2>() else {
+            return;
+        };
+        let Ok(env) = core2.Environment() else {
             return;
         };
 
@@ -656,7 +728,7 @@ fn attach_native_webview2_interceptor(
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
         );
 
-        let mut token = std::mem::zeroed();
+        let mut token = EventRegistrationToken::default();
         let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
             let Some(args) = args else {
                 return Ok(());
@@ -664,7 +736,7 @@ fn attach_native_webview2_interceptor(
             let Ok(request) = args.Request() else {
                 return Ok(());
             };
-            let mut uri_ptr = windows::core::PWSTR::null();
+            let mut uri_ptr = PWSTR::null();
             if request.Uri(&mut uri_ptr).is_ok() {
                 let uri = take_pwstr(uri_ptr);
                 let lower = uri.to_ascii_lowercase();
@@ -689,9 +761,9 @@ fn attach_native_webview2_interceptor(
 
                 if adblock_enabled && AD_DOMAINS.iter().any(|d| lower.contains(d)) {
                     let empty_resp: ICoreWebView2WebResourceResponse = env.CreateWebResourceResponse(
-                        None,
+                        None::<&IStream>,
                         403,
-                        &HSTRING::from("Blocked by Shunno AdBlock"),
+                        w!("Blocked by Shunno AdBlock"),
                         PCWSTR::null(),
                     )?;
                     let _ = args.SetResponse(&empty_resp);
@@ -700,8 +772,8 @@ fn attach_native_webview2_interceptor(
                 }
 
                 const MEDIA_EXTS: &[&str] = &[
-                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".flac", ".alac", ".m4a", ".wav",
-                    ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
+                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".m4s", ".flac", ".alac", ".m4a",
+                    ".wav", ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
                 ];
 
                 if uri.starts_with("http") && MEDIA_EXTS.iter().any(|ext| clean_lower.ends_with(ext)) {
@@ -847,6 +919,7 @@ fn main() -> wry::Result<()> {
                 id: tid,
                 title: u.clone(),
                 url: u,
+                cookie: None,
                 incognito: false,
                 webview: wv,
             });
@@ -878,6 +951,7 @@ fn main() -> wry::Result<()> {
 
         let snap = ChromeSnapshot {
             version: APP_VERSION,
+            ffmpeg_available: BrowserStorage::find_ffmpeg().is_some(),
             tabs: tabs
                 .iter()
                 .map(|t| TabSummary {
@@ -968,11 +1042,18 @@ fn main() -> wry::Result<()> {
                     if sniffed_streams.len() > 25 {
                         sniffed_streams.truncate(25);
                     }
-                    let ref_url = tabs.iter().find(|t| t.id == tab_id).map(|t| t.url.clone());
+                    let tab_info = tabs
+                        .iter()
+                        .find(|t| t.id == tab_id)
+                        .map(|t| (t.url.clone(), t.cookie.clone()));
+                    let (ref_url, cookie_val) = match tab_info {
+                        Some((u, c)) => (Some(u), c),
+                        None => (None, None),
+                    };
                     let eng = engine.clone();
                     let px = proxy.clone();
                     rt_handle.spawn(async move {
-                        let res = eng.probe_stream_metadata(stream_url, ref_url, None).await;
+                        let res = eng.probe_stream_metadata(stream_url, ref_url, cookie_val).await;
                         let _ = px.send_event(AppEvent::StreamSizeResolved(tab_id, res));
                     });
                 }
@@ -997,8 +1078,11 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
-                let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
-                engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, None);
+                let (ref_url, cookie_val) = tabs
+                    .get(active_tab_idx)
+                    .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                    .unwrap_or((None, None));
+                engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, cookie_val);
                 drawer_open = true;
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
@@ -1034,6 +1118,7 @@ fn main() -> wry::Result<()> {
                             id: tid,
                             title: clean.clone(),
                             url: clean,
+                            cookie: None,
                             incognito: false,
                             webview: wv,
                         });
@@ -1092,7 +1177,7 @@ fn main() -> wry::Result<()> {
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                             if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, proxy.clone(), drawer_open) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, incognito: false, webview: wv });
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
@@ -1154,7 +1239,11 @@ fn main() -> wry::Result<()> {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(meta_json) {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let ck = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                            if ck.is_some() {
+                                tab.cookie = ck;
+                            }
                             if !title.is_empty() {
                                 tab.title = title.clone();
                             }
@@ -1226,6 +1315,7 @@ fn main() -> wry::Result<()> {
                             id: tid,
                             title: if is_incog { "Private Tab".to_string() } else { "New Tab".to_string() },
                             url: start,
+                            cookie: None,
                             incognito: is_incog,
                             webview: wv,
                         });
@@ -1299,27 +1389,15 @@ fn main() -> wry::Result<()> {
                         }
                     }
                 } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
+                    let mut reload_active = false;
                     match gkey {
                         "full_dark" => {
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
-                            // Reload active tab so Full Dark Mode applies immediately to web content
-                            if let Some(tab) = tabs.get(active_tab_idx) {
-                                let host = extract_host(&tab.url);
-                                let pol = site_policies.get(&host).cloned().unwrap_or_default();
-                                let current_url = tab.url.clone();
-                                let is_incog = tab.incognito;
-                                let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                                if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &pol, &global_settings, proxy.clone(), drawer_open) {
-                                    tabs[active_tab_idx] = BrowserTab {
-                                        id: tid,
-                                        title: tab.title.clone(),
-                                        url: current_url,
-                                        incognito: is_incog,
-                                        webview: new_wv,
-                                    };
-                                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
-                                }
-                            }
+                            reload_active = true;
+                        }
+                        "drop_basket" => {
+                            global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
+                            reload_active = true;
                         }
                         "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
@@ -1327,6 +1405,28 @@ fn main() -> wry::Result<()> {
                         _ => {}
                     }
                     BrowserStorage::save_global_settings(&global_settings);
+
+                    if reload_active {
+                        if let Some(tab) = tabs.get(active_tab_idx) {
+                            let host = extract_host(&tab.url);
+                            let pol = site_policies.get(&host).cloned().unwrap_or_default();
+                            let current_url = tab.url.clone();
+                            let prev_cookie = tab.cookie.clone();
+                            let is_incog = tab.incognito;
+                            let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &pol, &global_settings, proxy.clone(), drawer_open) {
+                                tabs[active_tab_idx] = BrowserTab {
+                                    id: tid,
+                                    title: tab.title.clone(),
+                                    url: current_url,
+                                    cookie: prev_cookie,
+                                    incognito: is_incog,
+                                    webview: new_wv,
+                                };
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
+                    }
                 } else if let Some(skey) = cmd.strip_prefix("TOGGLE_SITE:") {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let host = extract_host(&tab.url);
@@ -1344,6 +1444,7 @@ fn main() -> wry::Result<()> {
                         BrowserStorage::save_site_policies(&site_policies);
 
                         let current_url = tab.url.clone();
+                        let prev_cookie = tab.cookie.clone();
                         let is_incog = tab.incognito;
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                         if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, proxy.clone(), drawer_open) {
@@ -1351,6 +1452,7 @@ fn main() -> wry::Result<()> {
                                 id: tid,
                                 title: tab.title.clone(),
                                 url: current_url,
+                                cookie: prev_cookie,
                                 incognito: is_incog,
                                 webview: new_wv,
                             };
@@ -1367,7 +1469,7 @@ fn main() -> wry::Result<()> {
                         let js = r#"
                             (function() {
                                 const text = (document.querySelector('article') || document.body).innerText;
-                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 BlinkMacSystemFont,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
+                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 system-ui,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
                                     text.split('\n').filter(p => p.trim().length > 0).map(p => '<p style="margin-bottom:16px;">' + p + '</p>').join('') + '</div>';
                             })();
                         "#;
@@ -1419,6 +1521,9 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "OPEN_SCRIPTS_FOLDER" {
                     let dir = BrowserStorage::user_scripts_dir();
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if cmd == "OPEN_BIN_FOLDER" {
+                    let dir = BrowserStorage::ffmpeg_bin_dir();
+                    let _ = Command::new("explorer.exe").arg(dir).spawn();
                 } else if cmd == "OPEN_DOWNLOADS_FOLDER" {
                     let dir = BrowserStorage::downloads_root_dir();
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
@@ -1428,10 +1533,28 @@ fn main() -> wry::Result<()> {
                         engine.speed_limit_bps.store(bps, Ordering::SeqCst);
                         BrowserStorage::save_global_settings(&global_settings);
                     }
+                } else if let Some(payload) = cmd.strip_prefix("MUX_DASH:") {
+                    if let Some((v_url, a_url)) = payload.split_once('|') {
+                        let (ref_url, cookie_val, title) = tabs
+                            .get(active_tab_idx)
+                            .map(|t| (Some(t.url.clone()), t.cookie.clone(), t.title.clone()))
+                            .unwrap_or((None, None, "Shunno_Muxed_Video".to_string()));
+                        engine.enqueue_dash_mux(
+                            &rt_handle,
+                            v_url.trim().to_string(),
+                            a_url.trim().to_string(),
+                            title,
+                            ref_url,
+                            cookie_val,
+                        );
+                    }
                 } else if let Some(payload) = cmd.strip_prefix("ENQUEUE_DL:") {
                     if let Some((threads_str, raw_urls)) = payload.split_once('|') {
                         let threads = threads_str.parse::<usize>().unwrap_or(16);
-                        let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
+                        let (ref_url, cookie_val) = tabs
+                            .get(active_tab_idx)
+                            .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                            .unwrap_or((None, None));
                         let re = Regex::new(r"\[(\d+)-(\d+)\]").unwrap();
                         for line in raw_urls.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
                             if let Some(caps) = re.captures(line) {
@@ -1443,12 +1566,12 @@ fn main() -> wry::Result<()> {
                                     for i in start..=end.min(start + 100) {
                                         let num = format!("{:0width$}", i, width = width);
                                         let expanded = line.replace(full_m, &num);
-                                        engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), None);
+                                        engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), cookie_val.clone());
                                     }
                                     continue;
                                 }
                             }
-                            engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), None);
+                            engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone());
                         }
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_PAUSE:") {

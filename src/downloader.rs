@@ -1,6 +1,6 @@
 use crate::state::BrowserStorage;
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, COOKIE, RANGE, REFERER, USER_AGENT};
+use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE, RANGE, REFERER, USER_AGENT};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,7 +20,7 @@ pub struct DownloadTask {
     pub file_name: String,
     pub total_bytes: i64,
     pub downloaded_bytes: u64,
-    pub status: String, // "DOWNLOADING", "PAUSED", "COMPLETED", "FAILED"
+    pub status: String, // "DOWNLOADING", "PAUSED", "COMPLETED", "FAILED", "MUXING"
     pub speed_bps: u64,
     pub threads: usize,
     pub category: String,
@@ -63,12 +64,67 @@ pub fn detect_download_category(file_name: &str) -> String {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "mp4" | "mkv" | "webm" | "mov" | "avi" | "ts" | "m3u8" => "Videos".to_string(),
+        "mp4" | "mkv" | "webm" | "mov" | "avi" | "ts" | "m3u8" | "m4s" => "Videos".to_string(),
         "flac" | "alac" | "m4a" | "wav" | "mp3" | "ogg" | "opus" => "Lossless Audio".to_string(),
         "zip" | "rar" | "7z" | "tar" | "gz" | "iso" => "Archives".to_string(),
         "exe" | "msi" | "apk" => "Programs".to_string(),
         _ => "Documents".to_string(),
     }
+}
+
+fn infer_extension_from_mime(mime: &str) -> Option<&'static str> {
+    let m = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    match m.as_str() {
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "video/x-matroska" => Some("mkv"),
+        _ if m.ends_with("mpegurl") => Some("m3u8"),
+        "audio/flac" | "audio/x-flac" => Some("flac"),
+        "audio/mp4" | "audio/x-m4a" => Some("m4a"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" | "audio/x-wav" => Some("wav"),
+        "audio/ogg" => Some("ogg"),
+        "application/zip" => Some("zip"),
+        "application/x-7z-compressed" => Some("7z"),
+        "application/x-rar-compressed" | "application/vnd.rar" => Some("rar"),
+        "application/pdf" => Some("pdf"),
+        "application/vnd.android.package-archive" => Some("apk"),
+        "application/x-msdownload" => Some("exe"),
+        _ => None,
+    }
+}
+
+fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
+    for part in header_val.split(';') {
+        let trimmed = part.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("filename*=") {
+            if let Some((_, val)) = trimmed.split_once('=') {
+                let cleaned = val
+                    .trim()
+                    .trim_start_matches("UTF-8''")
+                    .trim_start_matches("utf-8''")
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+        } else if lower.starts_with("filename=") {
+            if let Some((_, val)) = trimmed.split_once('=') {
+                let cleaned = val
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub struct ShunnoGetDesktop {
@@ -128,22 +184,7 @@ impl ShunnoGetDesktop {
                 .filter(|&n| n > 0);
 
             if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
-                if let Some(part) = cd
-                    .split(';')
-                    .find(|p| p.trim().to_ascii_lowercase().starts_with("filename="))
-                {
-                    let name = part
-                        .split('=')
-                        .nth(1)
-                        .unwrap_or("")
-                        .trim()
-                        .trim_matches('"')
-                        .trim_matches(''')
-                        .to_string();
-                    if !name.is_empty() {
-                        resolved_name = Some(name);
-                    }
-                }
+                resolved_name = parse_content_disposition_filename(cd);
             }
         }
 
@@ -204,7 +245,7 @@ impl ShunnoGetDesktop {
         if let Ok(raw) = fs::read_to_string(path) {
             if let Ok(mut items) = serde_json::from_str::<Vec<DownloadTask>>(&raw) {
                 for it in &mut items {
-                    if it.status == "DOWNLOADING" {
+                    if it.status == "DOWNLOADING" || it.status == "MUXING" {
                         it.status = "PAUSED".to_string();
                         it.speed_bps = 0;
                     }
@@ -231,7 +272,7 @@ impl ShunnoGetDesktop {
         }
         if let Ok(mut list) = self.tasks.lock() {
             if let Some(t) = list.iter_mut().find(|i| i.id == id) {
-                if t.status == "DOWNLOADING" {
+                if t.status == "DOWNLOADING" || t.status == "MUXING" {
                     t.status = "PAUSED".to_string();
                     t.speed_bps = 0;
                 }
@@ -286,7 +327,7 @@ impl ShunnoGetDesktop {
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 format!(
-                    "shunno_media_{}.mp4",
+                    "shunno_download_{}.bin",
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs() % 10000)
@@ -325,6 +366,149 @@ impl ShunnoGetDesktop {
         self.save_queue();
         self.spawn_worker(rt, task.clone());
         task
+    }
+
+    pub fn enqueue_dash_mux(
+        &self,
+        rt: &tokio::runtime::Handle,
+        video_url: String,
+        audio_url: String,
+        output_title: String,
+        referer: Option<String>,
+        cookie: Option<String>,
+    ) {
+        let clean_title = output_title
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+            .take(48)
+            .collect::<String>()
+            .trim()
+            .replace(' ', "_");
+        let base_name = if clean_title.is_empty() {
+            format!(
+                "shunno_muxed_{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() % 10000)
+                    .unwrap_or(1)
+            )
+        } else {
+            clean_title
+        };
+        let final_mp4_name = format!("{}.mp4", base_name);
+
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(1)
+            + rand::random::<u16>() as u64;
+
+        let task = DownloadTask {
+            id,
+            url: video_url.clone(),
+            file_name: final_mp4_name.clone(),
+            total_bytes: -1,
+            downloaded_bytes: 0,
+            status: "DOWNLOADING".to_string(),
+            speed_bps: 0,
+            threads: 16,
+            category: "Videos".to_string(),
+            supports_ranges: true,
+            referer: referer.clone(),
+            cookie: cookie.clone(),
+            sha256: None,
+            saved_path: None,
+            error_message: None,
+            segment_map: "[DASH Video+Audio]".to_string(),
+        };
+
+        if let Ok(mut list) = self.tasks.lock() {
+            list.insert(0, task.clone());
+        }
+        self.save_queue();
+
+        let running = Arc::new(AtomicBool::new(true));
+        if let Ok(mut map) = self.active_flags.lock() {
+            map.insert(id, running.clone());
+        }
+
+        let client = self.client.clone();
+        let tasks_ref = self.tasks.clone();
+        let flags_ref = self.active_flags.clone();
+        let limit_ref = self.speed_limit_bps.clone();
+
+        rt.spawn(async move {
+            let vid_part = Self::parts_dir().join(format!("{}_video.part", id));
+            let aud_part = Self::parts_dir().join(format!("{}_audio.part", id));
+            let muxed_part = Self::parts_dir().join(format!("{}_muxed.mp4", id));
+
+            let mut v_task = task.clone();
+            v_task.url = video_url;
+            let mut a_task = task.clone();
+            a_task.url = audio_url;
+
+            let dummy_tasks: Arc<Mutex<Vec<DownloadTask>>> = Arc::new(Mutex::new(Vec::new()));
+            let res_v = download_raw_to_path(&client, &v_task, &vid_part, &running, &limit_ref, &dummy_tasks).await;
+            let res_a = download_raw_to_path(&client, &a_task, &aud_part, &running, &limit_ref, &dummy_tasks).await;
+
+            if let (Ok(()), Ok(())) = (res_v, res_a) {
+                if let Ok(mut list) = tasks_ref.lock() {
+                    if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+                        t.status = "MUXING".to_string();
+                        t.segment_map = "[FFmpeg Muxing...]".to_string();
+                    }
+                }
+
+                if let Some(ffmpeg_bin) = BrowserStorage::find_ffmpeg() {
+                    let status = Command::new(ffmpeg_bin)
+                        .args([
+                            "-y",
+                            "-i",
+                            &vid_part.to_string_lossy(),
+                            "-i",
+                            &aud_part.to_string_lossy(),
+                            "-c",
+                            "copy",
+                            &muxed_part.to_string_lossy(),
+                        ])
+                        .status();
+
+                    let _ = fs::remove_file(&vid_part);
+                    let _ = fs::remove_file(&aud_part);
+
+                    match status {
+                        Ok(s) if s.success() && muxed_part.exists() => {
+                            let _ = finalize_completed(&task, &muxed_part, &final_mp4_name, &tasks_ref);
+                        }
+                        _ => {
+                            if let Ok(mut list) = tasks_ref.lock() {
+                                if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+                                    t.status = "FAILED".to_string();
+                                    t.error_message = Some("FFmpeg muxing failed".to_string());
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let _ = fs::remove_file(&aud_part);
+                    let _ = finalize_completed(&task, &vid_part, &final_mp4_name, &tasks_ref);
+                }
+            } else if let Ok(mut list) = tasks_ref.lock() {
+                if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+                    t.status = "FAILED".to_string();
+                    t.error_message = Some("Failed to download DASH video or audio stream".to_string());
+                }
+            }
+
+            if let Ok(mut map) = flags_ref.lock() {
+                map.remove(&id);
+            }
+            if let Ok(list) = tasks_ref.lock() {
+                if let Ok(json) = serde_json::to_string_pretty(&*list) {
+                    let _ = fs::write(Self::queue_file_path(), json);
+                }
+            }
+        });
     }
 
     fn spawn_worker(&self, rt: &tokio::runtime::Handle, task: DownloadTask) {
@@ -405,7 +589,7 @@ fn write_positioned(file: &File, buf: &[u8], offset: u64) -> std::io::Result<()>
     file.write_all_at(buf, offset)
 }
 
-async fn run_parallel_download(
+async fn download_raw_to_path(
     client: &Client,
     task: &DownloadTask,
     part_path: &Path,
@@ -431,29 +615,33 @@ async fn run_parallel_download(
     let mut total_len = 0u64;
     let mut supports_range = false;
     if let Ok(resp) = req.send().await {
+        let mut resolved_from_header = false;
         if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
-            if let Some(fname_part) = cd
-                .split(';')
-                .find(|p| p.trim().to_ascii_lowercase().starts_with("filename="))
-            {
-                let clean_cd_name = fname_part
-                    .split('=')
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches(''')
-                    .to_string();
-                if !clean_cd_name.is_empty() {
+            if let Some(clean_cd_name) = parse_content_disposition_filename(cd) {
+                resolved_from_header = true;
+                if let Ok(mut list) = tasks.lock() {
+                    if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+                        t.file_name = clean_cd_name.clone();
+                        t.category = detect_download_category(&clean_cd_name);
+                    }
+                }
+            }
+        }
+
+        if !resolved_from_header && task.file_name.ends_with(".bin") {
+            if let Some(ct) = resp.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+                if let Some(ext) = infer_extension_from_mime(ct) {
+                    let upgraded = format!("{}.{}", &task.file_name[..task.file_name.len() - 4], ext);
                     if let Ok(mut list) = tasks.lock() {
                         if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
-                            t.file_name = clean_cd_name.clone();
-                            t.category = detect_download_category(&clean_cd_name);
+                            t.file_name = upgraded.clone();
+                            t.category = detect_download_category(&upgraded);
                         }
                     }
                 }
             }
         }
+
         if resp.status() == StatusCode::PARTIAL_CONTENT {
             supports_range = true;
             total_len = resp
@@ -685,6 +873,19 @@ async fn run_parallel_download(
             }
         }
     }
+
+    Ok(())
+}
+
+async fn run_parallel_download(
+    client: &Client,
+    task: &DownloadTask,
+    part_path: &Path,
+    running: &Arc<AtomicBool>,
+    speed_limit: &Arc<AtomicU64>,
+    tasks: &Arc<Mutex<Vec<DownloadTask>>>,
+) -> Result<(), String> {
+    download_raw_to_path(client, task, part_path, running, speed_limit, tasks).await?;
 
     let current_name = tasks
         .lock()

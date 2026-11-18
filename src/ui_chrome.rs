@@ -33,10 +33,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --muted: #98989D;
     --input-bg: #2C2C2E;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
   body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
 
-  /* Tab Strip */
   .tab-bar {
     display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px;
     background: var(--tab-bg); border-bottom: 1px solid var(--border); overflow-x: auto; height: 38px;
@@ -63,7 +62,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .tab-add:hover { background: var(--surface); }
 
-  /* Decluttered Main Navigation Bar */
   .nav-bar {
     display: flex; align-items: center; gap: 7px; padding: 6px 12px;
     background: var(--surface); border-bottom: 1px solid var(--border); height: 48px;
@@ -91,7 +89,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 13px; color: var(--text); user-select: text;
   }
 
-  /* Expandable Drawer Area */
   .drawer {
     flex: 1; background: var(--bg); padding: 16px 20px; overflow-y: auto; display: none;
   }
@@ -154,7 +151,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">🕵 Private</button>
   </div>
 
-  <!-- 2. Clean, Uncluttered Navigation Toolbar -->
+  <!-- 2. Clean Navigation Toolbar -->
   <div class="nav-bar">
     <button class="nav-btn" onclick="send('BACK')" title="Back">‹</button>
     <button class="nav-btn" onclick="send('FORWARD')" title="Forward">›</button>
@@ -175,7 +172,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <!-- 3. Expandable Drawer Overlay -->
   <div class="drawer" id="drawer">
 
-    <!-- Panel A: Unified Clean Browser Menu (Replaces cluttered top buttons) -->
+    <!-- Panel A: Unified Browser Menu -->
     <div id="panel-menu" style="display:none">
       <div class="card">
         <div class="card-header">
@@ -186,7 +183,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Quick Action Pills -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
           <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find in Page (Ctrl+F)</button>
           <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Bookmarks &amp; History</button>
@@ -196,7 +192,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📜 UserScripts Folder</button>
         </div>
 
-        <!-- Global Appearance & Media Switches -->
         <div class="grid-toggles" id="global-toggles-grid"></div>
       </div>
 
@@ -273,12 +268,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel E: Shunno Get Multi-Threaded Download Manager -->
+    <!-- Panel E: Shunno Get Multi-Threaded Download Manager & Optional FFmpeg DASH Muxer -->
     <div id="panel-downloads" style="display:none">
       <div class="card">
         <div class="card-header">
           <span class="card-title">⚡ Shunno Get — Multi-Threaded Download Manager</span>
-          <div style="display:flex;gap:8px;align-items:center;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg: Checking...</span>
+            <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here for lossless DASH muxing">📂 bin/</button>
             <span class="meta">Speed Limit:</span>
             <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
               <option value="0">Unlimited</option>
@@ -287,7 +284,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <option value="2097152">2 MB/s</option>
               <option value="524288">512 KB/s</option>
             </select>
-            <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂 Open Folder</button>
+            <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂 Downloads</button>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
           </div>
         </div>
@@ -301,6 +298,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <option value="32">32 Threads</option>
           </select>
           <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Start Download</button>
+        </div>
+
+        <!-- Optional FFmpeg Split DASH Video + Audio Muxer -->
+        <div class="input-row" style="margin-bottom:0;">
+          <input class="text-box" id="mux-video-input" placeholder="Split DASH Video URL (.mp4 / .m4s)..." />
+          <input class="text-box" id="mux-audio-input" placeholder="Split DASH Audio URL (.m4a / .webm)..." />
+          <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux Video + Audio</button>
         </div>
       </div>
 
@@ -352,6 +356,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     input.value = '';
   }
 
+  function startDashMux() {
+    const v = document.getElementById('mux-video-input');
+    const a = document.getElementById('mux-audio-input');
+    if (!v.value.trim() || !a.value.trim()) return;
+    send('MUX_DASH:' + v.value.trim() + '|' + a.value.trim());
+    v.value = '';
+    a.value = '';
+  }
+
   function addSearchEngine() {
     const nameEl = document.getElementById('new-se-name');
     const urlEl = document.getElementById('new-se-url');
@@ -373,7 +386,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   window.renderChromeState = function(state) {
-    // Apply Full Dark Mode class
     if (state.global.full_dark_mode) {
       document.body.classList.add('dark');
     } else {
@@ -381,8 +393,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     document.getElementById('version-badge').textContent = 'Shunno Browser ' + (state.version || 'v1.0.0');
+    document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
+      ? '🎬 FFmpeg: Ready'
+      : '🎬 FFmpeg: Optional (Add to bin/)';
 
-    // Tabs
     const tc = document.getElementById('tabs-container');
     tc.innerHTML = state.tabs.map((t, idx) => `
       <div class="tab ${idx === state.active_tab ? 'active' : ''} ${t.incognito ? 'incognito' : ''}"
@@ -392,7 +406,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // Search Engine Selector
     const seSelect = document.getElementById('engine-select');
     if (state.global.search_engines && state.global.search_engines.length > 0) {
       seSelect.innerHTML = state.global.search_engines.map((se, i) =>
@@ -405,7 +418,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       urlBox.value = state.active_url || '';
     }
 
-    // Toolbar badges
     const sBtn = document.getElementById('btn-streams');
     if (state.streams.length > 0) {
       sBtn.style.display = 'inline-flex';
@@ -417,7 +429,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('btn-downloads').textContent = `⚡ Downloads (${state.downloads.length})`;
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
-    // Streams panel
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
       ? '<div class="meta">No media streams intercepted on this page yet.</div>'
       : state.streams.map(s => `
@@ -430,9 +441,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         `).join('');
 
-    // Global toggles (including Full Dark Mode switch)
     const globalItems = [
       ['full_dark', '🌙 Full Dark Mode', state.global.full_dark_mode],
+      ['drop_basket', '🧺 Floating Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Media Play', state.global.background_media_play],
       ['strip_tracking', '✂️ Strip URL Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Up Windows', state.global.block_popups]
@@ -444,7 +455,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // Per-Site toggles
     document.getElementById('site-domain-title').textContent = `🌐 Site Settings (${state.active_host || 'Global'} • ${state.blocked_count} ads blocked)`;
     const siteItems = [
       ['adblock', '🛡️ Ad & Tracker Blocker', state.site.adblock],
@@ -461,7 +471,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // Search engines list
     document.getElementById('search-engines-list').innerHTML = (state.global.search_engines || []).map((se, i) => `
       <div class="list-row">
         <div>
@@ -477,7 +486,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // Bookmarks & History
     document.getElementById('bookmarks-list').innerHTML = state.bookmarks.map((b, i) => `
       <div class="list-row">
         <div style="overflow:hidden;">
@@ -503,19 +511,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         `).join('');
 
-    // Downloads list
     document.getElementById('downloads-list').innerHTML = state.downloads.length === 0
-      ? '<div class="card"><div class="meta">No downloads in queue. Hover over any video, audio player, or downloadable file on a page to use the floating Shunno Get menu.</div></div>'
+      ? '<div class="card"><div class="meta">No downloads in queue. Hover over any video, audio player, or downloadable file—or drag any link into the floating 0↓ Drop Basket.</div></div>'
       : state.downloads.map(d => {
           const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
           const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);
           const infoTxt = d.status === 'DOWNLOADING'
             ? `⚡ ${fmtBytes(d.speed_bps)}/s ${d.segment_map || ''}`
-            : d.status === 'COMPLETED'
-              ? `✓ Saved • SHA-256: ${(d.sha256 || '').slice(0, 16)}...`
-              : d.status === 'FAILED'
-                ? `⚠ ${escapeHtml(d.error_message || 'Error')}`
-                : `Paused at ${fmtBytes(d.downloaded_bytes)}`;
+            : d.status === 'MUXING'
+              ? '🎬 Muxing DASH video & audio via FFmpeg...'
+              : d.status === 'COMPLETED'
+                ? `✓ Saved • SHA-256: ${(d.sha256 || '').slice(0, 16)}...`
+                : d.status === 'FAILED'
+                  ? `⚠ ${escapeHtml(d.error_message || 'Error')}`
+                  : `Paused at ${fmtBytes(d.downloaded_bytes)}`;
 
           return `
             <div class="card">
@@ -532,10 +541,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
                 <div style="display:flex;gap:5px;">
                   ${d.status === 'DOWNLOADING'
                     ? `<button class="pill-btn pill-orange" onclick="send('DL_PAUSE:${d.id}')">Pause</button>`
-                    : d.status !== 'COMPLETED'
+                    : d.status !== 'COMPLETED' && d.status !== 'MUXING'
                       ? `<button class="pill-btn pill-soft" onclick="send('DL_RESUME:${d.id}')">Resume</button>
                          <button class="pill-btn pill-soft" onclick="const u=prompt('Paste fresh mirror URL to resume from byte offset:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);">Fix Link</button>`
-                      : `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')">Show File</button>`
+                      : d.status === 'COMPLETED'
+                        ? `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')">Show File</button>`
+                        : ''
                   }
                   <button class="pill-btn pill-red" onclick="send('DL_DEL:${d.id}')">✕</button>
                 </div>
