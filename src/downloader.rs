@@ -165,8 +165,8 @@ impl ShunnoGetDesktop {
             .next()
             .and_then(|p| p.rsplit('/').next())
             .filter(|s| !s.is_empty() && s.contains('.'))
-            .unwrap_or("download.bin")
-            .to_string();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("shunno_media_{}.mp4", SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() % 10000).unwrap_or(1)));
 
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -305,6 +305,26 @@ async fn run_parallel_download(
     let mut total_len = 0u64;
     let mut supports_range = false;
     if let Ok(resp) = req.send().await {
+        if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
+            if let Some(fname_part) = cd.split(';').find(|p| p.trim().to_ascii_lowercase().starts_with("filename=")) {
+                let clean_cd_name = fname_part
+                    .split('=')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                if !clean_cd_name.is_empty() {
+                    if let Ok(mut list) = tasks.lock() {
+                        if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+                            t.file_name = clean_cd_name.clone();
+                            t.category = detect_download_category(&clean_cd_name);
+                        }
+                    }
+                }
+            }
+        }
         if resp.status() == StatusCode::PARTIAL_CONTENT {
             supports_range = true;
             total_len = resp

@@ -84,7 +84,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         );
     }
 
-    // 2. Network / Fetch / XHR Media & Lossless Audio Stream Sniffer + Ad/Tracker Blocker
+    // 2. Network Sniffer + AdBlocker + TRUE IDM-STYLE FLOATING OBJECT MENU (Video / Audio / File Links)
     let adblock_flag = if policy.adblock { "true" } else { "false" };
     script.push_str(&format!(
         r#"
@@ -96,7 +96,22 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 'popads.net', 'popcash.net', 'propellerads.com', 'exoclick.com',
                 'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com'
             ];
-            const MEDIA_EXTS = ['.mp4', '.m3u8', '.flac', '.m4a', '.wav', '.mp3', '.zip', '.iso', '.exe', '.msi', '.apk'];
+            const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
+            const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.apk', '.pdf', '.dmg', '.deb'];
+            const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
+            const capturedStreams = [];
+
+            function addCapturedStream(rawUrl, kindHint) {{
+                if (!rawUrl || !String(rawUrl).startsWith('http')) return;
+                const urlStr = String(rawUrl);
+                if (capturedStreams.some(s => s.url === urlStr)) return;
+                const cleanPath = urlStr.split('?')[0].toLowerCase();
+                const ext = ALL_EXTS.find(e => cleanPath.endsWith(e)) || kindHint || '.mp4';
+                const labelName = decodeURIComponent(cleanPath.split('/').pop() || ('Stream ' + ext.toUpperCase()));
+                capturedStreams.unshift({{ url: urlStr, ext: ext.toUpperCase(), name: labelName }});
+                if (capturedStreams.length > 20) capturedStreams.pop();
+                if (window.ipc) window.ipc.postMessage('STREAM:' + urlStr);
+            }}
 
             function inspectUrl(raw) {{
                 if (!raw) return false;
@@ -106,8 +121,8 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     if (window.ipc) window.ipc.postMessage('AD_BLOCKED');
                     return true;
                 }}
-                if (MEDIA_EXTS.some(ext => lower.endsWith(ext)) && str.startsWith('http')) {{
-                    if (window.ipc) window.ipc.postMessage('STREAM:' + str);
+                if (ALL_EXTS.some(ext => lower.endsWith(ext)) && str.startsWith('http')) {{
+                    addCapturedStream(str);
                 }}
                 return false;
             }}
@@ -133,11 +148,254 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 return origSend.apply(this, arguments);
             }};
 
+            function triggerShunnoGet(targetUrl, threads) {{
+                if (!window.ipc || !targetUrl) return;
+                const payload = JSON.stringify({{
+                    url: targetUrl,
+                    threads: threads || 16,
+                    referer: location.href,
+                    cookie: document.cookie || ''
+                }});
+                window.ipc.postMessage('FLOAT_DL:' + payload);
+            }}
+
+            function installIdmFloatingOverlay() {{
+                if (document.getElementById('shunno-idm-host')) return;
+
+                const host = document.createElement('div');
+                host.id = 'shunno-idm-host';
+                host.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
+                const shadow = host.attachShadow({{ mode: 'open' }});
+
+                shadow.innerHTML = `
+                    <style>
+                        .idm-pill {{
+                            position: fixed;
+                            pointer-events: auto;
+                            display: none;
+                            align-items: center;
+                            gap: 6px;
+                            background: rgba(28, 28, 30, 0.92);
+                            backdrop-filter: blur(14px);
+                            color: #FFFFFF;
+                            border: 1px solid rgba(255, 255, 255, 0.22);
+                            border-radius: 10px;
+                            padding: 5px 10px;
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                            font-size: 12px;
+                            font-weight: 600;
+                            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+                            cursor: pointer;
+                            transition: transform 0.12s ease, background 0.12s ease;
+                        }}
+                        .idm-pill:hover {{
+                            background: #0A84FF;
+                            transform: translateY(-1px);
+                        }}
+                        .idm-badge {{
+                            background: #30D158;
+                            color: #000;
+                            font-size: 10px;
+                            font-weight: 800;
+                            padding: 1px 5px;
+                            border-radius: 5px;
+                        }}
+                        .idm-menu {{
+                            position: fixed;
+                            pointer-events: auto;
+                            display: none;
+                            flex-direction: column;
+                            gap: 6px;
+                            min-width: 270px;
+                            max-width: 360px;
+                            background: rgba(28, 28, 30, 0.96);
+                            backdrop-filter: blur(18px);
+                            color: #fff;
+                            border: 1px solid rgba(255, 255, 255, 0.22);
+                            border-radius: 12px;
+                            padding: 10px;
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                            font-size: 12px;
+                            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+                        }}
+                        .idm-menu-hdr {{
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            font-weight: 700;
+                            font-size: 12px;
+                            color: #30D158;
+                            border-bottom: 1px solid rgba(255,255,255,0.12);
+                            padding-bottom: 6px;
+                        }}
+                        .idm-row {{
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            gap: 8px;
+                            padding: 5px 6px;
+                            border-radius: 8px;
+                            background: rgba(255,255,255,0.07);
+                        }}
+                        .idm-row:hover {{ background: rgba(10,132,255,0.35); }}
+                        .idm-name {{
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            white-space: nowrap;
+                            flex: 1;
+                            font-size: 11.5px;
+                        }}
+                        .idm-go {{
+                            background: #0A84FF;
+                            color: #fff;
+                            border: none;
+                            border-radius: 6px;
+                            padding: 4px 8px;
+                            font-size: 11px;
+                            font-weight: 700;
+                            cursor: pointer;
+                            flex-shrink: 0;
+                        }}
+                        .idm-go:hover {{ background: #30D158; color: #000; }}
+                    </style>
+                    <div class="idm-pill" id="pill">
+                        <span class="idm-badge">0↓</span>
+                        <span id="pill-text">Download this video</span>
+                        <span style="opacity:0.75">▾</span>
+                    </div>
+                    <div class="idm-menu" id="menu"></div>
+                `;
+                document.documentElement.appendChild(host);
+
+                const pill = shadow.getElementById('pill');
+                const pillText = shadow.getElementById('pill-text');
+                const menu = shadow.getElementById('menu');
+                let activeItems = [];
+                let hideTimer = null;
+
+                function scheduleHide() {{
+                    clearTimeout(hideTimer);
+                    hideTimer = setTimeout(() => {{
+                        if (!pill.matches(':hover') && !menu.matches(':hover')) {{
+                            pill.style.display = 'none';
+                            menu.style.display = 'none';
+                        }}
+                    }}, 450);
+                }}
+
+                pill.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+                pill.addEventListener('mouseleave', scheduleHide);
+                menu.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+                menu.addEventListener('mouseleave', scheduleHide);
+
+                function showPillAt(x, y, label, items) {{
+                    if (!items || items.length === 0) return;
+                    clearTimeout(hideTimer);
+                    activeItems = items;
+                    pillText.textContent = label;
+                    const left = Math.min(window.innerWidth - 210, Math.max(8, x));
+                    const top = Math.min(window.innerHeight - 44, Math.max(8, y));
+                    pill.style.left = left + 'px';
+                    pill.style.top = top + 'px';
+                    pill.style.display = 'inline-flex';
+                }}
+
+                pill.addEventListener('click', (e) => {{
+                    e.stopPropagation();
+                    if (activeItems.length === 1) {{
+                        triggerShunnoGet(activeItems[0].url, 16);
+                        pill.style.display = 'none';
+                        return;
+                    }}
+                    menu.innerHTML = `<div class="idm-menu-hdr"><span>⚡ Shunno Get (${{activeItems.length}} streams)</span><span style="cursor:pointer;color:#aaa" id="m-close">✕</span></div>` +
+                        activeItems.map((it, i) => `
+                            <div class="idm-row">
+                                <span class="idm-badge">${{it.ext.replace('.', '')}}</span>
+                                <span class="idm-name" title="${{it.url}}">${{it.name}}</span>
+                                <button class="idm-go" data-idx="${{i}}">16T Get</button>
+                            </div>
+                        `).join('');
+                    menu.style.left = pill.style.left;
+                    menu.style.top = (parseFloat(pill.style.top) + 34) + 'px';
+                    menu.style.display = 'flex';
+                    shadow.getElementById('m-close').onclick = () => {{ menu.style.display = 'none'; }};
+                    menu.querySelectorAll('.idm-go').forEach(btn => {{
+                        btn.onclick = () => {{
+                            const idx = parseInt(btn.getAttribute('data-idx'), 10);
+                            if (activeItems[idx]) triggerShunnoGet(activeItems[idx].url, 16);
+                            menu.style.display = 'none';
+                            pill.style.display = 'none';
+                        }};
+                    }});
+                }});
+
+                // Hover detection over <video>, <audio>, and downloadable <a> links (IDM behavior)
+                document.addEventListener('mouseover', (e) => {{
+                    const target = e.target;
+                    if (!target || !target.closest) return;
+
+                    const mediaEl = target.closest('video, audio');
+                    if (mediaEl) {{
+                        const rect = mediaEl.getBoundingClientRect();
+                        if (rect.width >= 120 && rect.height >= 40) {{
+                            const items = [];
+                            const directSrc = mediaEl.currentSrc || mediaEl.src;
+                            if (directSrc && directSrc.startsWith('http')) {{
+                                addCapturedStream(directSrc, mediaEl.tagName === 'AUDIO' ? '.m4a' : '.mp4');
+                            }}
+                            mediaEl.querySelectorAll('source').forEach(s => {{
+                                if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
+                            }});
+                            capturedStreams.forEach(s => items.push(s));
+                            if (items.length > 0) {{
+                                const kind = mediaEl.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video';
+                                showPillAt(rect.right - 185, rect.top + 10, kind, items);
+                                return;
+                            }}
+                        }}
+                    }}
+
+                    const linkEl = target.closest('a[href]');
+                    if (linkEl && linkEl.href && linkEl.href.startsWith('http')) {{
+                        const cleanHref = linkEl.href.split('?')[0].toLowerCase();
+                        const matchedExt = ALL_EXTS.find(ext => cleanHref.endsWith(ext));
+                        if (matchedExt) {{
+                            const rect = linkEl.getBoundingClientRect();
+                            const fname = decodeURIComponent(cleanHref.split('/').pop() || ('File ' + matchedExt));
+                            showPillAt(
+                                rect.left,
+                                rect.top - 34,
+                                'Get ' + matchedExt.toUpperCase(),
+                                [{{ url: linkEl.href, ext: matchedExt.toUpperCase(), name: fname }}]
+                            );
+                        }}
+                    }}
+                }}, true);
+
+                document.addEventListener('mouseout', (e) => {{
+                    if (e.target && e.target.closest && (e.target.closest('video, audio, a[href]'))) {{
+                        scheduleHide();
+                    }}
+                }}, true);
+            }}
+
             window.addEventListener('DOMContentLoaded', () => {{
                 if (window.ipc) window.ipc.postMessage('META:' + JSON.stringify({{ title: document.title, url: location.href }}));
                 document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {{
                     if (el.src) inspectUrl(el.src);
                 }});
+                installIdmFloatingOverlay();
+            }});
+
+            // Keyboard shortcuts inside content area
+            document.addEventListener('keydown', (e) => {{
+                if (e.ctrlKey && !e.shiftKey && !e.altKey) {{
+                    const k = e.key.toLowerCase();
+                    if (k === 't' || k === 'w' || k === 'j') {{
+                        e.preventDefault();
+                        if (window.ipc) window.ipc.postMessage('KEY:' + k);
+                    }}
+                }}
             }});
         }})();
         "#
@@ -523,6 +781,60 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(AppEvent::ContentIpc(tab_id, msg)) => {
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
+                } else if let Some(float_json) = msg.strip_prefix("FLOAT_DL:") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(float_json) {
+                        let dl_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let threads = val.get("threads").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
+                        let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                        if dl_url.starts_with("http") {
+                            engine.enqueue(&rt_handle, dl_url, threads, referer, cookie);
+                            drawer_open = true;
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
+                        }
+                    }
+                } else if let Some(key_cmd) = msg.strip_prefix("KEY:") {
+                    match key_cmd {
+                        "t" => {
+                            let start = "https://duckduckgo.com".to_string();
+                            let pol = SitePolicy::default();
+                            let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, proxy.clone(), drawer_open) {
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, incognito: false, webview: wv });
+                                active_tab_idx = tabs.len() - 1;
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
+                        "w" => {
+                            if tabs.len() > 1 && active_tab_idx < tabs.len() {
+                                tabs.remove(active_tab_idx);
+                                if active_tab_idx >= tabs.len() { active_tab_idx = tabs.len() - 1; }
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
+                        "j" => {
+                            drawer_open = true;
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
+                        }
+                        _ => {}
+                    }
+                } else if let Some(html_payload) = msg.strip_prefix("OFFLINE_HTML:") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(html_payload) {
+                        let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("snapshot");
+                        let html = val.get("html").and_then(|v| v.as_str()).unwrap_or("");
+                        let safe_name = title
+                            .chars()
+                            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                            .take(40)
+                            .collect::<String>()
+                            .trim()
+                            .replace(' ', "_");
+                        let fname = if safe_name.is_empty() { "snapshot.html".to_string() } else { format!("{}.html", safe_name) };
+                        let out = BrowserStorage::downloads_root_dir().join(&fname);
+                        let _ = fs::write(out, html);
+                    }
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
                     if !sniffed_streams.iter().any(|s| s == stream_url) {
                         sniffed_streams.insert(0, stream_url.to_string());
@@ -618,6 +930,14 @@ fn main() -> wry::Result<()> {
                             active_tab_idx = idx;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
+                    }
+                } else if cmd == "CLOSE_ACTIVE_TAB" {
+                    if tabs.len() > 1 && active_tab_idx < tabs.len() {
+                        tabs.remove(active_tab_idx);
+                        if active_tab_idx >= tabs.len() {
+                            active_tab_idx = tabs.len() - 1;
+                        }
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
@@ -728,20 +1048,8 @@ fn main() -> wry::Result<()> {
                     BrowserStorage::save_history(&history);
                 } else if cmd == "SAVE_OFFLINE_HTML" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let safe_name = tab
-                            .title
-                            .chars()
-                            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                            .take(40)
-                            .collect::<String>()
-                            .trim()
-                            .replace(' ', "_");
-                        let fname = if safe_name.is_empty() { "snapshot.html".to_string() } else { format!("{}.html", safe_name) };
-                        let out = BrowserStorage::downloads_root_dir().join(&fname);
-                        let _ = fs::write(
-                            out,
-                            format!("<!-- Saved Offline by Shunno Browser -->\n<meta http-equiv=\"refresh\" content=\"0;url={}\">", tab.url),
-                        );
+                        let js = "if (window.ipc) window.ipc.postMessage('OFFLINE_HTML:' + JSON.stringify({ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }));";
+                        let _ = tab.webview.evaluate_script(js);
                     }
                 } else if cmd == "OPEN_SCRIPTS_FOLDER" {
                     let dir = BrowserStorage::user_scripts_dir();
@@ -760,20 +1068,22 @@ fn main() -> wry::Result<()> {
                         let threads = threads_str.parse::<usize>().unwrap_or(16);
                         let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
                         let re = Regex::new(r"\[(\d+)-(\d+)\]").unwrap();
-                        if let Some(caps) = re.captures(raw_urls) {
-                            let s_str = caps.get(1).map(|m| m.as_str()).unwrap_or("1");
-                            let e_str = caps.get(2).map(|m| m.as_str()).unwrap_or("1");
-                            if let (Ok(start), Ok(end)) = (s_str.parse::<u32>(), e_str.parse::<u32>()) {
-                                let width = s_str.len();
-                                let full_m = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                                for i in start..=end.min(start + 100) {
-                                    let num = format!("{:0width$}", i, width = width);
-                                    let expanded = raw_urls.replace(full_m, &num);
-                                    engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), None);
+                        for line in raw_urls.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                            if let Some(caps) = re.captures(line) {
+                                let s_str = caps.get(1).map(|m| m.as_str()).unwrap_or("1");
+                                let e_str = caps.get(2).map(|m| m.as_str()).unwrap_or("1");
+                                if let (Ok(start), Ok(end)) = (s_str.parse::<u32>(), e_str.parse::<u32>()) {
+                                    let width = s_str.len();
+                                    let full_m = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+                                    for i in start..=end.min(start + 100) {
+                                        let num = format!("{:0width$}", i, width = width);
+                                        let expanded = line.replace(full_m, &num);
+                                        engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), None);
+                                    }
+                                    continue;
                                 }
                             }
-                        } else {
-                            engine.enqueue(&rt_handle, raw_urls.to_string(), threads, ref_url, None);
+                            engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), None);
                         }
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_PAUSE:") {

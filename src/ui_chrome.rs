@@ -454,6 +454,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function encodeAttr(str) {
     return String(str).replace(/'/g, "\\'");
   }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === 't') { e.preventDefault(); send('NEW_TAB'); }
+      else if (k === 'w') { e.preventDefault(); send('CLOSE_ACTIVE_TAB'); }
+      else if (k === 'l') { e.preventDefault(); const u = document.getElementById('url-input'); u.focus(); u.select(); }
+      else if (k === 'f') { e.preventDefault(); toggleDrawer('find'); setTimeout(() => document.getElementById('find-input').focus(), 50); }
+      else if (k === 'j') { e.preventDefault(); toggleDrawer('downloads'); }
+      else if (k === 'r') { e.preventDefault(); send('RELOAD'); }
+    } else if (e.key === 'Escape' && activeDrawer) {
+      closeDrawer();
+    }
+  });
 </script>
 </body>
 </html>
