@@ -20,7 +20,7 @@ pub struct DownloadTask {
     pub file_name: String,
     pub total_bytes: i64,
     pub downloaded_bytes: u64,
-    pub status: String, // "DOWNLOADING", "PAUSED", "COMPLETED", "FAILED", "MUXING"
+    pub status: String, // "DOWNLOADING", "PAUSED", "COMPLETED", "FAILED", "MUXING", "DUPLICATE"
     pub speed_bps: u64,
     pub threads: usize,
     pub category: String,
@@ -39,6 +39,80 @@ pub struct StreamProbeResult {
     pub size_bytes: Option<u64>,
     pub size_label: String,
     pub resolved_name: Option<String>,
+}
+
+pub enum EnqueueOutcome {
+    Started(DownloadTask),
+    DuplicateDetected(DownloadTask),
+}
+
+pub fn sanitize_download_filename(raw: &str) -> String {
+    let base = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("download.bin")
+        .split('?')
+        .next()
+        .unwrap_or("download.bin")
+        .trim();
+
+    let mut cleaned: String = base
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'..='\x1f' => '_',
+            _ => c,
+        })
+        .collect();
+
+    while cleaned.contains("..") {
+        cleaned = cleaned.replace("..", "_");
+    }
+    cleaned = cleaned.trim_matches(['.', ' ']).to_string();
+    if cleaned.is_empty() {
+        cleaned = "download.bin".to_string();
+    }
+
+    // Prefix Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    let stem = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let is_reserved = matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if is_reserved {
+        cleaned = format!("_{}", cleaned);
+    }
+
+    // Prevent writing into any scripts subdirectory
+    if cleaned.to_ascii_lowercase().ends_with(".js") {
+        cleaned.push_str(".download");
+    }
+
+    cleaned
 }
 
 pub fn format_human_size(bytes: u64) -> String {
@@ -108,7 +182,7 @@ fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
                     .trim_matches('\'')
                     .to_string();
                 if !cleaned.is_empty() {
-                    return Some(cleaned);
+                    return Some(sanitize_download_filename(&cleaned));
                 }
             }
         } else if lower.starts_with("filename=") {
@@ -119,7 +193,7 @@ fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
                     .trim_matches('\'')
                     .to_string();
                 if !cleaned.is_empty() {
-                    return Some(cleaned);
+                    return Some(sanitize_download_filename(&cleaned));
                 }
             }
         }
@@ -132,10 +206,11 @@ pub struct ShunnoGetDesktop {
     pub tasks: Arc<Mutex<Vec<DownloadTask>>>,
     active_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     pub speed_limit_bps: Arc<AtomicU64>,
+    pub auto_clean_completed: Arc<AtomicBool>,
 }
 
 impl ShunnoGetDesktop {
-    pub fn new(initial_speed_limit_bps: u64) -> Self {
+    pub fn new(initial_speed_limit_bps: u64, initial_auto_clean: bool) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(20))
             .pool_max_idle_per_host(64)
@@ -148,6 +223,7 @@ impl ShunnoGetDesktop {
             tasks: Arc::new(Mutex::new(loaded)),
             active_flags: Arc::new(Mutex::new(HashMap::new())),
             speed_limit_bps: Arc::new(AtomicU64::new(initial_speed_limit_bps)),
+            auto_clean_completed: Arc::new(AtomicBool::new(initial_auto_clean)),
         }
     }
 
@@ -160,7 +236,7 @@ impl ShunnoGetDesktop {
         let mut req = self
             .client
             .head(&url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0");
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1");
         if let Some(ref r) = referer {
             if !r.is_empty() {
                 req = req.header(REFERER, r);
@@ -192,7 +268,7 @@ impl ShunnoGetDesktop {
             let mut range_req = self
                 .client
                 .get(&url)
-                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
+                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
                 .header(RANGE, "bytes=0-0");
             if let Some(ref r) = referer {
                 if !r.is_empty() {
@@ -264,6 +340,20 @@ impl ShunnoGetDesktop {
         }
     }
 
+    pub fn clear_completed(&self) -> usize {
+        let removed = if let Ok(mut list) = self.tasks.lock() {
+            let before = list.len();
+            list.retain(|t| t.status != "COMPLETED");
+            before.saturating_sub(list.len())
+        } else {
+            0
+        };
+        if removed > 0 {
+            self.save_queue();
+        }
+        removed
+    }
+
     pub fn pause(&self, id: u64) {
         if let Ok(mut map) = self.active_flags.lock() {
             if let Some(flag) = map.remove(&id) {
@@ -283,6 +373,16 @@ impl ShunnoGetDesktop {
 
     pub fn delete(&self, id: u64) {
         self.pause(id);
+        let part_prefix = format!("{}_", id);
+        if let Ok(entries) = fs::read_dir(Self::parts_dir()) {
+            for e in entries.flatten() {
+                if let Some(name) = e.file_name().to_str() {
+                    if name.starts_with(&part_prefix) {
+                        let _ = fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
         if let Ok(mut list) = self.tasks.lock() {
             list.retain(|i| i.id != id);
         }
@@ -318,13 +418,34 @@ impl ShunnoGetDesktop {
         threads: usize,
         referer: Option<String>,
         cookie: Option<String>,
-    ) -> DownloadTask {
-        let raw_name = url
+        force_duplicate: bool,
+    ) -> EnqueueOutcome {
+        let normalized_url = url.trim().to_string();
+
+        // Duplicate detection: check active downloads or completed files still existing on disk
+        if !force_duplicate {
+            if let Ok(list) = self.tasks.lock() {
+                if let Some(existing) = list.iter().find(|t| {
+                    t.url == normalized_url
+                        && (t.status == "DOWNLOADING"
+                            || t.status == "MUXING"
+                            || (t.status == "COMPLETED"
+                                && t.saved_path
+                                    .as_ref()
+                                    .map(|p| Path::new(p).exists())
+                                    .unwrap_or(false)))
+                }) {
+                    return EnqueueOutcome::DuplicateDetected(existing.clone());
+                }
+            }
+        }
+
+        let raw_name = normalized_url
             .split('?')
             .next()
             .and_then(|p| p.rsplit('/').next())
             .filter(|s| !s.is_empty() && s.contains('.'))
-            .map(|s| s.to_string())
+            .map(sanitize_download_filename)
             .unwrap_or_else(|| {
                 format!(
                     "shunno_download_{}.bin",
@@ -343,7 +464,7 @@ impl ShunnoGetDesktop {
 
         let task = DownloadTask {
             id,
-            url,
+            url: normalized_url,
             file_name: raw_name.clone(),
             total_bytes: -1,
             downloaded_bytes: 0,
@@ -365,7 +486,7 @@ impl ShunnoGetDesktop {
         }
         self.save_queue();
         self.spawn_worker(rt, task.clone());
-        task
+        EnqueueOutcome::Started(task)
     }
 
     pub fn enqueue_dash_mux(
@@ -377,14 +498,8 @@ impl ShunnoGetDesktop {
         referer: Option<String>,
         cookie: Option<String>,
     ) {
-        let clean_title = output_title
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
-            .take(48)
-            .collect::<String>()
-            .trim()
-            .replace(' ', "_");
-        let base_name = if clean_title.is_empty() {
+        let clean_title = sanitize_download_filename(&output_title.replace(' ', "_"));
+        let base_name = if clean_title.is_empty() || clean_title == "download.bin" {
             format!(
                 "shunno_muxed_{}",
                 SystemTime::now()
@@ -393,7 +508,7 @@ impl ShunnoGetDesktop {
                     .unwrap_or(1)
             )
         } else {
-            clean_title
+            clean_title.trim_end_matches(".mp4").to_string()
         };
         let final_mp4_name = format!("{}.mp4", base_name);
 
@@ -436,6 +551,7 @@ impl ShunnoGetDesktop {
         let tasks_ref = self.tasks.clone();
         let flags_ref = self.active_flags.clone();
         let limit_ref = self.speed_limit_bps.clone();
+        let auto_clean_ref = self.auto_clean_completed.clone();
 
         rt.spawn(async move {
             let vid_part = Self::parts_dir().join(format!("{}_video.part", id));
@@ -478,7 +594,7 @@ impl ShunnoGetDesktop {
 
                     match status {
                         Ok(s) if s.success() && muxed_part.exists() => {
-                            let _ = finalize_completed(&task, &muxed_part, &final_mp4_name, &tasks_ref);
+                            let _ = finalize_completed(&task, &muxed_part, &final_mp4_name, &tasks_ref, auto_clean_ref.load(Ordering::Relaxed));
                         }
                         _ => {
                             if let Ok(mut list) = tasks_ref.lock() {
@@ -491,7 +607,7 @@ impl ShunnoGetDesktop {
                     }
                 } else {
                     let _ = fs::remove_file(&aud_part);
-                    let _ = finalize_completed(&task, &vid_part, &final_mp4_name, &tasks_ref);
+                    let _ = finalize_completed(&task, &vid_part, &final_mp4_name, &tasks_ref, auto_clean_ref.load(Ordering::Relaxed));
                 }
             } else if let Ok(mut list) = tasks_ref.lock() {
                 if let Some(t) = list.iter_mut().find(|i| i.id == id) {
@@ -528,13 +644,15 @@ impl ShunnoGetDesktop {
         let tasks_ref = self.tasks.clone();
         let flags_ref = self.active_flags.clone();
         let limit_ref = self.speed_limit_bps.clone();
+        let auto_clean_ref = self.auto_clean_completed.clone();
 
         rt.spawn(async move {
-            let part_path = Self::parts_dir().join(format!("{}_{}.part", task.id, task.file_name));
+            let safe_part_name = sanitize_download_filename(&task.file_name);
+            let part_path = Self::parts_dir().join(format!("{}_{}.part", task.id, safe_part_name));
             let res = if task.url.to_ascii_lowercase().contains(".m3u8") {
-                run_hls_download(&client, &task, &part_path, &running, &tasks_ref).await
+                run_hls_download(&client, &task, &part_path, &running, &tasks_ref, auto_clean_ref.load(Ordering::Relaxed)).await
             } else {
-                run_parallel_download(&client, &task, &part_path, &running, &limit_ref, &tasks_ref).await
+                run_parallel_download(&client, &task, &part_path, &running, &limit_ref, &tasks_ref, auto_clean_ref.load(Ordering::Relaxed)).await
             };
 
             match res {
@@ -599,7 +717,7 @@ async fn download_raw_to_path(
 ) -> Result<(), String> {
     let mut req = client
         .get(&task.url)
-        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
+        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
         .header(RANGE, "bytes=0-0");
     if let Some(ref r) = task.referer {
         if !r.is_empty() {
@@ -642,15 +760,18 @@ async fn download_raw_to_path(
             }
         }
 
+        // Strict verification: only enable multi-thread seek_write if server actually honors 206 Partial Content with Content-Range
         if resp.status() == StatusCode::PARTIAL_CONTENT {
-            supports_range = true;
-            total_len = resp
-                .headers()
-                .get(CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.split('/').nth(1))
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
+            if let Some(cr) = resp.headers().get(CONTENT_RANGE).and_then(|v| v.to_str().ok()) {
+                if let Some(len_str) = cr.split('/').nth(1) {
+                    if let Ok(parsed_len) = len_str.trim().parse::<u64>() {
+                        if parsed_len > 0 {
+                            total_len = parsed_len;
+                            supports_range = true;
+                        }
+                    }
+                }
+            }
         } else {
             total_len = resp
                 .headers()
@@ -658,12 +779,12 @@ async fn download_raw_to_path(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
-            supports_range = resp
+            let _ = resp
                 .headers()
                 .get(ACCEPT_RANGES)
                 .and_then(|v| v.to_str().ok())
-                .map(|s| s.eq_ignore_ascii_case("bytes"))
-                .unwrap_or(false);
+                .map(|s| s.eq_ignore_ascii_case("bytes"));
+            supports_range = false; // Server ignored Range: bytes=0-0 and returned 200 OK; use safe single-stream fallback
         }
     }
 
@@ -767,7 +888,7 @@ async fn download_raw_to_path(
                 }
                 let mut rb = c
                     .get(&u)
-                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
+                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
                     .header(RANGE, format!("bytes={}-{}", offset, end));
                 if let Some(ref r) = r_hdr {
                     if !r.is_empty() { rb = rb.header(REFERER, r); }
@@ -832,7 +953,7 @@ async fn download_raw_to_path(
     } else {
         let mut rb = client
             .get(&task.url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0");
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1");
         if let Some(ref r) = task.referer {
             if !r.is_empty() { rb = rb.header(REFERER, r); }
         }
@@ -884,6 +1005,7 @@ async fn run_parallel_download(
     running: &Arc<AtomicBool>,
     speed_limit: &Arc<AtomicU64>,
     tasks: &Arc<Mutex<Vec<DownloadTask>>>,
+    auto_clean: bool,
 ) -> Result<(), String> {
     download_raw_to_path(client, task, part_path, running, speed_limit, tasks).await?;
 
@@ -893,7 +1015,7 @@ async fn run_parallel_download(
         .and_then(|l| l.iter().find(|i| i.id == task.id).map(|t| t.file_name.clone()))
         .unwrap_or_else(|| task.file_name.clone());
 
-    finalize_completed(task, part_path, &current_name, tasks)
+    finalize_completed(task, part_path, &current_name, tasks, auto_clean)
 }
 
 async fn run_hls_download(
@@ -902,6 +1024,7 @@ async fn run_hls_download(
     part_path: &Path,
     running: &Arc<AtomicBool>,
     tasks: &Arc<Mutex<Vec<DownloadTask>>>,
+    auto_clean: bool,
 ) -> Result<(), String> {
     let mut manifest = client
         .get(&task.url)
@@ -995,7 +1118,7 @@ async fn run_hls_download(
         task.file_name.clone()
     };
 
-    finalize_completed(task, part_path, &out_name, tasks)
+    finalize_completed(task, part_path, &out_name, tasks, auto_clean)
 }
 
 fn finalize_completed(
@@ -1003,10 +1126,12 @@ fn finalize_completed(
     part_path: &Path,
     final_name: &str,
     tasks: &Arc<Mutex<Vec<DownloadTask>>>,
+    auto_clean: bool,
 ) -> Result<(), String> {
+    let safe_final = sanitize_download_filename(final_name);
     let target_dir = BrowserStorage::downloads_root_dir().join(&task.category);
     let _ = fs::create_dir_all(&target_dir);
-    let mut dest_path = target_dir.join(final_name);
+    let mut dest_path = target_dir.join(&safe_final);
 
     if dest_path.exists() {
         let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
@@ -1036,7 +1161,10 @@ fn finalize_completed(
     let saved_str = dest_path.to_string_lossy().to_string();
 
     if let Ok(mut list) = tasks.lock() {
-        if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+        if auto_clean {
+            list.retain(|i| i.id != task.id);
+        } else if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+            t.file_name = safe_final;
             t.total_bytes = final_size as i64;
             t.downloaded_bytes = final_size;
             t.status = "COMPLETED".to_string();

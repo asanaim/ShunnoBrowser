@@ -34,16 +34,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --input-bg: #2C2C2E;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
-  html, body { background: transparent; color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+  html, body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
 
-  /* Top Chrome Strip */
   .chrome-top {
     background: var(--surface);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
     z-index: 10;
   }
 
-  /* Auto-Resizing Tab Strip */
+  /* Auto-Resizing Tab Strip with + and Private buttons immediately adjacent to last tab */
   .tab-bar {
     display: flex; align-items: center; gap: 5px; padding: 5px 10px 4px 10px;
     background: var(--tab-bg); border-bottom: 1px solid var(--border); height: 38px; overflow: hidden;
@@ -51,18 +49,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .brand-pill {
     display: flex; align-items: center; gap: 6px; font-weight: 800; font-size: 12px; letter-spacing: -0.2px;
     background: linear-gradient(135deg, #0D47A1, #0A84FF); color: #fff;
-    padding: 4px 10px; border-radius: 9px; flex-shrink: 0; box-shadow: 0 1px 3px rgba(10,132,255,0.3);
+    padding: 4px 10px; border-radius: 9px; flex-shrink: 0;
   }
   #tabs-container {
-    display: flex; gap: 5px; align-items: center; flex: 1; min-width: 0; overflow: hidden;
+    display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
   }
   .tab {
     display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 9px;
     background: rgba(128,128,128,0.14); color: var(--text); font-size: 12px; cursor: pointer;
-    flex: 1 1 0; min-width: 34px; max-width: 195px; overflow: hidden; transition: background 0.15s;
+    flex: 1 1 165px; min-width: 36px; max-width: 195px; overflow: hidden; transition: background 0.12s;
   }
-  .tab.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+  .tab.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.14); }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; border: 1px solid #48484A; }
+  .tab-audio {
+    font-size: 11px; padding: 0 3px; border-radius: 4px; flex-shrink: 0;
+    background: rgba(10,132,255,0.14); color: var(--blue);
+  }
+  .tab-audio:hover { background: var(--blue); color: #fff; }
   .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .tab-close { font-size: 10.5px; color: var(--muted); padding: 1px 4px; border-radius: 4px; flex-shrink: 0; }
   .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
@@ -100,31 +103,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 13px; color: var(--text); user-select: text;
   }
 
-  /* Compact Floating Popover Overlay (Keeps running webpage visible underneath!) */
-  .popover-backdrop {
+  /* Non-Overlapping Docked Side Panel (100% clickable while running webpage stays visible beside it!) */
+  .dock-panel {
     flex: 1;
     display: none;
-    justify-content: flex-end;
-    align-items: flex-start;
-    padding: 8px 12px 16px 12px;
-    background: rgba(0, 0, 0, 0.18);
-  }
-  .popover-backdrop.open {
-    display: flex;
-  }
-  .popover-sheet {
-    width: 460px;
-    max-width: calc(100vw - 24px);
-    max-height: calc(100vh - 106px);
+    flex-direction: column;
     background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 16px;
+    border-left: 1px solid var(--border);
     padding: 12px;
     overflow-y: auto;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
   }
-  .popover-sheet.wide {
-    width: 600px;
+  .dock-panel.open {
+    display: flex;
   }
 
   .card {
@@ -132,7 +122,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     border: 1px solid var(--border);
   }
   .card:last-child { margin-bottom: 0; }
-  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-wrap: wrap; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap; }
   .card-title { font-size: 13.5px; font-weight: 700; }
   .grid-toggles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
   .toggle-tile {
@@ -150,7 +140,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   .input-row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
   .text-box {
-    flex: 1; min-width: 120px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border);
+    flex: 1; min-width: 110px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; user-select: text;
   }
   .select-box {
@@ -172,7 +162,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <body>
 
   <div class="chrome-top">
-    <!-- 1. Auto-Resizing Tab Strip -->
+    <!-- 1. Auto-Resizing Tab Strip with + and Private buttons right next to the open tabs -->
     <div class="tab-bar" id="tab-bar">
       <div class="brand-pill">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
@@ -205,146 +195,154 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- 3. Compact Floating Popover Overlay (Clicking dimmed area closes popover) -->
-  <div class="popover-backdrop" id="drawer" onclick="if(event.target===this) closeDrawer()">
-    <div class="popover-sheet" id="popover-sheet">
+  <!-- 3. Docked Right Side Panel (Live webpage remains visible on the left!) -->
+  <div class="dock-panel" id="drawer">
 
-      <!-- Panel A: Compact Controls & Settings Popover -->
-      <div id="panel-controls" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">Shunno Browser</span>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <span class="meta" id="version-badge" style="font-weight:700;">v1.0.0</span>
-              <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Toggle Full Screen (F11)">⛶ F11</button>
-              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-            </div>
-          </div>
-
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
-            <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
-            <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
-            <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader</button>
-            <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
-            <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save Offline</button>
-            <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📜 Scripts</button>
-          </div>
-
-          <div class="grid-toggles" id="global-toggles-grid"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
-          </div>
-          <div class="grid-toggles" id="site-toggles-grid"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">🔎 Search Engines</span>
-          </div>
-          <div class="input-row">
-            <input class="text-box" id="new-se-name" placeholder="Name (e.g. Qwant)" style="max-width:130px;" />
-            <input class="text-box" id="new-se-url" placeholder="https://example.com/?q=%s" />
-            <button class="pill-btn pill-blue" onclick="addSearchEngine()">Add</button>
-          </div>
-          <div id="search-engines-list"></div>
-        </div>
-      </div>
-
-      <!-- Panel B: Find in Page -->
-      <div id="panel-find" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">🔍 Find in Page</span>
+    <!-- Panel A: Controls & Settings -->
+    <div id="panel-controls" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Shunno Browser</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="meta" id="version-badge" style="font-weight:700;">v1.1.0</span>
+            <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Toggle Full Screen (F11)">⛶ F11</button>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
           </div>
-          <div class="input-row" style="margin-bottom:0;">
-            <input class="text-box" id="find-input" placeholder="Search text..."
-                   oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
-            <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑</button>
-            <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓</button>
-          </div>
         </div>
+
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
+          <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
+          <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader</button>
+          <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
+          <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
+          <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
+        </div>
+
+        <div class="grid-toggles" id="global-toggles-grid"></div>
       </div>
 
-      <!-- Panel C: Detected Media Streams -->
-      <div id="panel-streams" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">🎯 Detected Media Streams</span>
-            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-          </div>
-          <div id="streams-list"></div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
         </div>
+        <div class="grid-toggles" id="site-toggles-grid"></div>
       </div>
 
-      <!-- Panel D: Bookmarks & History -->
-      <div id="panel-bookmarks" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">⭐ Bookmarks</span>
-            <div style="display:flex;gap:5px;">
-              <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Save</button>
-              <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
-              <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
-              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-            </div>
-          </div>
-          <div id="bookmarks-list"></div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">📜 UserScripts (Explicit Approval)</span>
+          <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📂 Folder</button>
         </div>
-
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">🕒 History</span>
-            <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear</button>
-          </div>
-          <div id="history-list"></div>
-        </div>
+        <div id="userscripts-list"></div>
       </div>
 
-      <!-- Panel E: Shunno Get Downloads -->
-      <div id="panel-downloads" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">⚡ Shunno Get</span>
-            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-              <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
-              <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
-                <option value="0">Unlimited</option>
-                <option value="10485760">10 MB/s</option>
-                <option value="5242880">5 MB/s</option>
-                <option value="2097152">2 MB/s</option>
-                <option value="524288">512 KB/s</option>
-              </select>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂</button>
-              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-            </div>
-          </div>
-          <div class="input-row">
-            <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
-            <select class="select-box" id="dl-threads-select">
-              <option value="1">1T</option>
-              <option value="4">4T</option>
-              <option value="8">8T</option>
-              <option value="16" selected>16T</option>
-              <option value="32">32T</option>
-            </select>
-            <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
-          </div>
-          <div class="input-row" style="margin-bottom:0;">
-            <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
-            <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
-            <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
-          </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🔎 Search Engines</span>
         </div>
-
-        <div id="downloads-list"></div>
+        <div class="input-row">
+          <input class="text-box" id="new-se-name" placeholder="Name (e.g. Qwant)" style="max-width:120px;" />
+          <input class="text-box" id="new-se-url" placeholder="https://example.com/?q=%s" />
+          <button class="pill-btn pill-blue" onclick="addSearchEngine()">Add</button>
+        </div>
+        <div id="search-engines-list"></div>
       </div>
-
     </div>
+
+    <!-- Panel B: Find in Page -->
+    <div id="panel-find" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🔍 Find in Page</span>
+          <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+        </div>
+        <div class="input-row" style="margin-bottom:0;">
+          <input class="text-box" id="find-input" placeholder="Search text..."
+                 oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
+          <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑</button>
+          <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel C: Detected Media Streams -->
+    <div id="panel-streams" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🎯 Detected Media Streams</span>
+          <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+        </div>
+        <div id="streams-list"></div>
+      </div>
+    </div>
+
+    <!-- Panel D: Bookmarks & History -->
+    <div id="panel-bookmarks" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">⭐ Bookmarks</span>
+          <div style="display:flex;gap:5px;">
+            <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Save</button>
+            <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
+            <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
+            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+          </div>
+        </div>
+        <div id="bookmarks-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🕒 History</span>
+          <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear</button>
+        </div>
+        <div id="history-list"></div>
+      </div>
+    </div>
+
+    <!-- Panel E: Shunno Get Downloads (with Duplicate Detection & Auto-Cleanup) -->
+    <div id="panel-downloads" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">⚡ Shunno Get</span>
+          <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
+            <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
+            <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
+            <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items from list">🧹 Clean</button>
+            <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
+              <option value="0">Unlimited</option>
+              <option value="10485760">10 MB/s</option>
+              <option value="5242880">5 MB/s</option>
+              <option value="2097152">2 MB/s</option>
+              <option value="524288">512 KB/s</option>
+            </select>
+            <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂</button>
+            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+          </div>
+        </div>
+        <div class="input-row">
+          <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
+          <select class="select-box" id="dl-threads-select">
+            <option value="1">1T</option>
+            <option value="4">4T</option>
+            <option value="8">8T</option>
+            <option value="16" selected>16T</option>
+            <option value="32">32T</option>
+          </select>
+          <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
+        </div>
+        <div class="input-row" style="margin-bottom:0;">
+          <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
+          <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
+          <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
+        </div>
+      </div>
+
+      <div id="duplicate-banner" class="card" style="display:none;border-color:var(--orange);"></div>
+      <div id="downloads-list"></div>
+    </div>
+
   </div>
 
 <script>
@@ -363,22 +361,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
     activeDrawer = name;
     document.getElementById('drawer').classList.add('open');
-    const sheet = document.getElementById('popover-sheet');
-    if (name === 'downloads' || name === 'bookmarks') {
-      sheet.classList.add('wide');
-    } else {
-      sheet.classList.remove('wide');
-    }
     ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
-    send('DRAWER_OPEN:1');
+    send('DRAWER_OPEN:' + name);
   }
 
   function closeDrawer() {
     activeDrawer = null;
     document.getElementById('drawer').classList.remove('open');
-    send('DRAWER_OPEN:0');
+    send('DRAWER_CLOSE');
   }
 
   function cycleSpeed() {
@@ -432,19 +424,25 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.0.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.1.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
 
     const tc = document.getElementById('tabs-container');
-    tc.innerHTML = state.tabs.map((t, idx) => `
-      <div class="tab ${idx === state.active_tab ? 'active' : ''} ${t.incognito ? 'incognito' : ''}"
-           onclick="send('SWITCH_TAB:${idx}')" title="${escapeHtml(t.title || 'New Tab')}">
-        <span class="tab-title">${t.incognito ? '🕵 ' : ''}${escapeHtml(t.title || 'New Tab')}</span>
-        <span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>
-      </div>
-    `).join('');
+    tc.innerHTML = state.tabs.map((t, idx) => {
+      const audioHtml = (t.playing_audio || t.muted)
+        ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute Tab' : 'Mute Tab'}">${t.muted ? '🔇' : '🔊'}</span>`
+        : '';
+      return `
+        <div class="tab ${idx === state.active_tab ? 'active' : ''} ${t.incognito ? 'incognito' : ''}"
+             onclick="send('SWITCH_TAB:${idx}')" title="${escapeHtml(t.title || 'New Tab')}">
+          ${audioHtml}
+          <span class="tab-title">${t.incognito ? '🕵 ' : ''}${escapeHtml(t.title || 'New Tab')}</span>
+          <span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>
+        </div>
+      `;
+    }).join('');
 
     const seSelect = document.getElementById('engine-select');
     if (state.global.search_engines && state.global.search_engines.length > 0) {
@@ -469,6 +467,27 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('btn-downloads').textContent = `⚡ ${state.downloads.length}`;
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
+    // Duplicate Download Banner
+    const dupBanner = document.getElementById('duplicate-banner');
+    if (state.duplicate_alert) {
+      dupBanner.style.display = 'block';
+      dupBanner.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:12.5px;font-weight:700;color:var(--orange);">⚠️ Already Downloaded / Active</div>
+            <div class="meta">${escapeHtml(state.duplicate_alert.file_name)}</div>
+          </div>
+          <div style="display:flex;gap:5px;">
+            ${state.duplicate_alert.saved_path ? `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(state.duplicate_alert.saved_path)}'); send('DISMISS_DUP');">Open</button>` : ''}
+            <button class="pill-btn pill-blue" onclick="send('FORCE_DL:${encodeAttr(state.duplicate_alert.url)}');">Download Again</button>
+            <button class="pill-btn pill-red" onclick="send('DISMISS_DUP');">✕</button>
+          </div>
+        </div>
+      `;
+    } else {
+      dupBanner.style.display = 'none';
+    }
+
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
       ? '<div class="meta">No media streams intercepted on this page yet.</div>'
       : state.streams.map(s => `
@@ -485,6 +504,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['full_dark', '🌙 Dark Mode', state.global.full_dark_mode],
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
+      ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
+      ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups]
     ];
@@ -510,6 +531,21 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="pill-btn ${val ? 'pill-blue' : 'pill-soft'}" onclick="send('TOGGLE_SITE:${key}')">${val ? 'ON' : 'OFF'}</button>
       </div>
     `).join('');
+
+    // UserScripts approval list
+    document.getElementById('userscripts-list').innerHTML = (!state.userscripts || state.userscripts.length === 0)
+      ? '<div class="meta">No .js scripts in %LOCALAPPDATA%\\ShunnoBrowser\\scripts\\</div>'
+      : state.userscripts.map(us => `
+          <div class="list-row">
+            <div style="overflow:hidden;">
+              <div style="font-size:12px;font-weight:600;">${escapeHtml(us.file_name)}</div>
+              <div class="meta">@match ${escapeHtml(us.match_pattern)} • SHA: ${us.sha256.slice(0, 10)}...</div>
+            </div>
+            <button class="pill-btn ${us.approved ? 'pill-green' : 'pill-soft'}" onclick="send('TOGGLE_SCRIPT:${us.sha256}')">
+              ${us.approved ? 'Approved' : 'Approve'}
+            </button>
+          </div>
+        `).join('');
 
     document.getElementById('search-engines-list').innerHTML = (state.global.search_engines || []).map((se, i) => `
       <div class="list-row">

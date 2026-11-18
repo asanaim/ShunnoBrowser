@@ -1,11 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod downloader;
+mod sanitizer;
 mod state;
 mod ui_chrome;
+mod userscripts;
 
-use downloader::{ShunnoGetDesktop, StreamProbeResult};
+use downloader::{DownloadTask, EnqueueOutcome, ShunnoGetDesktop, StreamProbeResult};
+use rand::Rng;
 use regex::Regex;
+use sanitizer::{extract_host, sanitize_url};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -14,18 +18,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tao::dpi::{LogicalPosition, LogicalSize};
-use tao::event::{Event, WindowEvent};
+use tao::event::{ElementState, Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::KeyCode;
 use tao::window::{Fullscreen, Window, WindowBuilder};
+use userscripts::{list_user_scripts, load_approved_user_scripts, user_scripts_dir, UserScriptInfo};
 use wry::{Rect, WebView, WebViewBuilder};
 
 use state::{
-    extract_host, sanitize_url, BookmarkEntry, BrowserStorage, GlobalSettings, HistoryEntry,
-    SavedTab, SearchEngine, SitePolicy, APP_VERSION,
+    BookmarkEntry, BrowserStorage, GlobalSettings, HistoryEntry, SavedTab, SearchEngine,
+    SitePolicy, APP_VERSION,
 };
 
 const CHROME_BAR_HEIGHT: f64 = 86.0;
+const DOCK_PANEL_WIDTH: f64 = 440.0;
+const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
     ChromeIpc(String),
@@ -34,6 +41,7 @@ enum AppEvent {
     NewWindowBlockedOrOpened(String),
     NativeStreamCaptured(usize, String),
     StreamSizeResolved(usize, StreamProbeResult),
+    TabAudioChanged(usize, bool),
     RefreshChrome,
 }
 
@@ -43,6 +51,8 @@ struct BrowserTab {
     url: String,
     cookie: Option<String>,
     incognito: bool,
+    playing_audio: bool,
+    muted: bool,
     webview: WebView,
 }
 
@@ -59,6 +69,8 @@ struct TabSummary {
     title: String,
     url: String,
     incognito: bool,
+    playing_audio: bool,
+    muted: bool,
 }
 
 #[derive(Serialize)]
@@ -75,692 +87,38 @@ struct ChromeSnapshot {
     streams: Vec<SniffedStreamItem>,
     bookmarks: Vec<BookmarkEntry>,
     history: Vec<HistoryEntry>,
-    downloads: Vec<downloader::DownloadTask>,
+    userscripts: Vec<UserScriptInfo>,
+    duplicate_alert: Option<DownloadTask>,
+    downloads: Vec<DownloadTask>,
 }
 
-fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_js: &str) -> String {
-    let mut script = String::new();
+fn generate_ipc_token() -> String {
+    let mut rng = rand::thread_rng();
+    let a: u64 = rng.gen();
+    let b: u64 = rng.gen();
+    format!("{:016x}{:016x}", a, b)
+}
 
-    // 1. Background Media Playback (Page Visibility API lock)
-    if global.background_media_play {
-        script.push_str(
-            r#"
-            (function() {
-                try {
-                    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-                    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-                    window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
-                    document.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
-                } catch(e) {}
-            })();
-            "#,
-        );
-    }
-
-    // 2. Early Pre-Roll YouTube Ad Stripper + Direct Stream Extractor (for IDM Floating Pill on YouTube)
-    if policy.adblock || policy.sponsorblock {
-        script.push_str(
-            r#"
-            (function() {
-                window.__shunnoYtStreams = [];
-
-                function harvestYtStreams(obj) {
-                    try {
-                        const sd = obj && obj.streamingData;
-                        if (!sd) return;
-                        const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
-                        const title = (obj.videoDetails && obj.videoDetails.title) || document.title.replace(' - YouTube', '') || 'YouTube_Video';
-                        const found = [];
-                        for (const f of all) {
-                            if (f && f.url && String(f.url).startsWith('http')) {
-                                const mime = String(f.mimeType || '');
-                                const isAudio = mime.startsWith('audio/');
-                                const ext = isAudio ? '.M4A' : (mime.includes('webm') ? '.WEBM' : '.MP4');
-                                const qual = f.qualityLabel || (isAudio ? (Math.round((f.bitrate || 128000)/1000) + 'kbps Audio') : 'Video');
-                                found.push({
-                                    url: f.url,
-                                    ext: ext,
-                                    name: `${qual} - ${title}${ext.toLowerCase()}`
-                                });
-                            }
-                        }
-                        if (found.length > 0) {
-                            window.__shunnoYtStreams = found;
-                            if (window.__shunnoSyncYtStreams) window.__shunnoSyncYtStreams(found);
-                        }
-                    } catch(e) {}
-                }
-
-                function stripAdFields(obj) {
-                    if (!obj || typeof obj !== 'object') return obj;
-                    try {
-                        if ('streamingData' in obj) harvestYtStreams(obj);
-                        if ('adPlacements' in obj) { obj.adPlacements = []; delete obj.adPlacements; }
-                        if ('playerAds' in obj) { obj.playerAds = []; delete obj.playerAds; }
-                        if ('adSlots' in obj) { obj.adSlots = []; delete obj.adSlots; }
-                        if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
-                        if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) {
-                            delete obj.auxiliaryUi.messageRenderers;
-                        }
-                        if (obj.playerConfig && obj.playerConfig.ssapConfig) {
-                            delete obj.playerConfig.ssapConfig;
-                        }
-                    } catch(e) {}
-                    return obj;
-                }
-
-                let _ytPlayerResp = undefined;
-                try {
-                    Object.defineProperty(window, 'ytInitialPlayerResponse', {
-                        configurable: true,
-                        get() { return _ytPlayerResp; },
-                        set(val) { _ytPlayerResp = stripAdFields(val); }
-                    });
-                } catch(e) {}
-
-                const origParse = JSON.parse;
-                JSON.parse = function(text, reviver) {
-                    const res = origParse.apply(this, arguments);
-                    if (res && typeof res === 'object' && ('adPlacements' in res || 'playerAds' in res || 'adSlots' in res || 'streamingData' in res)) {
-                        stripAdFields(res);
-                    }
-                    return res;
-                };
-
-                const origRespJson = Response.prototype.json;
-                Response.prototype.json = function() {
-                    return origRespJson.apply(this, arguments).then(data => stripAdFields(data));
-                };
-
-                const origXhrText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText');
-                if (origXhrText && origXhrText.get) {
-                    Object.defineProperty(XMLHttpRequest.prototype, 'responseText', {
-                        configurable: true,
-                        get() {
-                            const txt = origXhrText.get.call(this);
-                            if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"'))) {
-                                try {
-                                    const parsed = origParse(txt);
-                                    stripAdFields(parsed);
-                                    return JSON.stringify(parsed);
-                                } catch(e) {}
-                            }
-                            return txt;
-                        }
-                    });
-                }
-            })();
-            "#,
-        );
-    }
-
-    // 3. Full Dark Mode Injection when toggled ON
-    if global.full_dark_mode {
-        script.push_str(
-            r#"
-            (function() {
-                const st = document.createElement('style');
-                st.id = 'shunno-full-dark';
-                st.textContent = `
-                    html { filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; }
-                    img, video, picture, canvas, svg, [style*="background-image"] {
-                        filter: invert(1) hue-rotate(180deg) !important;
-                    }
-                `;
-                document.documentElement.appendChild(st);
-            })();
-            "#,
-        );
-    }
-
-    // 4. Network Sniffer + AdBlocker + Floating Download Menu + Drag-and-Drop Floating Basket
-    let adblock_flag = if policy.adblock { "true" } else { "false" };
-    let basket_flag = if global.drop_basket_enabled { "true" } else { "false" };
-    script.push_str(&format!(
-        r#"
-        (function() {{
-            const ADBLOCK_ON = {adblock_flag};
-            const BASKET_ON = {basket_flag};
-            const AD_HOSTS = [
-                'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
-                'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
-                'popads.net', 'popcash.net', 'propellerads.com', 'exoclick.com',
-                'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com',
-                'youtube.com/pagead/', 'youtube.com/api/stats/ads', 'youtube.com/ptracking'
-            ];
-            const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.m4s', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
-            const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.apk', '.pdf', '.dmg', '.deb'];
-            const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
-            const capturedStreams = [];
-            const probedSizes = new Map();
-
-            function requestSizeProbe(targetUrl) {{
-                if (!targetUrl || probedSizes.has(targetUrl) || !window.ipc) return;
-                probedSizes.set(targetUrl, 'Probing...');
-                window.ipc.postMessage('PROBE_STREAM:' + JSON.stringify({{
-                    url: targetUrl,
-                    referer: location.href,
-                    cookie: document.cookie || ''
-                }}));
-            }}
-
-            function addCapturedStream(rawUrl, kindHint) {{
-                if (!rawUrl || !String(rawUrl).startsWith('http')) return;
-                const urlStr = String(rawUrl);
-                if (urlStr.startsWith('blob:')) return;
-                if (capturedStreams.some(s => s.url === urlStr)) return;
-                const cleanPath = urlStr.split('?')[0].toLowerCase();
-                const ext = ALL_EXTS.find(e => cleanPath.endsWith(e)) || kindHint || '.mp4';
-                let labelName = 'Stream ' + ext.toUpperCase();
-                try {{
-                    const seg = cleanPath.split('/').pop();
-                    if (seg && seg.length > 2) labelName = decodeURIComponent(seg);
-                }} catch(e) {{}}
-                capturedStreams.unshift({{ url: urlStr, ext: ext.toUpperCase(), name: labelName }});
-                if (capturedStreams.length > 20) capturedStreams.pop();
-                requestSizeProbe(urlStr);
-                if (window.ipc) window.ipc.postMessage('STREAM:' + urlStr);
-            }}
-
-            window.__shunnoOnStreamProbed = function(info) {{
-                if (!info || !info.url) return;
-                probedSizes.set(info.url, info.size_label || 'Stream');
-                const item = capturedStreams.find(s => s.url === info.url);
-                if (item && info.resolved_name) {{
-                    item.name = info.resolved_name;
-                }}
-                if (window.__shunnoRefreshFloatingPill) {{
-                    window.__shunnoRefreshFloatingPill(info.url, info.size_label);
-                }}
-            }};
-
-            function inspectUrl(raw) {{
-                if (!raw) return false;
-                const str = String(raw);
-                const lower = str.toLowerCase();
-                const cleanLower = lower.split('?')[0];
-                if (ADBLOCK_ON && AD_HOSTS.some(h => lower.includes(h))) {{
-                    if (window.ipc) window.ipc.postMessage('AD_BLOCKED');
-                    return true;
-                }}
-                if (ALL_EXTS.some(ext => cleanLower.endsWith(ext)) && str.startsWith('http')) {{
-                    addCapturedStream(str);
-                }}
-                return false;
-            }}
-
-            const origFetch = window.fetch;
-            window.fetch = function(input, init) {{
-                const u = (typeof input === 'string') ? input : (input && input.url);
-                if (inspectUrl(u)) return Promise.reject(new Error('Blocked by Shunno AdBlock'));
-                return origFetch.apply(this, arguments);
-            }};
-
-            const origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url) {{
-                if (inspectUrl(url)) {{
-                    this._shunnoBlocked = true;
-                    return;
-                }}
-                return origOpen.apply(this, arguments);
-            }};
-            const origSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.send = function() {{
-                if (this._shunnoBlocked) return;
-                return origSend.apply(this, arguments);
-            }};
-
-            function triggerShunnoGet(targetUrl, threads) {{
-                if (!window.ipc || !targetUrl) return;
-                const payload = JSON.stringify({{
-                    url: targetUrl,
-                    threads: threads || 16,
-                    referer: location.href,
-                    cookie: document.cookie || ''
-                }});
-                window.ipc.postMessage('FLOAT_DL:' + payload);
-            }}
-
-            function installFloatingOverlay() {{
-                if (!document.documentElement || document.getElementById('shunno-float-host')) return;
-
-                const host = document.createElement('div');
-                host.id = 'shunno-float-host';
-                host.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
-                const shadow = host.attachShadow({{ mode: 'open' }});
-
-                shadow.innerHTML = `
-                    <style>
-                        .pill {{
-                            position: fixed;
-                            pointer-events: auto;
-                            display: none;
-                            align-items: center;
-                            gap: 6px;
-                            background: rgba(24, 24, 27, 0.94);
-                            backdrop-filter: blur(14px);
-                            color: #FFFFFF;
-                            border: 1px solid rgba(255, 255, 255, 0.24);
-                            border-radius: 10px;
-                            padding: 6px 11px;
-                            font-family: system-ui, "Segoe UI", sans-serif;
-                            font-size: 12px;
-                            font-weight: 600;
-                            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
-                            cursor: pointer;
-                            transition: transform 0.12s ease, background 0.12s ease;
-                        }}
-                        .pill:hover {{
-                            background: #0A84FF;
-                            transform: translateY(-1px);
-                        }}
-                        .badge {{
-                            background: #30D158;
-                            color: #000;
-                            font-size: 10px;
-                            font-weight: 800;
-                            padding: 1px 6px;
-                            border-radius: 5px;
-                        }}
-                        .menu {{
-                            position: fixed;
-                            pointer-events: auto;
-                            display: none;
-                            flex-direction: column;
-                            gap: 6px;
-                            min-width: 290px;
-                            max-width: 390px;
-                            background: rgba(24, 24, 27, 0.97);
-                            backdrop-filter: blur(18px);
-                            color: #fff;
-                            border: 1px solid rgba(255, 255, 255, 0.24);
-                            border-radius: 12px;
-                            padding: 10px;
-                            font-family: system-ui, "Segoe UI", sans-serif;
-                            font-size: 12px;
-                            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
-                        }}
-                        .menu-hdr {{
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            font-weight: 700;
-                            font-size: 12px;
-                            color: #30D158;
-                            border-bottom: 1px solid rgba(255,255,255,0.14);
-                            padding-bottom: 6px;
-                        }}
-                        .row {{
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            gap: 8px;
-                            padding: 6px 7px;
-                            border-radius: 8px;
-                            background: rgba(255,255,255,0.08);
-                        }}
-                        .row:hover {{ background: rgba(10,132,255,0.35); }}
-                        .name {{
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-                            white-space: nowrap;
-                            flex: 1;
-                            font-size: 11.5px;
-                        }}
-                        .go {{
-                            background: #0A84FF;
-                            color: #fff;
-                            border: none;
-                            border-radius: 6px;
-                            padding: 4px 9px;
-                            font-size: 11px;
-                            font-weight: 700;
-                            cursor: pointer;
-                            flex-shrink: 0;
-                        }}
-                        .go:hover {{ background: #30D158; color: #000; }}
-                        .basket {{
-                            position: fixed;
-                            right: 16px;
-                            bottom: 16px;
-                            pointer-events: auto;
-                            display: ${{BASKET_ON ? 'flex' : 'none'}};
-                            align-items: center;
-                            gap: 6px;
-                            background: rgba(10, 132, 255, 0.90);
-                            backdrop-filter: blur(12px);
-                            color: #fff;
-                            border: 1.5px dashed rgba(255, 255, 255, 0.65);
-                            border-radius: 14px;
-                            padding: 7px 12px;
-                            font-family: system-ui, "Segoe UI", sans-serif;
-                            font-size: 11.5px;
-                            font-weight: 700;
-                            box-shadow: 0 8px 24px rgba(10, 132, 255, 0.35);
-                            cursor: pointer;
-                            transition: all 0.15s ease;
-                        }}
-                        .basket.dragover {{
-                            background: #30D158;
-                            color: #000;
-                            transform: scale(1.08);
-                            border-style: solid;
-                        }}
-                    </style>
-                    <div class="pill" id="pill">
-                        <span class="badge">0↓</span>
-                        <span id="pill-text">Download</span>
-                        <span style="opacity:0.75">▾</span>
-                    </div>
-                    <div class="menu" id="menu"></div>
-                    <div class="basket" id="basket" title="Drag & drop any link or URL here to start a 16-thread download">
-                        <span>0↓</span>
-                        <span id="basket-label">Drop Link</span>
-                    </div>
-                `;
-                document.documentElement.appendChild(host);
-
-                const pill = shadow.getElementById('pill');
-                const pillText = shadow.getElementById('pill-text');
-                const menu = shadow.getElementById('menu');
-                const basket = shadow.getElementById('basket');
-                const basketLabel = shadow.getElementById('basket-label');
-                let activeItems = [];
-                let activeBaseLabel = 'Download';
-                let hideTimer = null;
-
-                basket.addEventListener('dragover', (e) => {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    basket.classList.add('dragover');
-                    basketLabel.textContent = 'Release to Get!';
-                }});
-                basket.addEventListener('dragleave', (e) => {{
-                    e.preventDefault();
-                    basket.classList.remove('dragover');
-                    basketLabel.textContent = 'Drop Link';
-                }});
-                basket.addEventListener('drop', (e) => {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    basket.classList.remove('dragover');
-                    const dropped = (e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'))) || '';
-                    const urls = dropped.split(/\r?\n/).map(s => s.trim()).filter(s => s.startsWith('http'));
-                    if (urls.length > 0) {{
-                        urls.forEach(u => triggerShunnoGet(u, 16));
-                        basketLabel.textContent = `Queued (${{urls.length}})!`;
-                        setTimeout(() => {{ basketLabel.textContent = 'Drop Link'; }}, 1400);
-                    }} else {{
-                        basketLabel.textContent = 'Drop Link';
-                    }}
-                }});
-                basket.addEventListener('click', () => {{
-                    if (window.ipc) window.ipc.postMessage('KEY:j');
-                }});
-
-                window.__shunnoRefreshFloatingPill = function(url, sizeLabel) {{
-                    if (activeItems.length === 1 && activeItems[0].url === url && pill.style.display !== 'none') {{
-                        pillText.textContent = `${{activeBaseLabel}} (${{sizeLabel}})`;
-                    }}
-                }};
-
-                function scheduleHide() {{
-                    clearTimeout(hideTimer);
-                    hideTimer = setTimeout(() => {{
-                        if (!pill.matches(':hover') && !menu.matches(':hover')) {{
-                            pill.style.display = 'none';
-                            menu.style.display = 'none';
-                        }}
-                    }}, 650);
-                }}
-
-                pill.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-                pill.addEventListener('mouseleave', scheduleHide);
-                menu.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-                menu.addEventListener('mouseleave', scheduleHide);
-
-                function showPillAt(x, y, baseLabel, items) {{
-                    if (!items || items.length === 0) return;
-                    clearTimeout(hideTimer);
-                    activeItems = items;
-                    activeBaseLabel = baseLabel;
-                    items.forEach(it => requestSizeProbe(it.url));
-
-                    if (items.length === 1) {{
-                        const sz = probedSizes.get(items[0].url);
-                        pillText.textContent = sz ? `${{baseLabel}} (${{sz}})` : baseLabel;
-                    }} else {{
-                        pillText.textContent = `${{baseLabel}} (${{items.length}})`;
-                    }}
-
-                    const left = Math.min(window.innerWidth - 230, Math.max(8, x));
-                    const top = Math.min(window.innerHeight - 48, Math.max(8, y));
-                    pill.style.left = left + 'px';
-                    pill.style.top = top + 'px';
-                    pill.style.display = 'inline-flex';
-                }}
-
-                pill.addEventListener('click', (e) => {{
-                    e.stopPropagation();
-                    if (activeItems.length === 1) {{
-                        triggerShunnoGet(activeItems[0].url, 16);
-                        pill.style.display = 'none';
-                        return;
-                    }}
-                    menu.innerHTML = `<div class="menu-hdr"><span>⚡ Shunno Get (${{activeItems.length}} streams)</span><span style="cursor:pointer;color:#aaa" id="m-close">✕</span></div>` +
-                        activeItems.map((it, i) => `
-                            <div class="row">
-                                <span class="badge">${{it.ext.replace('.', '')}} • ${{probedSizes.get(it.url) || '...'}}</span>
-                                <span class="name" title="${{it.url}}">${{it.name}}</span>
-                                <button class="go" data-idx="${{i}}">16T</button>
-                            </div>
-                        `).join('');
-                    menu.style.left = pill.style.left;
-                    menu.style.top = (parseFloat(pill.style.top) + 34) + 'px';
-                    menu.style.display = 'flex';
-                    shadow.getElementById('m-close').onclick = () => {{ menu.style.display = 'none'; }};
-                    menu.querySelectorAll('.go').forEach(btn => {{
-                        btn.onclick = () => {{
-                            const idx = parseInt(btn.getAttribute('data-idx'), 10);
-                            if (activeItems[idx]) triggerShunnoGet(activeItems[idx].url, 16);
-                            menu.style.display = 'none';
-                            pill.style.display = 'none';
-                        }};
-                    }});
-                }});
-
-                document.addEventListener('mouseover', (e) => {{
-                    const target = e.target;
-                    if (!target || !target.closest) return;
-
-                    const playerContainer = target.closest('video, audio, .html5-video-player, #movie_player');
-                    if (playerContainer) {{
-                        const videoEl = playerContainer.matches('video, audio')
-                            ? playerContainer
-                            : playerContainer.querySelector('video, audio');
-                        const rect = playerContainer.getBoundingClientRect();
-                        if (rect.width >= 140 && rect.height >= 50) {{
-                            const items = [];
-                            if (videoEl) {{
-                                const directSrc = videoEl.currentSrc || videoEl.src;
-                                if (directSrc && directSrc.startsWith('http')) {{
-                                    addCapturedStream(directSrc, videoEl.tagName === 'AUDIO' ? '.m4a' : '.mp4');
-                                }}
-                                videoEl.querySelectorAll('source').forEach(s => {{
-                                    if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
-                                }});
-                            }}
-                            if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {{
-                                window.__shunnoYtStreams.forEach(ys => {{
-                                    if (!items.some(x => x.url === ys.url)) items.push(ys);
-                                }});
-                            }}
-                            capturedStreams.forEach(s => {{
-                                if (!items.some(x => x.url === s.url)) items.push(s);
-                            }});
-                            if (items.length === 0 && location.hostname.includes('youtube.com')) {{
-                                items.push({{
-                                    url: location.href,
-                                    ext: '.MP4',
-                                    name: (document.title || 'YouTube Video').replace(' - YouTube', '')
-                                }});
-                            }}
-                            if (items.length > 0) {{
-                                const kind = (videoEl && videoEl.tagName === 'AUDIO') ? 'Download audio' : 'Download video';
-                                showPillAt(rect.right - 215, Math.max(8, rect.top + 12), kind, items);
-                                return;
-                            }}
-                        }}
-                    }}
-
-                    const linkEl = target.closest('a[href]');
-                    if (linkEl && linkEl.href && linkEl.href.startsWith('http')) {{
-                        const cleanHref = linkEl.href.split('?')[0].toLowerCase();
-                        const matchedExt = ALL_EXTS.find(ext => cleanHref.endsWith(ext));
-                        if (matchedExt) {{
-                            const rect = linkEl.getBoundingClientRect();
-                            let fname = 'File ' + matchedExt;
-                            try {{
-                                fname = decodeURIComponent(cleanHref.split('/').pop() || fname);
-                            }} catch(e) {{}}
-                            showPillAt(
-                                rect.left,
-                                rect.top - 34,
-                                'Download ' + matchedExt.toUpperCase(),
-                                [{{ url: linkEl.href, ext: matchedExt.toUpperCase(), name: fname }}]
-                            );
-                        }}
-                    }}
-                }}, true);
-
-                document.addEventListener('mouseout', (e) => {{
-                    if (e.target && e.target.closest && e.target.closest('video, audio, .html5-video-player, #movie_player, a[href]')) {{
-                        scheduleHide();
-                    }}
-                }}, true);
-            }}
-
-            if (document.documentElement) installFloatingOverlay();
-            window.addEventListener('DOMContentLoaded', () => {{
-                if (window.ipc) {{
-                    window.ipc.postMessage('META:' + JSON.stringify({{
-                        title: document.title,
-                        url: location.href,
-                        cookie: document.cookie || ''
-                    }}));
-                }}
-                document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {{
-                    if (el.src) inspectUrl(el.src);
-                }});
-                installFloatingOverlay();
-            }});
-
-            window.__shunnoSyncYtStreams = function(list) {{
-                if (!Array.isArray(list)) return;
-                list.forEach(it => {{
-                    if (it && it.url && !capturedStreams.some(s => s.url === it.url)) {{
-                        capturedStreams.push(it);
-                        requestSizeProbe(it.url);
-                    }}
-                }});
-            }};
-
-            document.addEventListener('keydown', (e) => {{
-                if (e.key === 'F11') {{
-                    e.preventDefault();
-                    if (window.ipc) window.ipc.postMessage('KEY:f11');
-                }} else if (e.ctrlKey && !e.shiftKey && !e.altKey) {{
-                    const k = e.key.toLowerCase();
-                    if (k === 't' || k === 'w' || k === 'j') {{
-                        e.preventDefault();
-                        if (window.ipc) window.ipc.postMessage('KEY:' + k);
-                    }}
-                }}
-            }});
-        }})();
-        "#
-    ));
-
-    // 5. Per-Site Controls: JavaScript Gate, Image Blocker, Desktop UA, & Fast YouTube Ad Skipper
-    if !policy.js_enabled {
-        script.push_str(
-            r#"
-            (function() {
-                window.addEventListener('DOMContentLoaded', () => {
-                    document.querySelectorAll('script').forEach(s => s.remove());
-                });
-            })();
-            "#,
-        );
-    }
-
-    if !policy.images_enabled {
-        script.push_str(
-            r#"
-            (function() {
-                const st = document.createElement('style');
-                st.textContent = 'img, picture, svg, video[poster], [style*="background-image"] { display: none !important; background-image: none !important; }';
-                document.documentElement.appendChild(st);
-            })();
-            "#,
-        );
-    }
-
-    if policy.desktop_ua {
-        script.push_str(
-            r#"
-            (function() {
-                try {
-                    Object.defineProperty(navigator, 'userAgent', {
-                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0'
-                    });
-                } catch(e) {}
-            })();
-            "#,
-        );
-    }
-
-    if policy.adblock || policy.sponsorblock || policy.auto_reject_cookies {
-        let hide_ads = if policy.adblock || policy.sponsorblock {
-            "ytd-reel-shelf-renderer, ytd-rich-section-renderer, ytd-ad-slot-renderer, ytd-banner-promo-renderer, #masthead-ad, .ad-showing .ytp-ad-player-overlay, .ytp-ad-module, ins.adsbygoogle, [id^=\"google_ads_\"], [class*=\"taboola\"], [class*=\"outbrain\"] { display: none !important; }"
-        } else {
-            ""
-        };
-        let auto_skip = if policy.sponsorblock { "true" } else { "false" };
-        let reject_cookies = if policy.auto_reject_cookies { "true" } else { "false" };
-
-        script.push_str(&format!(
-            r#"
-            (function() {{
-                const st = document.createElement('style');
-                st.textContent = `{hide_ads}`;
-                document.documentElement.appendChild(st);
-
-                setInterval(() => {{
-                    if ({auto_skip}) {{
-                        const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button');
-                        if (sk) sk.click();
-                        const adShowing = document.querySelector('.ad-showing, .ad-interrupting');
-                        const v = document.querySelector('video');
-                        if (v && adShowing) {{
-                            v.muted = true;
-                            if (isFinite(v.duration) && v.duration > 0) {{
-                                v.currentTime = v.duration;
-                            }} else {{
-                                v.playbackRate = 16.0;
-                            }}
-                        }}
-                    }}
-                    if ({reject_cookies}) {{
-                        document.querySelectorAll('[id*="reject"], [class*="reject"], #onetrust-reject-all-handler, .fc-cta-do-not-consent').forEach(b => b.click());
-                    }}
-                }}, 150);
-            }})();
-            "#
-        ));
-    }
+fn build_content_init_script(
+    policy: &SitePolicy,
+    global: &GlobalSettings,
+    ipc_token: &str,
+    user_js: &str,
+) -> String {
+    let mut script = CONTENT_GUARD_JS
+        .replace("__SHUNNO_IPC_TOKEN__", ipc_token)
+        .replace("__SHUNNO_ADBLOCK__", if policy.adblock { "true" } else { "false" })
+        .replace("__SHUNNO_SPONSORBLOCK__", if policy.sponsorblock { "true" } else { "false" })
+        .replace("__SHUNNO_REJECT_COOKIES__", if policy.auto_reject_cookies { "true" } else { "false" })
+        .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
+        .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
+        .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
+        .replace("__SHUNNO_JS_DISABLED__", if !policy.js_enabled { "true" } else { "false" })
+        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
+        .replace("__SHUNNO_DESKTOP_UA__", if policy.desktop_ua { "true" } else { "false" });
 
     if !user_js.is_empty() {
+        script.push('\n');
         script.push_str(user_js);
     }
 
@@ -768,18 +126,46 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
 }
 
 #[cfg(windows)]
-fn attach_native_webview2_interceptor(
+fn set_webview_muted(webview: &WebView, muted: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+
+    let controller = webview.controller();
+    unsafe {
+        if let Ok(core) = controller.CoreWebView2() {
+            if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
+                let _ = core8.SetIsMuted(muted);
+                return;
+            }
+        }
+    }
+    let js = format!("document.querySelectorAll('video,audio').forEach(m => m.muted = {});", muted);
+    let _ = webview.evaluate_script(&js);
+}
+
+#[cfg(not(windows))]
+fn set_webview_muted(webview: &WebView, muted: bool) {
+    let js = format!("document.querySelectorAll('video,audio').forEach(m => m.muted = {});", muted);
+    let _ = webview.evaluate_script(&js);
+}
+
+#[cfg(windows)]
+fn attach_native_webview2_hooks(
     webview: &WebView,
     tab_id: usize,
     adblock_enabled: bool,
     proxy: EventLoopProxy<AppEvent>,
 ) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2, ICoreWebView2_8,
         ICoreWebView2WebResourceResponse,
     };
-    use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+    use webview2_com::{
+        take_pwstr, IsDocumentPlayingAudioChangedEventHandler, WebResourceRequestedEventHandler,
+    };
     use windows::core::{w, Interface, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::BOOL;
     use windows::Win32::System::Com::IStream;
     use wry::WebViewExtWindows;
 
@@ -788,6 +174,24 @@ fn attach_native_webview2_interceptor(
         let Ok(core) = controller.CoreWebView2() else {
             return;
         };
+
+        // 1. Native Tab Audio Playing State Listener (ICoreWebView2_8)
+        if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
+            let mut audio_token = Default::default();
+            let audio_proxy = proxy.clone();
+            let audio_handler = IsDocumentPlayingAudioChangedEventHandler::create(Box::new(move |sender, _| {
+                if let Some(wv8) = sender {
+                    let mut playing = BOOL::default();
+                    if wv8.IsDocumentPlayingAudio(&mut playing).is_ok() {
+                        let _ = audio_proxy.send_event(AppEvent::TabAudioChanged(tab_id, playing.as_bool()));
+                    }
+                }
+                Ok(())
+            }));
+            let _ = core8.add_IsDocumentPlayingAudioChanged(&audio_handler, &mut audio_token);
+        }
+
+        // 2. Native AdBlocker & Stream Sniffer (ICoreWebView2_2)
         let Ok(core2) = core.cast::<ICoreWebView2_2>() else {
             return;
         };
@@ -843,13 +247,14 @@ fn attach_native_webview2_interceptor(
                         PCWSTR::null(),
                     )?;
                     let _ = args.SetResponse(&empty_resp);
-                    let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "AD_BLOCKED".to_string()));
+                    let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
                     return Ok(());
                 }
 
+                // Skip .m4s / .ts chunk spam to keep UI fast and responsive
                 const MEDIA_EXTS: &[&str] = &[
-                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".m4s", ".flac", ".alac", ".m4a",
-                    ".wav", ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
+                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".flac", ".alac", ".m4a", ".wav",
+                    ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
                 ];
 
                 if uri.starts_with("http") && MEDIA_EXTS.iter().any(|ext| clean_lower.ends_with(ext)) {
@@ -864,7 +269,7 @@ fn attach_native_webview2_interceptor(
 }
 
 #[cfg(not(windows))]
-fn attach_native_webview2_interceptor(
+fn attach_native_webview2_hooks(
     _webview: &WebView,
     _tab_id: usize,
     _adblock_enabled: bool,
@@ -878,14 +283,14 @@ fn create_tab_webview(
     url: &str,
     policy: &SitePolicy,
     global: &GlobalSettings,
+    ipc_token: &str,
     proxy: EventLoopProxy<AppEvent>,
-    drawer_open: bool,
 ) -> wry::Result<WebView> {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let content_h = (size.height - CHROME_BAR_HEIGHT).max(100.0);
     let host = extract_host(url);
-    let user_js = BrowserStorage::load_matching_user_scripts(&host);
-    let init_script = build_content_init_script(policy, global, &user_js);
+    let user_js = load_approved_user_scripts(&host, &global.approved_script_hashes);
+    let init_script = build_content_init_script(policy, global, ipc_token, &user_js);
 
     let ipc_proxy = proxy.clone();
     let dl_proxy = proxy.clone();
@@ -911,16 +316,24 @@ fn create_tab_webview(
         })
         .build()?;
 
-    attach_native_webview2_interceptor(&wv, tab_id, policy.adblock, proxy);
+    attach_native_webview2_hooks(&wv, tab_id, policy.adblock, proxy);
 
     let _ = wv.set_visible(true);
     Ok(wv)
 }
 
+/// Non-Overlapping Split Layout:
+/// When a drawer/popover is open, `chrome_wv` occupies the top bar + right docked panel `(w - panel_w, CHROME_BAR_HEIGHT, panel_w, content_h)`
+/// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
+/// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
 fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], active_idx: usize, drawer_open: bool) {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let w = size.width.max(400.0);
     let h = size.height.max(300.0);
+    let content_h = (h - CHROME_BAR_HEIGHT).max(100.0);
+
+    let panel_w = if drawer_open { DOCK_PANEL_WIDTH.min(w * 0.65) } else { 0.0 };
+    let left_w = (w - panel_w).max(240.0);
 
     let chrome_h = if drawer_open { h } else { CHROME_BAR_HEIGHT };
     let _ = chrome_wv.set_bounds(Rect {
@@ -928,13 +341,11 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
         size: LogicalSize::new(w, chrome_h).into(),
     });
 
-    let content_h = (h - CHROME_BAR_HEIGHT).max(100.0);
     for (idx, tab) in tabs.iter().enumerate() {
         let _ = tab.webview.set_bounds(Rect {
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
-            size: LogicalSize::new(w, content_h).into(),
+            size: LogicalSize::new(left_w, content_h).into(),
         });
-        // Keep active tab visible behind the compact floating popover!
         let _ = tab.webview.set_visible(idx == active_idx);
     }
 }
@@ -946,18 +357,22 @@ fn main() -> wry::Result<()> {
         .expect("Failed to start Tokio runtime");
     let rt_handle = rt.handle().clone();
 
+    let ipc_token = generate_ipc_token();
     let mut global_settings = BrowserStorage::load_global_settings();
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
     let mut history = BrowserStorage::load_history();
-    let engine = Arc::new(ShunnoGetDesktop::new(global_settings.speed_limit_bps));
+    let engine = Arc::new(ShunnoGetDesktop::new(
+        global_settings.speed_limit_bps,
+        global_settings.auto_clean_completed,
+    ));
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
         .with_title("Shunno Browser")
-        .with_inner_size(LogicalSize::new(1220.0, 780.0))
+        .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
 
@@ -965,7 +380,7 @@ fn main() -> wry::Result<()> {
     let chrome_wv = WebViewBuilder::new_as_child(&window)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(1220.0, CHROME_BAR_HEIGHT).into(),
+            size: LogicalSize::new(1240.0, CHROME_BAR_HEIGHT).into(),
         })
         .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
@@ -979,6 +394,7 @@ fn main() -> wry::Result<()> {
     let mut drawer_open = false;
     let mut blocked_count: usize = 0;
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
+    let mut duplicate_alert: Option<DownloadTask> = None;
 
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
@@ -991,23 +407,34 @@ fn main() -> wry::Result<()> {
         let host = extract_host(&u);
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-        if let Ok(wv) = create_tab_webview(&window, tid, &u, &pol, &global_settings, proxy.clone(), false) {
+        if let Ok(wv) = create_tab_webview(&window, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone()) {
             tabs.push(BrowserTab {
                 id: tid,
                 title: u.clone(),
                 url: u,
                 cookie: None,
                 incognito: false,
+                playing_audio: false,
+                muted: false,
                 webview: wv,
             });
         }
     }
 
+    // Lightweight periodic refresh ONLY when a download is actively running
     let ticker_proxy = proxy.clone();
+    let ticker_engine = engine.clone();
     rt_handle.spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            let _ = ticker_proxy.send_event(AppEvent::RefreshChrome);
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            let has_active = ticker_engine
+                .tasks
+                .lock()
+                .map(|l| l.iter().any(|t| t.status == "DOWNLOADING" || t.status == "MUXING"))
+                .unwrap_or(false);
+            if has_active {
+                let _ = ticker_proxy.send_event(AppEvent::RefreshChrome);
+            }
         }
     });
 
@@ -1020,11 +447,13 @@ fn main() -> wry::Result<()> {
                              sniffed_streams: &[SniffedStreamItem],
                              bookmarks: &[BookmarkEntry],
                              history: &[HistoryEntry],
+                             duplicate_alert: &Option<DownloadTask>,
                              engine: &ShunnoGetDesktop| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_host = extract_host(&active_url);
         let site = site_policies.get(&active_host).cloned().unwrap_or_default();
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
+        let scripts = list_user_scripts(&global_settings.approved_script_hashes);
 
         let snap = ChromeSnapshot {
             version: APP_VERSION,
@@ -1036,6 +465,8 @@ fn main() -> wry::Result<()> {
                     title: t.title.clone(),
                     url: t.url.clone(),
                     incognito: t.incognito,
+                    playing_audio: t.playing_audio,
+                    muted: t.muted,
                 })
                 .collect(),
             active_tab: active_idx,
@@ -1047,6 +478,8 @@ fn main() -> wry::Result<()> {
             streams: sniffed_streams.to_vec(),
             bookmarks: bookmarks.to_vec(),
             history: history.to_vec(),
+            userscripts: scripts,
+            duplicate_alert: duplicate_alert.clone(),
             downloads,
         };
 
@@ -1070,10 +503,21 @@ fn main() -> wry::Result<()> {
             }
 
             Event::WindowEvent {
+                event: WindowEvent::Focused(false),
+                ..
+            } => {
+                if global_settings.auto_pip_on_blur {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("if (window.__shunnoTogglePiP) window.__shunnoTogglePiP();");
+                    }
+                }
+            }
+
+            Event::WindowEvent {
                 event: WindowEvent::KeyboardInput { event: key_ev, .. },
                 ..
             } => {
-                if key_ev.physical_key == KeyCode::F11 && key_ev.state == tao::event::ElementState::Pressed {
+                if key_ev.physical_key == KeyCode::F11 && key_ev.state == ElementState::Pressed {
                     let is_fs = window.fullscreen().is_some();
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -1107,6 +551,26 @@ fn main() -> wry::Result<()> {
                     &sniffed_streams,
                     &bookmarks,
                     &history,
+                    &duplicate_alert,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::TabAudioChanged(tab_id, playing)) => {
+                if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.playing_audio = playing;
+                }
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
                     &engine,
                 );
             }
@@ -1170,7 +634,10 @@ fn main() -> wry::Result<()> {
                     .get(active_tab_idx)
                     .map(|t| (Some(t.url.clone()), t.cookie.clone()))
                     .unwrap_or((None, None));
-                engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, cookie_val);
+                match engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, cookie_val, false) {
+                    EnqueueOutcome::Started(_) => { duplicate_alert = None; }
+                    EnqueueOutcome::DuplicateDetected(existing) => { duplicate_alert = Some(existing); }
+                }
                 drawer_open = true;
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
@@ -1184,6 +651,7 @@ fn main() -> wry::Result<()> {
                     &sniffed_streams,
                     &bookmarks,
                     &history,
+                    &duplicate_alert,
                     &engine,
                 );
             }
@@ -1201,13 +669,15 @@ fn main() -> wry::Result<()> {
                     let host = extract_host(&clean);
                     let pol = site_policies.get(&host).cloned().unwrap_or_default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                    if let Ok(wv) = create_tab_webview(&window, tid, &clean, &pol, &global_settings, proxy.clone(), drawer_open) {
+                    if let Ok(wv) = create_tab_webview(&window, tid, &clean, &pol, &global_settings, &ipc_token, proxy.clone()) {
                         tabs.push(BrowserTab {
                             id: tid,
                             title: clean.clone(),
                             url: clean,
                             cookie: None,
                             incognito: false,
+                            playing_audio: false,
+                            muted: false,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -1224,13 +694,30 @@ fn main() -> wry::Result<()> {
                     &sniffed_streams,
                     &bookmarks,
                     &history,
+                    &duplicate_alert,
                     &engine,
                 );
             }
 
-            Event::UserEvent(AppEvent::ContentIpc(tab_id, msg)) => {
+            Event::UserEvent(AppEvent::ContentIpc(tab_id, raw_msg)) => {
+                // Verify per-launch cryptographic IPC token before processing any message from content WebView
+                let msg = if let Some(inner) = raw_msg.strip_prefix("INTERNAL|") {
+                    inner
+                } else if let Some((tok, body)) = raw_msg.split_once('|') {
+                    if tok != ipc_token {
+                        return;
+                    }
+                    body
+                } else {
+                    return;
+                };
+
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
+                } else if let Some(aud_flag) = msg.strip_prefix("AUDIO_STATE:") {
+                    if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.playing_audio = aud_flag == "1";
+                    }
                 } else if let Some(probe_json) = msg.strip_prefix("PROBE_STREAM:") {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(probe_json) {
                         let target_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1252,7 +739,10 @@ fn main() -> wry::Result<()> {
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if dl_url.starts_with("http") {
-                            engine.enqueue(&rt_handle, dl_url, threads, referer, cookie);
+                            match engine.enqueue(&rt_handle, dl_url, threads, referer, cookie, false) {
+                                EnqueueOutcome::Started(_) => { duplicate_alert = None; }
+                                EnqueueOutcome::DuplicateDetected(existing) => { duplicate_alert = Some(existing); }
+                            }
                             drawer_open = true;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
@@ -1260,12 +750,17 @@ fn main() -> wry::Result<()> {
                     }
                 } else if let Some(key_cmd) = msg.strip_prefix("KEY:") {
                     match key_cmd {
+                        "f11" => {
+                            let is_fs = window.fullscreen().is_some();
+                            window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        }
                         "t" => {
                             let start = "https://duckduckgo.com".to_string();
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                            if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, proxy.clone(), drawer_open) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, webview: wv });
+                            if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
@@ -1281,11 +776,6 @@ fn main() -> wry::Result<()> {
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
                         }
-                        "f11" => {
-                            let is_fs = window.fullscreen().is_some();
-                            window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
-                        }
                         "j" => {
                             drawer_open = true;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -1297,15 +787,8 @@ fn main() -> wry::Result<()> {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(html_payload) {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("snapshot");
                         let html = val.get("html").and_then(|v| v.as_str()).unwrap_or("");
-                        let safe_name = title
-                            .chars()
-                            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
-                            .take(40)
-                            .collect::<String>()
-                            .trim()
-                            .replace(' ', "_");
-                        let fname = if safe_name.is_empty() { "snapshot.html".to_string() } else { format!("{}.html", safe_name) };
-                        let out = BrowserStorage::downloads_root_dir().join(&fname);
+                        let safe_name = downloader::sanitize_download_filename(&format!("{}.html", title.replace(' ', "_")));
+                        let out = BrowserStorage::downloads_root_dir().join(&safe_name);
                         let _ = fs::write(out, html);
                     }
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
@@ -1371,6 +854,7 @@ fn main() -> wry::Result<()> {
                     &sniffed_streams,
                     &bookmarks,
                     &history,
+                    &duplicate_alert,
                     &engine,
                 );
             }
@@ -1380,9 +864,16 @@ fn main() -> wry::Result<()> {
                     let is_fs = window.fullscreen().is_some();
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
-                } else if let Some(open_flag) = cmd.strip_prefix("DRAWER_OPEN:") {
-                    drawer_open = open_flag == "1";
+                } else if cmd.starts_with("DRAWER_OPEN:") {
+                    drawer_open = true;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                } else if cmd == "DRAWER_CLOSE" {
+                    drawer_open = false;
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                } else if cmd == "TRIGGER_PIP" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("if (window.__shunnoTogglePiP) window.__shunnoTogglePiP();");
+                    }
                 } else if cmd == "BACK" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("history.back();");
@@ -1400,6 +891,7 @@ fn main() -> wry::Result<()> {
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
                         tab.url = clean.clone();
+                        tab.playing_audio = false;
                         let _ = tab.webview.load_url(&clean);
                     }
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
@@ -1407,13 +899,15 @@ fn main() -> wry::Result<()> {
                     let start = "https://duckduckgo.com".to_string();
                     let pol = SitePolicy::default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                    if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, proxy.clone(), drawer_open) {
+                    if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
                         tabs.push(BrowserTab {
                             id: tid,
                             title: if is_incog { "Private Tab".to_string() } else { "New Tab".to_string() },
                             url: start,
                             cookie: None,
                             incognito: is_incog,
+                            playing_audio: false,
+                            muted: false,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -1424,6 +918,13 @@ fn main() -> wry::Result<()> {
                         if idx < tabs.len() {
                             active_tab_idx = idx;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        }
+                    }
+                } else if let Some(idx_str) = cmd.strip_prefix("TOGGLE_MUTE_TAB:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if let Some(tab) = tabs.get_mut(idx) {
+                            tab.muted = !tab.muted;
+                            set_webview_muted(&tab.webview, tab.muted);
                         }
                     }
                 } else if cmd == "CLOSE_ACTIVE_TAB" {
@@ -1485,6 +986,13 @@ fn main() -> wry::Result<()> {
                             BrowserStorage::save_global_settings(&global_settings);
                         }
                     }
+                } else if let Some(sha) = cmd.strip_prefix("TOGGLE_SCRIPT:") {
+                    if let Some(pos) = global_settings.approved_script_hashes.iter().position(|h| h == sha) {
+                        global_settings.approved_script_hashes.remove(pos);
+                    } else {
+                        global_settings.approved_script_hashes.push(sha.to_string());
+                    }
+                    BrowserStorage::save_global_settings(&global_settings);
                 } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
                     let mut reload_active = false;
                     match gkey {
@@ -1497,6 +1005,11 @@ fn main() -> wry::Result<()> {
                             reload_active = true;
                         }
                         "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
+                        "auto_pip" => global_settings.auto_pip_on_blur = !global_settings.auto_pip_on_blur,
+                        "auto_clean" => {
+                            global_settings.auto_clean_completed = !global_settings.auto_clean_completed;
+                            engine.auto_clean_completed.store(global_settings.auto_clean_completed, Ordering::SeqCst);
+                        }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
                         _ => {}
@@ -1510,14 +1023,18 @@ fn main() -> wry::Result<()> {
                             let current_url = tab.url.clone();
                             let prev_cookie = tab.cookie.clone();
                             let is_incog = tab.incognito;
+                            let is_muted = tab.muted;
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                            if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &pol, &global_settings, proxy.clone(), drawer_open) {
+                            if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                                if is_muted { set_webview_muted(&new_wv, true); }
                                 tabs[active_tab_idx] = BrowserTab {
                                     id: tid,
                                     title: tab.title.clone(),
                                     url: current_url,
                                     cookie: prev_cookie,
                                     incognito: is_incog,
+                                    playing_audio: false,
+                                    muted: is_muted,
                                     webview: new_wv,
                                 };
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -1543,14 +1060,18 @@ fn main() -> wry::Result<()> {
                         let current_url = tab.url.clone();
                         let prev_cookie = tab.cookie.clone();
                         let is_incog = tab.incognito;
+                        let is_muted = tab.muted;
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                        if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, proxy.clone(), drawer_open) {
+                        if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone()) {
+                            if is_muted { set_webview_muted(&new_wv, true); }
                             tabs[active_tab_idx] = BrowserTab {
                                 id: tid,
                                 title: tab.title.clone(),
                                 url: current_url,
                                 cookie: prev_cookie,
                                 incognito: is_incog,
+                                playing_audio: false,
+                                muted: is_muted,
                                 webview: new_wv,
                             };
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -1612,11 +1133,14 @@ fn main() -> wry::Result<()> {
                     BrowserStorage::save_history(&history);
                 } else if cmd == "SAVE_OFFLINE_HTML" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let js = "if (window.ipc) window.ipc.postMessage('OFFLINE_HTML:' + JSON.stringify({ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }));";
-                        let _ = tab.webview.evaluate_script(js);
+                        let js = format!(
+                            "if (window.ipc) window.ipc.postMessage('{}|OFFLINE_HTML:' + JSON.stringify({{ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }}));",
+                            ipc_token
+                        );
+                        let _ = tab.webview.evaluate_script(&js);
                     }
                 } else if cmd == "OPEN_SCRIPTS_FOLDER" {
-                    let dir = BrowserStorage::user_scripts_dir();
+                    let dir = user_scripts_dir();
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
                 } else if cmd == "OPEN_BIN_FOLDER" {
                     let dir = BrowserStorage::ffmpeg_bin_dir();
@@ -1624,6 +1148,17 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "OPEN_DOWNLOADS_FOLDER" {
                     let dir = BrowserStorage::downloads_root_dir();
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if cmd == "CLEAR_COMPLETED_DL" {
+                    engine.clear_completed();
+                } else if cmd == "DISMISS_DUP" {
+                    duplicate_alert = None;
+                } else if let Some(force_url) = cmd.strip_prefix("FORCE_DL:") {
+                    duplicate_alert = None;
+                    let (ref_url, cookie_val) = tabs
+                        .get(active_tab_idx)
+                        .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                        .unwrap_or((None, None));
+                    let _ = engine.enqueue(&rt_handle, force_url.to_string(), global_settings.default_threads, ref_url, cookie_val, true);
                 } else if let Some(limit_str) = cmd.strip_prefix("SET_SPEED_LIMIT:") {
                     if let Ok(bps) = limit_str.parse::<u64>() {
                         global_settings.speed_limit_bps = bps;
@@ -1663,12 +1198,18 @@ fn main() -> wry::Result<()> {
                                     for i in start..=end.min(start + 100) {
                                         let num = format!("{:0width$}", i, width = width);
                                         let expanded = line.replace(full_m, &num);
-                                        engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), cookie_val.clone());
+                                        match engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), cookie_val.clone(), false) {
+                                            EnqueueOutcome::Started(_) => {}
+                                            EnqueueOutcome::DuplicateDetected(ex) => { duplicate_alert = Some(ex); }
+                                        }
                                     }
                                     continue;
                                 }
                             }
-                            engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone());
+                            match engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone(), false) {
+                                EnqueueOutcome::Started(_) => {}
+                                EnqueueOutcome::DuplicateDetected(ex) => { duplicate_alert = Some(ex); }
+                            }
                         }
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_PAUSE:") {
@@ -1705,6 +1246,7 @@ fn main() -> wry::Result<()> {
                     &sniffed_streams,
                     &bookmarks,
                     &history,
+                    &duplicate_alert,
                     &engine,
                 );
             }

@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use url::Url;
 
-pub const APP_VERSION: &str = "v1.0.0";
+pub const APP_VERSION: &str = "v1.1.0";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
@@ -63,6 +62,12 @@ pub struct GlobalSettings {
     pub strip_tracking_params: bool,
     pub block_popups: bool,
     pub drop_basket_enabled: bool,
+    #[serde(default)]
+    pub auto_pip_on_blur: bool,
+    #[serde(default)]
+    pub auto_clean_completed: bool,
+    #[serde(default)]
+    pub approved_script_hashes: Vec<String>,
     pub default_threads: usize,
     pub speed_limit_bps: u64,
     pub active_search_engine: usize,
@@ -77,6 +82,9 @@ impl Default for GlobalSettings {
             strip_tracking_params: true,
             block_popups: true,
             drop_basket_enabled: true,
+            auto_pip_on_blur: false,
+            auto_clean_completed: false,
+            approved_script_hashes: Vec::new(),
             default_threads: 16,
             speed_limit_bps: 0,
             active_search_engine: 0,
@@ -142,55 +150,6 @@ impl BrowserStorage {
             }
         }
         None
-    }
-
-    pub fn user_scripts_dir() -> PathBuf {
-        let dir = Self::downloads_root_dir().join("scripts");
-        let _ = fs::create_dir_all(&dir);
-        let readme = dir.join("README_UserScripts.txt");
-        if !readme.exists() {
-            let _ = fs::write(
-                readme,
-                "Drop any .js user-script files into this folder.\n\
-                 Optional header: // @match example.com\n\
-                 Scripts matching the active domain run automatically on page load.",
-            );
-        }
-        dir
-    }
-
-    pub fn load_matching_user_scripts(host: &str) -> String {
-        let dir = Self::user_scripts_dir();
-        let mut combined = String::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("js") {
-                    if let Ok(code) = fs::read_to_string(&path) {
-                        let matches = if let Some(match_line) = code
-                            .lines()
-                            .find(|l| l.trim_start().starts_with("// @match"))
-                        {
-                            let pattern = match_line
-                                .trim_start()
-                                .trim_start_matches("// @match")
-                                .trim()
-                                .trim_matches('*')
-                                .trim_matches('/');
-                            pattern.is_empty() || host.contains(pattern)
-                        } else {
-                            true
-                        };
-                        if matches {
-                            combined.push_str("\ntry {\n");
-                            combined.push_str(&code);
-                            combined.push_str("\n} catch(e) { console.error('Shunno UserScript:', e); }\n");
-                        }
-                    }
-                }
-            }
-        }
-        combined
     }
 
     pub fn load_global_settings() -> GlobalSettings {
@@ -337,84 +296,4 @@ impl BrowserStorage {
             let _ = fs::write(path, json);
         }
     }
-}
-
-pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "https://duckduckgo.com".to_string();
-    }
-    let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else if trimmed.contains('.') && !trimmed.contains(' ') {
-        format!("https://{}", trimmed)
-    } else {
-        let encoded: String = trimmed
-            .bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    (b as char).to_string()
-                }
-                b' ' => "+".to_string(),
-                _ => format!("%{:02X}", b),
-            })
-            .collect();
-
-        let template = global
-            .search_engines
-            .get(global.active_search_engine)
-            .map(|e| e.query_url.as_str())
-            .unwrap_or("https://duckduckgo.com/?q=%s");
-
-        if template.contains("%s") {
-            template.replace("%s", &encoded)
-        } else {
-            format!("{}{}", template, encoded)
-        }
-    };
-
-    if !global.strip_tracking_params {
-        return normalized;
-    }
-
-    let Ok(mut parsed) = Url::parse(&normalized) else {
-        return normalized;
-    };
-
-    let tracking_params = [
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_term",
-        "utm_content",
-        "fbclid",
-        "gclid",
-        "si",
-        "igshid",
-        "mc_cid",
-        "mc_eid",
-    ];
-
-    let filtered: Vec<(String, String)> = parsed
-        .query_pairs()
-        .filter(|(k, _)| !tracking_params.iter().any(|tp| k.eq_ignore_ascii_case(tp)))
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-
-    if filtered.len() != parsed.query_pairs().count() {
-        if filtered.is_empty() {
-            parsed.set_query(None);
-        } else {
-            parsed.query_pairs_mut().clear().extend_pairs(filtered);
-        }
-    }
-
-    parsed.to_string()
-}
-
-pub fn extract_host(url_str: &str) -> String {
-    Url::parse(url_str)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .unwrap_or_default()
 }
