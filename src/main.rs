@@ -703,7 +703,7 @@ fn attach_native_webview2_interceptor(
     proxy: EventLoopProxy<AppEvent>,
 ) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, EventRegistrationToken, ICoreWebView2_2,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2,
         ICoreWebView2WebResourceResponse,
     };
     use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
@@ -728,7 +728,7 @@ fn attach_native_webview2_interceptor(
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
         );
 
-        let mut token = EventRegistrationToken::default();
+        let mut token = Default::default();
         let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
             let Some(args) = args else {
                 return Ok(());
