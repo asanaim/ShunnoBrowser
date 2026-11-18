@@ -1,4 +1,4 @@
-name: Build Shunno Browser Rust Windows EXE
+name: Build Shunno Browser Full Rust Windows EXE
 
 on:
   push:
@@ -24,14 +24,19 @@ jobs:
         run: cargo build --release
 
       - name: Prepare Release EXE
+        shell: pwsh
         run: |
-          mkdir release-exe
-          copy target\release\ShunnoBrowser.exe release-exe\ShunnoBrowser.exe
+          New-Item -ItemType Directory -Force -Path release-exe | Out-Null
+          if (Test-Path "target\release\ShunnoBrowser.exe") {
+            Copy-Item "target\release\ShunnoBrowser.exe" "release-exe\ShunnoBrowser.exe" -Force
+          } else {
+            Get-ChildItem "target\release\*.exe" | Select-Object -First 1 | Copy-Item -Destination "release-exe\ShunnoBrowser.exe" -Force
+          }
 
       - name: Upload ShunnoBrowser Windows EXE Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShunnoBrowser-Rust-Windows-EXE
+          name: ShunnoBrowser-Full-Rust-Windows-EXE
           path: release-exe/ShunnoBrowser.exe
 
       - name: Publish 1-Click Direct Download Release
@@ -39,11 +44,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Shunno Browser v1.0 (Native Rust + Edge WebView2 + 32-Thread Shunno Get)"
+          name: "Shunno Browser v1.0 for Windows (Full NBPro + Brave Audio + 32-Thread Shunno Get)"
           make_latest: true
           body: |
-            ### Direct 1-Click Download for Windows 10 & 11 (~6 MB)
-            Full Naked Browser Pro alternative built in pure Rust + Edge WebView2 with multi-tab Cupertino bar, background YouTube audio, AdBlock, SponsorBlock, Reader Mode, OLED Force-Dark, and integrated 32-thread Shunno Get Download Manager:
+            ### Direct 1-Click Download for Windows 10 & 11 (Native Rust)
+            Full-featured Naked Browser Pro alternative built in pure Rust + Edge WebView2 with multi-tab browsing, Incognito tabs, Brave-style background YouTube audio, SponsorBlock, per-site JS/Image/Desktop/OLED toggles, UserScripts, portable bookmarks, and built-in 32-thread Shunno Get downloads:
             - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
           files: |
             release-exe/ShunnoBrowser.exe

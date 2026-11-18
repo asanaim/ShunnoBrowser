@@ -1,521 +1,819 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod downloader;
+mod state;
+mod ui_chrome;
 
-use downloader::{DownloadTask, ShunnoGetDesktop};
+use downloader::ShunnoGetDesktop;
+use regex::Regex;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::fs;
 use std::process::Command;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::window::{Window, WindowBuilder};
 use wry::{Rect, WebView, WebViewBuilder};
 
-const CHROME_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
-  body { background: #F2F2F7; color: #1C1C1E; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
-  .tab-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px; background: #E5E5EA; overflow-x: auto; }
-  .tab { display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 9px; background: rgba(255,255,255,0.55); font-size: 12px; cursor: pointer; max-width: 190px; }
-  .tab.active { background: #FFFFFF; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tab-close { color: #8E8E93; font-weight: bold; padding: 0 3px; border-radius: 4px; }
-  .tab-close:hover { background: #FFEBEA; color: #FF3B30; }
-  .new-tab-btn { padding: 4px 10px; border-radius: 8px; background: rgba(255,255,255,0.7); border: none; font-weight: bold; cursor: pointer; color: #0A84FF; }
-  .nav-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #FFFFFF; border-bottom: 1px solid #D1D1D6; }
-  .nav-btn { width: 30px; height: 30px; border-radius: 8px; border: none; background: #F2F2F7; color: #0A84FF; font-size: 15px; font-weight: bold; cursor: pointer; }
-  .nav-btn:hover { background: #E5E5EA; }
-  .url-box { flex: 1; height: 32px; border-radius: 10px; border: 1px solid #E5E5EA; background: #F2F2F7; padding: 0 12px; font-size: 13px; color: #1C1C1E; outline: none; user-select: text; }
-  .url-box:focus { background: #FFFFFF; border-color: #0A84FF; }
-  .pill-btn { height: 30px; padding: 0 11px; border-radius: 9px; border: none; background: #F2F2F7; color: #1C1C1E; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; }
-  .pill-btn.on { background: #EBF4FF; color: #0A84FF; }
-  .pill-btn.green { background: #E8F8EE; color: #248A3D; }
-  .drawer { position: fixed; top: 76px; right: 12px; width: 420px; max-height: calc(100vh - 90px); background: rgba(255,255,255,0.96); backdrop-filter: blur(20px); border-radius: 16px; box-shadow: 0 12px 36px rgba(0,0,0,0.22); border: 1px solid #D1D1D6; padding: 14px; overflow-y: auto; display: none; z-index: 9999; }
-  .drawer.open { display: block; }
-  .drawer h3 { font-size: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-  .row-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 10px; background: #F2F2F7; margin-bottom: 6px; font-size: 12.5px; }
-  .dl-card { padding: 10px; border-radius: 12px; background: #F2F2F7; margin-bottom: 8px; font-size: 12px; }
-  .prog-bg { height: 6px; background: #D1D1D6; border-radius: 3px; margin: 6px 0; overflow: hidden; }
-  .prog-fill { height: 100%; background: #0A84FF; transition: width 0.3s; }
-  .mini-btn { padding: 3px 8px; border-radius: 6px; border: none; font-size: 11px; font-weight: 600; cursor: pointer; margin-left: 4px; }
-</style>
-</head>
-<body>
-  <div class="tab-bar" id="tabBar">
-    <button class="new-tab-btn" onclick="ipc('NEW_TAB:https://duckduckgo.com')">+ Tab</button>
-  </div>
-  <div class="nav-bar">
-    <button class="nav-btn" onclick="ipc('BACK')" title="Back">‹</button>
-    <button class="nav-btn" onclick="ipc('FORWARD')" title="Forward">›</button>
-    <button class="nav-btn" onclick="ipc('RELOAD')" title="Reload">↻</button>
-    <input class="url-box" id="urlInput" placeholder="Search DuckDuckGo or enter URL..." onkeydown="if(event.key==='Enter') ipc('NAV:'+this.value)" />
-    <button class="pill-btn on" id="btnAdBlock" onclick="ipc('TOGGLE_ADBLOCK')">🛡️ AdBlock</button>
-    <button class="pill-btn on" id="btnBgAudio" onclick="ipc('TOGGLE_BGAUDIO')">🎧 YT Audio</button>
-    <button class="pill-btn" id="btnSpeed" onclick="ipc('CYCLE_SPEED')">⏩ 1.0×</button>
-    <button class="pill-btn" onclick="ipc('READER')" title="Clean Reader View">📖 Reader</button>
-    <button class="pill-btn" id="btnDark" onclick="ipc('TOGGLE_DARK')" title="OLED Force Dark">🌑 OLED</button>
-    <button class="pill-btn" onclick="ipc('FIND')" title="Find in Page">🔍 Find</button>
-    <button class="pill-btn" onclick="toggleDrawer('nbDrawer')">☰ NBPro</button>
-    <button class="pill-btn green" onclick="toggleDrawer('dlDrawer')" id="btnDownloads">⚡ Shunno Get (0)</button>
-  </div>
+use state::{
+    extract_host, sanitize_url, BookmarkEntry, BrowserStorage, GlobalSettings, HistoryEntry,
+    SavedTab, SitePolicy,
+};
 
-  <div class="drawer" id="nbDrawer">
-    <h3><span>NBPro Power Controls</span><button class="mini-btn" onclick="toggleDrawer('nbDrawer')">✕</button></h3>
-    <div class="row-item"><span>⚙️ Site JavaScript</span><button class="mini-btn" style="background:#0A84FF;color:#fff" onclick="ipc('TOGGLE_SITE_JS')">Toggle</button></div>
-    <div class="row-item"><span>🖼️ Site Images</span><button class="mini-btn" style="background:#0A84FF;color:#fff" onclick="ipc('TOGGLE_SITE_IMG')">Toggle</button></div>
-    <div class="row-item"><span>🎬 SponsorBlock &amp; Shorts Stripper</span><button class="mini-btn" style="background:#30D158;color:#fff" onclick="ipc('TOGGLE_SPONSOR')">Active</button></div>
-    <div class="row-item"><span>🍪 Auto-Reject Cookie Banners</span><button class="mini-btn" style="background:#30D158;color:#fff" onclick="ipc('TOGGLE_COOKIES')">Active</button></div>
-    <div class="row-item"><span>⭐ Bookmark Current Page</span><button class="mini-btn" style="background:#FF9F0A;color:#fff" onclick="ipc('ADD_BOOKMARK')">+ Save</button></div>
-    <div id="bookmarksList" style="margin-top:8px;"></div>
-  </div>
-
-  <div class="drawer" id="dlDrawer" style="width:460px;">
-    <h3><span>⚡ Shunno Get (32-Thread Engine)</span><button class="mini-btn" onclick="toggleDrawer('dlDrawer')">✕</button></h3>
-    <div style="display:flex;gap:6px;margin-bottom:10px;">
-      <input class="url-box" id="directDlUrl" placeholder="Paste URL, .flac, .mp4, .m3u8, or track_[01-12].flac..." style="height:30px;font-size:12px;" />
-      <select id="dlThreads" style="border-radius:8px;border:1px solid #D1D1D6;padding:0 6px;font-size:12px;">
-        <option value="8">8T</option>
-        <option value="16" selected>16T</option>
-        <option value="32">32T</option>
-        <option value="1">1T</option>
-      </select>
-      <button class="mini-btn" style="background:#0A84FF;color:#fff;padding:0 12px;" onclick="startManualDl()">Download</button>
-    </div>
-    <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:11.5px;">
-      <span>Speed Limit:
-        <select onchange="ipc('SPEED_LIMIT:'+this.value)" style="border-radius:6px;border:1px solid #D1D1D6;font-size:11px;">
-          <option value="0">Unlimited</option>
-          <option value="10485760">10 MB/s</option>
-          <option value="5242880">5 MB/s</option>
-          <option value="2097152">2 MB/s</option>
-        </select>
-      </span>
-      <a href="#" onclick="ipc('OPEN_FOLDER');return false;" style="color:#0A84FF;text-decoration:none;font-weight:600;">📂 Open Downloads Folder</a>
-    </div>
-    <div id="downloadsList"></div>
-  </div>
-
-<script>
-  function ipc(msg) { window.ipc.postMessage(msg); }
-  function toggleDrawer(id) {
-    const el = document.getElementById(id);
-    const wasOpen = el.classList.contains('open');
-    document.querySelectorAll('.drawer').forEach(d => d.classList.remove('open'));
-    if (!wasOpen) el.classList.add('open');
-  }
-  function startManualDl() {
-    const u = document.getElementById('directDlUrl').value.trim();
-    const t = document.getElementById('dlThreads').value;
-    if (u) {
-      ipc('START_DL:' + t + '|' + u);
-      document.getElementById('directDlUrl').value = '';
-    }
-  }
-  window.renderState = function(state) {
-    const tabBar = document.getElementById('tabBar');
-    const addBtn = tabBar.querySelector('.new-tab-btn');
-    tabBar.innerHTML = '';
-    state.tabs.forEach((t, idx) => {
-      const div = document.createElement('div');
-      div.className = 'tab' + (idx === state.activeTab ? ' active' : '');
-      div.innerHTML = `<span class="tab-title" onclick="ipc('SWITCH_TAB:${idx}')">${t.title || 'New Tab'}</span><span class="tab-close" onclick="ipc('CLOSE_TAB:${idx}')">✕</span>`;
-      tabBar.appendChild(div);
-    });
-    tabBar.appendChild(addBtn);
-
-    const urlInput = document.getElementById('urlInput');
-    if (document.activeElement !== urlInput && state.currentUrl) {
-      urlInput.value = state.currentUrl;
-    }
-
-    document.getElementById('btnAdBlock').className = 'pill-btn' + (state.adBlock ? ' on' : '');
-    document.getElementById('btnAdBlock').textContent = `🛡️ AdBlock (${state.blockedAds})`;
-    document.getElementById('btnBgAudio').className = 'pill-btn' + (state.bgAudio ? ' on' : '');
-    document.getElementById('btnSpeed').textContent = `⏩ ${state.speed}×`;
-    document.getElementById('btnDark').className = 'pill-btn' + (state.oledDark ? ' on' : '');
-    document.getElementById('btnDownloads').textContent = `⚡ Shunno Get (${state.downloads.length})`;
-
-    const dlList = document.getElementById('downloadsList');
-    dlList.innerHTML = state.downloads.map(d => {
-      const pct = d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)).toFixed(1) : (d.status === 'COMPLETED' ? 100 : 0);
-      const mbDone = (d.downloaded_bytes / 1048576).toFixed(1);
-      const mbTot = d.total_bytes > 0 ? (d.total_bytes / 1048576).toFixed(1) + ' MB' : '?';
-      const kbSec = (d.speed_bps / 1024).toFixed(0);
-      return `<div class="dl-card">
-        <div style="display:flex;justify-content:space-between;font-weight:600;">
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;">${d.file_name}</span>
-          <span>${mbDone} / ${mbTot}</span>
-        </div>
-        <div class="prog-bg"><div class="prog-fill" style="width:${pct}%;background:${d.status==='COMPLETED'?'#30D158':'#0A84FF'}"></div></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;color:#636366;font-size:11px;">
-          <span>${d.status} • ${d.threads}T • ${kbSec} KB/s ${d.segment_map}</span>
-          <div>
-            ${d.status==='DOWNLOADING' ? `<button class="mini-btn" style="background:#FFF5E5;color:#FF9F0A" onclick="ipc('PAUSE_DL:${d.id}')">Pause</button>` : ''}
-            ${d.status!=='COMPLETED' && d.status!=='DOWNLOADING' ? `<button class="mini-btn" style="background:#EBF4FF;color:#0A84FF" onclick="ipc('RESUME_DL:${d.id}')">Resume</button>` : ''}
-            ${d.status!=='COMPLETED' ? `<button class="mini-btn" style="background:#E5E5EA" onclick="const u=prompt('Paste fresh mirror URL:');if(u)ipc('FIX_DL:${d.id}|'+u)">Fix Link</button>` : ''}
-          </div>
-        </div>
-      </div>`;
-    }).join('');
-
-    const bmList = document.getElementById('bookmarksList');
-    bmList.innerHTML = state.bookmarks.map(b =>
-      `<div class="row-item"><span style="cursor:pointer;color:#0A84FF" onclick="ipc('NAV:${b[1]}')">★ ${b[0]}</span></div>`
-    ).join('');
-  };
-</script>
-</body>
-</html>
-"##;
-const PAGE_INJECT_SCRIPT: &str = r##"(function(){try{Object.defineProperty(document,'hidden',{get:()=>false,configurable:true});Object.defineProperty(document,'visibilityState',{get:()=>'visible',configurable:true});window.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);document.addEventListener('visibilitychange',e=>e.stopImmediatePropagation(),true);}catch(e){}const st=document.createElement('style');st.textContent='ytd-reel-shelf-renderer,ytd-rich-section-renderer,.ad-showing,.ytp-ad-module,ins.adsbygoogle,[id^="google_ads_"],[class*="taboola"],[class*="outbrain"]{display:none!important;}';document.documentElement.appendChild(st);setInterval(()=>{const sk=document.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern');if(sk)sk.click();document.querySelectorAll('[id*="reject"],#onetrust-reject-all-handler').forEach(b=>b.click());},900);})();"##;
-
-#[derive(Serialize)]
-struct TabInfo {
-    title: String,
-    url: String,
-}
-
-#[derive(Serialize)]
-struct UiStatePayload {
-    tabs: Vec<TabInfo>,
-    #[serde(rename = "activeTab")]
-    active_tab: usize,
-    #[serde(rename = "currentUrl")]
-    current_url: String,
-    #[serde(rename = "adBlock")]
-    ad_block: bool,
-    #[serde(rename = "blockedAds")]
-    blocked_ads: u64,
-    #[serde(rename = "bgAudio")]
-    bg_audio: bool,
-    speed: f32,
-    #[serde(rename = "oledDark")]
-    oled_dark: bool,
-    downloads: Vec<DownloadTask>,
-    bookmarks: Vec<(String, String)>,
-}
+const CHROME_BAR_HEIGHT: f64 = 86.0;
 
 enum AppEvent {
-    IpcCommand(String),
-    TriggerDownload(String),
-    SyncUi,
+    ChromeIpc(String),
+    ContentIpc(usize, String),
+    DownloadIntercepted(String),
+    NewWindowBlockedOrOpened(String),
+    RefreshChrome,
 }
 
 struct BrowserTab {
-    webview: WebView,
+    id: usize,
     title: String,
     url: String,
+    incognito: bool,
+    webview: WebView,
+}
+
+#[derive(Serialize)]
+struct TabSummary {
+    id: usize,
+    title: String,
+    url: String,
+    incognito: bool,
+}
+
+#[derive(Serialize)]
+struct ChromeSnapshot {
+    tabs: Vec<TabSummary>,
+    active_tab: usize,
+    active_url: String,
+    active_host: String,
+    site: SitePolicy,
+    global: GlobalSettings,
+    blocked_count: usize,
+    streams: Vec<String>,
+    bookmarks: Vec<BookmarkEntry>,
+    history: Vec<HistoryEntry>,
+    downloads: Vec<downloader::DownloadTask>,
+}
+
+fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_js: &str) -> String {
+    let mut script = String::new();
+
+    // 1. Brave-Style Background YouTube & Media Playback (Page Visibility API lock)
+    if global.background_youtube_play {
+        script.push_str(
+            r#"
+            (function() {
+                try {
+                    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+                    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+                    window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
+                    document.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
+                } catch(e) {}
+            })();
+            "#,
+        );
+    }
+
+    // 2. Network / Fetch / XHR Media & Lossless Audio Stream Sniffer + Ad/Tracker Blocker
+    let adblock_flag = if policy.adblock { "true" } else { "false" };
+    script.push_str(&format!(
+        r#"
+        (function() {{
+            const ADBLOCK_ON = {adblock_flag};
+            const AD_HOSTS = [
+                'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+                'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
+                'popads.net', 'popcash.net', 'propellerads.com', 'exoclick.com',
+                'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com'
+            ];
+            const MEDIA_EXTS = ['.mp4', '.m3u8', '.flac', '.m4a', '.wav', '.mp3', '.zip', '.iso', '.exe', '.msi', '.apk'];
+
+            function inspectUrl(raw) {{
+                if (!raw) return false;
+                const str = String(raw);
+                const lower = str.split('?')[0].toLowerCase();
+                if (ADBLOCK_ON && AD_HOSTS.some(h => lower.includes(h))) {{
+                    if (window.ipc) window.ipc.postMessage('AD_BLOCKED');
+                    return true;
+                }}
+                if (MEDIA_EXTS.some(ext => lower.endsWith(ext)) && str.startsWith('http')) {{
+                    if (window.ipc) window.ipc.postMessage('STREAM:' + str);
+                }}
+                return false;
+            }}
+
+            const origFetch = window.fetch;
+            window.fetch = function(input, init) {{
+                const u = (typeof input === 'string') ? input : (input && input.url);
+                if (inspectUrl(u)) return Promise.reject(new Error('Blocked by Shunno AdBlock'));
+                return origFetch.apply(this, arguments);
+            }};
+
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {{
+                if (inspectUrl(url)) {{
+                    this._shunnoBlocked = true;
+                    return;
+                }}
+                return origOpen.apply(this, arguments);
+            }};
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {{
+                if (this._shunnoBlocked) return;
+                return origSend.apply(this, arguments);
+            }};
+
+            window.addEventListener('DOMContentLoaded', () => {{
+                if (window.ipc) window.ipc.postMessage('META:' + JSON.stringify({{ title: document.title, url: location.href }}));
+                document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {{
+                    if (el.src) inspectUrl(el.src);
+                }});
+            }});
+        }})();
+        "#
+    ));
+
+    // 3. Per-Site NBPro Controls: JavaScript Gate, Image Blocker, Desktop User-Agent, OLED Force-Dark, SponsorBlock & Cookie Rejector
+    if !policy.js_enabled {
+        script.push_str(
+            r#"
+            (function() {
+                window.addEventListener('DOMContentLoaded', () => {
+                    document.querySelectorAll('script').forEach(s => s.remove());
+                });
+            })();
+            "#,
+        );
+    }
+
+    if !policy.images_enabled {
+        script.push_str(
+            r#"
+            (function() {
+                const st = document.createElement('style');
+                st.textContent = 'img, picture, svg, video[poster], [style*="background-image"] { display: none !important; background-image: none !important; }';
+                document.documentElement.appendChild(st);
+            })();
+            "#,
+        );
+    }
+
+    if policy.desktop_ua {
+        script.push_str(
+            r#"
+            (function() {
+                try {
+                    Object.defineProperty(navigator, 'userAgent', {
+                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+                    });
+                } catch(e) {}
+            })();
+            "#,
+        );
+    }
+
+    if policy.oled_dark {
+        script.push_str(
+            r#"
+            (function() {
+                const st = document.createElement('style');
+                st.textContent = 'html, body, div, section, article, main, header, footer, nav, aside { background-color: #000000 !important; color: #E5E5EA !important; border-color: #2C2C2E !important; } a { color: #0A84FF !important; }';
+                document.documentElement.appendChild(st);
+            })();
+            "#,
+        );
+    }
+
+    if policy.adblock || policy.sponsorblock || policy.auto_reject_cookies {
+        let hide_ads = if policy.adblock || policy.sponsorblock {
+            "ytd-reel-shelf-renderer, ytd-rich-section-renderer, .ad-showing, .ytp-ad-module, ins.adsbygoogle, [id^=\"google_ads_\"], [class*=\"taboola\"], [class*=\"outbrain\"] { display: none !important; }"
+        } else {
+            ""
+        };
+        let auto_skip = if policy.sponsorblock { "true" } else { "false" };
+        let reject_cookies = if policy.auto_reject_cookies { "true" } else { "false" };
+
+        script.push_str(&format!(
+            r#"
+            (function() {{
+                const st = document.createElement('style');
+                st.textContent = `{hide_ads}`;
+                document.documentElement.appendChild(st);
+
+                setInterval(() => {{
+                    if ({auto_skip}) {{
+                        const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+                        if (sk) sk.click();
+                        const v = document.querySelector('video');
+                        if (v && document.querySelector('.ad-showing')) {{
+                            v.playbackRate = 16.0;
+                            v.muted = true;
+                        }}
+                    }}
+                    if ({reject_cookies}) {{
+                        document.querySelectorAll('[id*="reject"], [class*="reject"], #onetrust-reject-all-handler, .fc-cta-do-not-consent').forEach(b => b.click());
+                    }}
+                }}, 900);
+            }})();
+            "#
+        ));
+    }
+
+    // 4. Custom User-Scripts (Downloads/ShunnoBrowser/scripts/*.js)
+    if !user_js.is_empty() {
+        script.push_str(user_js);
+    }
+
+    script
+}
+
+fn create_tab_webview(
+    window: &Window,
+    tab_id: usize,
+    url: &str,
+    policy: &SitePolicy,
+    global: &GlobalSettings,
+    proxy: EventLoopProxy<AppEvent>,
+    drawer_open: bool,
+) -> wry::Result<WebView> {
+    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let content_h = (size.height - CHROME_BAR_HEIGHT).max(100.0);
+    let host = extract_host(url);
+    let user_js = BrowserStorage::load_matching_user_scripts(&host);
+    let init_script = build_content_init_script(policy, global, &user_js);
+
+    let ipc_proxy = proxy.clone();
+    let dl_proxy = proxy.clone();
+    let win_proxy = proxy.clone();
+
+    let wv = WebViewBuilder::new_as_child(window)
+        .with_bounds(Rect {
+            position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
+            size: LogicalSize::new(size.width.max(400.0), content_h).into(),
+        })
+        .with_url(url)
+        .with_initialization_script(&init_script)
+        .with_ipc_handler(move |req| {
+            let _ = ipc_proxy.send_event(AppEvent::ContentIpc(tab_id, req.body().clone()));
+        })
+        .with_download_started_handler(move |dl_url, _dest| {
+            let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(dl_url));
+            false // Route to Shunno Get 32-Thread Engine
+        })
+        .with_new_window_req_handler(move |popup_url| {
+            let _ = win_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(popup_url));
+            false
+        })
+        .build()?;
+
+    let _ = wv.set_visible(!drawer_open);
+    Ok(wv)
+}
+
+fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], active_idx: usize, drawer_open: bool) {
+    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let w = size.width.max(400.0);
+    let h = size.height.max(300.0);
+
+    let chrome_h = if drawer_open { h } else { CHROME_BAR_HEIGHT };
+    let _ = chrome_wv.set_bounds(Rect {
+        position: LogicalPosition::new(0.0, 0.0).into(),
+        size: LogicalSize::new(w, chrome_h).into(),
+    });
+
+    let content_h = (h - CHROME_BAR_HEIGHT).max(100.0);
+    for (idx, tab) in tabs.iter().enumerate() {
+        let _ = tab.webview.set_bounds(Rect {
+            position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
+            size: LogicalSize::new(w, content_h).into(),
+        });
+        let _ = tab.webview.set_visible(!drawer_open && idx == active_idx);
+    }
 }
 
 fn main() -> wry::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("Tokio runtime failed");
+        .expect("Failed to start Tokio runtime");
     let rt_handle = rt.handle().clone();
-    let engine = Arc::new(ShunnoGetDesktop::new());
+
+    let mut global_settings = BrowserStorage::load_global_settings();
+    let mut site_policies = BrowserStorage::load_site_policies();
+    let mut bookmarks = BrowserStorage::load_bookmarks();
+    let mut history = BrowserStorage::load_history();
+    let engine = Arc::new(ShunnoGetDesktop::new(global_settings.speed_limit_bps));
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = std::rc::Rc::new(
-        WindowBuilder::new()
-            .with_title("Shunno Browser (Rust) — NBPro + Brave Background Audio + 32-Thread Shunno Get")
-            .with_inner_size(LogicalSize::new(1220.0, 800.0))
-            .build(&event_loop)
-            .unwrap(),
-    );
-
-    let win_size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let window = WindowBuilder::new()
+        .with_title("Shunno Browser — NBPro + Brave Background Audio + 32-Thread Shunno Get")
+        .with_inner_size(LogicalSize::new(1220.0, 780.0))
+        .build(&event_loop)
+        .unwrap();
 
     let chrome_proxy = proxy.clone();
-    let chrome_webview = WebViewBuilder::new_as_child(window.as_ref())
+    let chrome_wv = WebViewBuilder::new_as_child(&window)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(win_size.width, win_size.height).into(),
+            size: LogicalSize::new(1220.0, CHROME_BAR_HEIGHT).into(),
         })
-        .with_html(CHROME_HTML)
+        .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
-            let _ = chrome_loop_proxy.send_event(AppEvent::IpcCommand(req.body().to_string()));
+            let _ = chrome_proxy.send_event(AppEvent::ChromeIpc(req.body().clone()));
         })
         .build()?;
 
+    let next_tab_id = Arc::new(AtomicUsize::new(1));
     let mut tabs: Vec<BrowserTab> = Vec::new();
-    let mut active_tab: usize = 0;
+    let mut active_tab_idx: usize = 0;
+    let mut drawer_open = false;
+    let mut blocked_count: usize = 0;
+    let mut sniffed_streams: Vec<String> = Vec::new();
 
-    let tab_window = window.clone();
-    let tab_proxy = proxy.clone();
-    let make_content_tab = move |url: &str, w: f64, h: f64| -> wry::Result<BrowserTab> {
-        let dl_p = tab_proxy.clone();
-        let sync_p = tab_proxy.clone();
-        let wv = WebViewBuilder::new_as_child(tab_window.as_ref())
-            .with_bounds(Rect {
-                position: LogicalPosition::new(0.0, 74.0).into(),
-                size: LogicalSize::new(w, (h - 74.0).max(100.0)).into(),
-            })
-            .with_url(url)
-            .with_initialization_script(PAGE_INJECT_SCRIPT)
-            .with_download_started_handler(move |dl_url, _dest| {
-                let _ = dl_p.send_event(AppEvent::TriggerDownload(dl_url));
-                false
-            })
-            .with_on_page_load_handler(move |_ev, _u| {
-                let _ = sync_p.send_event(AppEvent::SyncUi);
-            })
-            .build()?;
-        Ok(BrowserTab {
-            webview: wv,
-            title: url.to_string(),
-            url: url.to_string(),
-        })
+    // Restore previous session or open default start page
+    let saved_session = BrowserStorage::load_session();
+    let initial_urls: Vec<String> = if saved_session.is_empty() {
+        vec!["https://duckduckgo.com".to_string()]
+    } else {
+        saved_session.into_iter().map(|t| t.url).collect()
     };
 
-    tabs.push(make_content_tab("https://duckduckgo.com", win_size.width, win_size.height)?);
+    for u in initial_urls {
+        let host = extract_host(&u);
+        let pol = site_policies.get(&host).cloned().unwrap_or_default();
+        let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(wv) = create_tab_webview(&window, tid, &u, &pol, &global_settings, proxy.clone(), false) {
+            tabs.push(BrowserTab {
+                id: tid,
+                title: u.clone(),
+                url: u,
+                incognito: false,
+                webview: wv,
+            });
+        }
+    }
 
-    let mut ad_block = true;
-    let blocked_ads = Arc::new(Mutex::new(0u64));
-    let mut bg_audio = true;
-    let mut playback_speed: f32 = 1.0;
-    let mut oled_dark = false;
-    let mut bookmarks: Vec<(String, String)> = vec![
-        ("DuckDuckGo".to_string(), "https://duckduckgo.com".to_string()),
-        ("Internet Archive Audio (FLAC)".to_string(), "https://archive.org/details/audio".to_string()),
-    ];
-
-    let tick_proxy = proxy.clone();
+    // Periodic background refresh timer to keep download progress bars & speeds updated smoothly
+    let ticker_proxy = proxy.clone();
     rt_handle.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            let _ = tick_loop_proxy.send_event(AppEvent::SyncUi);
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let _ = ticker_proxy.send_event(AppEvent::RefreshChrome);
         }
     });
 
-    let loop_proxy = proxy.clone();
+    let push_chrome_state = |chrome_wv: &WebView,
+                             tabs: &[BrowserTab],
+                             active_idx: usize,
+                             site_policies: &HashMap<String, SitePolicy>,
+                             global_settings: &GlobalSettings,
+                             blocked_count: usize,
+                             sniffed_streams: &[String],
+                             bookmarks: &[BookmarkEntry],
+                             history: &[HistoryEntry],
+                             engine: &ShunnoGetDesktop| {
+        let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
+        let active_host = extract_host(&active_url);
+        let site = site_policies.get(&active_host).cloned().unwrap_or_default();
+        let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
+
+        let snap = ChromeSnapshot {
+            tabs: tabs
+                .iter()
+                .map(|t| TabSummary {
+                    id: t.id,
+                    title: t.title.clone(),
+                    url: t.url.clone(),
+                    incognito: t.incognito,
+                })
+                .collect(),
+            active_tab: active_idx,
+            active_url,
+            active_host,
+            site,
+            global: global_settings.clone(),
+            blocked_count,
+            streams: sniffed_streams.to_vec(),
+            bookmarks: bookmarks.to_vec(),
+            history: history.to_vec(),
+            downloads,
+        };
+
+        if let Ok(json) = serde_json::to_string(&snap) {
+            let js = format!("if (window.renderChromeState) window.renderChromeState({});", json);
+            let _ = chrome_wv.evaluate_script(&js);
+        }
+    };
+
+    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+
     event_loop.run(move |event, _, control_flow| {
-        let _keep_rt_alive = &rt;
         *control_flow = ControlFlow::Wait;
+
         match event {
             Event::WindowEvent {
-                event: WindowEvent::Resized(new_size),
+                event: WindowEvent::Resized(_),
                 ..
             } => {
-                let logical = new_size.to_logical::<f64>(window.scale_factor());
-                let _ = chrome_webview.set_bounds(Rect {
-                    position: LogicalPosition::new(0.0, 0.0).into(),
-                    size: LogicalSize::new(logical.width, logical.height).into(),
-                });
-                for (idx, t) in tabs.iter().enumerate() {
-                    let h = if idx == active_tab { (logical.height - 74.0).max(100.0) } else { 0.0 };
-                    let _ = t.webview.set_bounds(Rect {
-                        position: LogicalPosition::new(0.0, 74.0).into(),
-                        size: LogicalSize::new(logical.width, h).into(),
-                    });
-                }
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
             }
-            Event::UserEvent(AppEvent::TriggerDownload(url)) => {
-                let referer = tabs.get(active_tab).map(|t| t.url.clone());
-                engine.enqueue(&rt_handle, url, 16, referer, None);
-                let _ = loop_proxy.send_event(AppEvent::SyncUi);
+
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                let to_save: Vec<SavedTab> = tabs
+                    .iter()
+                    .filter(|t| !t.incognito)
+                    .map(|t| SavedTab {
+                        title: t.title.clone(),
+                        url: t.url.clone(),
+                    })
+                    .collect();
+                BrowserStorage::save_session(&to_save);
+                *control_flow = ControlFlow::Exit;
             }
-            Event::UserEvent(AppEvent::IpcCommand(cmd)) => {
-                let cur_size = window.inner_size().to_logical::<f64>(window.scale_factor());
-                if let Some(target) = cmd.strip_prefix("NAV:") {
-                    let clean = if target.starts_with("http://") || target.starts_with("https://") {
-                        target.to_string()
-                    } else if target.contains('.') && !target.contains(' ') {
-                        format!("https://{}", target)
-                    } else {
-                        format!("https://duckduckgo.com/?q={}", target.replace(' ', "+"))
-                    };
-                    if let Some(t) = tabs.get_mut(active_tab) {
-                        t.url = clean.clone();
-                        t.title = clean.clone();
-                        let _ = t.webview.load_url(&clean);
+
+            Event::UserEvent(AppEvent::RefreshChrome) => {
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
+                let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
+                engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, None);
+                drawer_open = true;
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::NewWindowBlockedOrOpened(popup_url)) => {
+                let lower = popup_url.to_ascii_lowercase();
+                let is_ad_popup = lower.contains("popads")
+                    || lower.contains("popcash")
+                    || lower.contains("doubleclick")
+                    || lower.contains("propellerads");
+                if global_settings.block_popups && is_ad_popup {
+                    blocked_count += 1;
+                } else if popup_url.starts_with("http") {
+                    let clean = sanitize_url(&popup_url, global_settings.strip_tracking_params);
+                    let host = extract_host(&clean);
+                    let pol = site_policies.get(&host).cloned().unwrap_or_default();
+                    let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                    if let Ok(wv) = create_tab_webview(&window, tid, &clean, &pol, &global_settings, proxy.clone(), drawer_open) {
+                        tabs.push(BrowserTab {
+                            id: tid,
+                            title: clean.clone(),
+                            url: clean,
+                            incognito: false,
+                            webview: wv,
+                        });
+                        active_tab_idx = tabs.len() - 1;
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     }
+                }
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::ContentIpc(tab_id, msg)) => {
+                if msg == "AD_BLOCKED" {
+                    blocked_count += 1;
+                } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
+                    if !sniffed_streams.iter().any(|s| s == stream_url) {
+                        sniffed_streams.insert(0, stream_url.to_string());
+                        if sniffed_streams.len() > 25 {
+                            sniffed_streams.truncate(25);
+                        }
+                    }
+                } else if let Some(meta_json) = msg.strip_prefix("META:") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(meta_json) {
+                        let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                            if !title.is_empty() {
+                                tab.title = title.clone();
+                            }
+                            if !url.is_empty() {
+                                tab.url = url.clone();
+                                if !tab.incognito {
+                                    let now = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    history.insert(
+                                        0,
+                                        HistoryEntry {
+                                            title: if title.is_empty() { url.clone() } else { title },
+                                            url,
+                                            visited_at: now,
+                                        },
+                                    );
+                                    BrowserStorage::save_history(&history);
+                                }
+                            }
+                        }
+                    }
+                }
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::ChromeIpc(cmd)) => {
+                if let Some(open_flag) = cmd.strip_prefix("DRAWER_OPEN:") {
+                    drawer_open = open_flag == "1";
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd == "BACK" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("history.back()");
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("history.back();");
                     }
                 } else if cmd == "FORWARD" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("history.forward()");
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("history.forward();");
                     }
                 } else if cmd == "RELOAD" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("location.reload()");
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("location.reload();");
                     }
-                } else if let Some(u) = cmd.strip_prefix("NEW_TAB:") {
-                    if let Ok(new_t) = make_content_tab(u, cur_size.width, cur_size.height) {
-                        tabs.push(new_t);
-                        active_tab = tabs.len() - 1;
-                        for (idx, t) in tabs.iter().enumerate() {
-                            let h = if idx == active_tab { (cur_size.height - 74.0).max(100.0) } else { 0.0 };
-                            let _ = t.webview.set_bounds(Rect {
-                                position: LogicalPosition::new(0.0, 74.0).into(),
-                                size: LogicalSize::new(cur_size.width, h).into(),
-                            });
-                        }
+                } else if let Some(raw_nav) = cmd.strip_prefix("NAV:") {
+                    let clean = sanitize_url(raw_nav, global_settings.strip_tracking_params);
+                    sniffed_streams.clear();
+                    if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                        tab.url = clean.clone();
+                        let _ = tab.webview.load_url(&clean);
+                    }
+                } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
+                    let is_incog = cmd == "NEW_INCOGNITO";
+                    let start = "https://duckduckgo.com".to_string();
+                    let pol = SitePolicy::default();
+                    let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                    if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, proxy.clone(), drawer_open) {
+                        tabs.push(BrowserTab {
+                            id: tid,
+                            title: if is_incog { "Private Tab".to_string() } else { "New Tab".to_string() },
+                            url: start,
+                            incognito: is_incog,
+                            webview: wv,
+                        });
+                        active_tab_idx = tabs.len() - 1;
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("SWITCH_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
-                            active_tab = idx;
-                            for (i, t) in tabs.iter().enumerate() {
-                                let h = if i == active_tab { (cur_size.height - 74.0).max(100.0) } else { 0.0 };
-                                let _ = t.webview.set_bounds(Rect {
-                                    position: LogicalPosition::new(0.0, 74.0).into(),
-                                    size: LogicalSize::new(cur_size.width, h).into(),
-                                });
-                            }
+                            active_tab_idx = idx;
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if tabs.len() > 1 && idx < tabs.len() {
                             tabs.remove(idx);
-                            active_tab = active_tab.min(tabs.len() - 1);
-                            for (i, t) in tabs.iter().enumerate() {
-                                let h = if i == active_tab { (cur_size.height - 74.0).max(100.0) } else { 0.0 };
-                                let _ = t.webview.set_bounds(Rect {
-                                    position: LogicalPosition::new(0.0, 74.0).into(),
-                                    size: LogicalSize::new(cur_size.width, h).into(),
-                                });
+                            if active_tab_idx >= tabs.len() {
+                                active_tab_idx = tabs.len() - 1;
                             }
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
                     }
-                } else if cmd == "TOGGLE_ADBLOCK" {
-                    ad_block = !ad_block;
-                } else if cmd == "TOGGLE_BGAUDIO" {
-                    bg_audio = !bg_audio;
-                } else if cmd == "CYCLE_SPEED" {
-                    playback_speed = match playback_speed {
-                        s if s < 1.2 => 1.5,
-                        s if s < 1.8 => 2.0,
-                        s if s < 2.5 => 3.0,
-                        _ => 1.0,
-                    };
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script(&format!(
-                            "document.querySelectorAll('video,audio').forEach(v=>v.playbackRate={});",
-                            playback_speed
-                        ));
+                } else if cmd == "TOGGLE_BG_AUDIO" {
+                    global_settings.background_youtube_play = !global_settings.background_youtube_play;
+                    BrowserStorage::save_global_settings(&global_settings);
+                } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
+                    match gkey {
+                        "bg_audio" => global_settings.background_youtube_play = !global_settings.background_youtube_play,
+                        "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
+                        "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        _ => {}
                     }
-                } else if cmd == "READER" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script(
-                            "document.body.innerHTML='<div style=\"max-width:720px;margin:40px auto;font:19px/1.7 -apple-system,sans-serif;color:#1C1C1E\">'+document.body.innerText.split('\\n').map(p=>'<p style=\"margin-bottom:14px\">'+p+'</p>').join('')+'</div>'"
-                        );
+                    BrowserStorage::save_global_settings(&global_settings);
+                } else if let Some(skey) = cmd.strip_prefix("TOGGLE_SITE:") {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let host = extract_host(&tab.url);
+                        let pol = site_policies.entry(host.clone()).or_default();
+                        match skey {
+                            "adblock" => pol.adblock = !pol.adblock,
+                            "js_enabled" => pol.js_enabled = !pol.js_enabled,
+                            "images_enabled" => pol.images_enabled = !pol.images_enabled,
+                            "desktop_ua" => pol.desktop_ua = !pol.desktop_ua,
+                            "oled_dark" => pol.oled_dark = !pol.oled_dark,
+                            "sponsorblock" => pol.sponsorblock = !pol.sponsorblock,
+                            "auto_reject_cookies" => pol.auto_reject_cookies = !pol.auto_reject_cookies,
+                            _ => {}
+                        }
+                        let updated_pol = pol.clone();
+                        BrowserStorage::save_site_policies(&site_policies);
+
+                        // Recreate tab WebView with updated site policy & reload
+                        let current_url = tab.url.clone();
+                        let is_incog = tab.incognito;
+                        let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, proxy.clone(), drawer_open) {
+                            tabs[active_tab_idx] = BrowserTab {
+                                id: tid,
+                                title: tab.title.clone(),
+                                url: current_url,
+                                incognito: is_incog,
+                                webview: new_wv,
+                            };
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        }
                     }
-                } else if cmd == "TOGGLE_DARK" {
-                    oled_dark = !oled_dark;
-                    if let Some(t) = tabs.get(active_tab) {
-                        let script = if oled_dark {
-                            "document.documentElement.style.filter='invert(1) hue-rotate(180deg)';"
-                        } else {
-                            "document.documentElement.style.filter='none';"
-                        };
-                        let _ = t.webview.evaluate_script(script);
+                } else if let Some(spd) = cmd.strip_prefix("SET_PLAYBACK_SPEED:") {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let js = format!("document.querySelectorAll('video,audio').forEach(m => m.playbackRate = {});", spd);
+                        let _ = tab.webview.evaluate_script(&js);
                     }
-                } else if cmd == "FIND" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("const q=prompt('Find in page:');if(q)window.find(q);");
+                } else if cmd == "READER_MODE" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let js = r#"
+                            (function() {
+                                const text = (document.querySelector('article') || document.body).innerText;
+                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
+                                    text.split('\n').filter(p => p.trim().length > 0).map(p => '<p style="margin-bottom:16px;">' + p + '</p>').join('') + '</div>';
+                            })();
+                        "#;
+                        let _ = tab.webview.evaluate_script(js);
                     }
-                } else if cmd == "TOGGLE_SITE_JS" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("alert('Site JavaScript whitelist toggled.');");
+                } else if let Some(query) = cmd.strip_prefix("FIND:") {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let escaped = query.replace('\\', "\\\\").replace('\'', "\\'");
+                        let js = format!("if ('{}') window.find('{}', false, false, true);", escaped, escaped);
+                        let _ = tab.webview.evaluate_script(&js);
                     }
-                } else if cmd == "TOGGLE_SITE_IMG" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        let _ = t.webview.evaluate_script("document.querySelectorAll('img').forEach(i=>i.style.display=(i.style.display==='none'?'':'none'));");
+                } else if cmd == "FIND_NEXT" || cmd == "FIND_PREV" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let backwards = if cmd == "FIND_PREV" { "true" } else { "false" };
+                        let js = format!("window.find('', false, {}, true);", backwards);
+                        let _ = tab.webview.evaluate_script(&js);
                     }
                 } else if cmd == "ADD_BOOKMARK" {
-                    if let Some(t) = tabs.get(active_tab) {
-                        bookmarks.insert(0, (t.title.clone(), t.url.clone()));
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        if !bookmarks.iter().any(|b| b.url == tab.url) {
+                            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                            bookmarks.insert(0, BookmarkEntry {
+                                title: tab.title.clone(),
+                                url: tab.url.clone(),
+                                created_at: now,
+                            });
+                            BrowserStorage::save_bookmarks(&bookmarks);
+                        }
                     }
-                } else if let Some(dl_spec) = cmd.strip_prefix("START_DL:") {
-                    if let Some((t_str, raw_u)) = dl_spec.split_once('|') {
-                        let threads = t_str.parse::<usize>().unwrap_or(16);
-                        let referer = tabs.get(active_tab).map(|t| t.url.clone());
-                        if let (Some(lb), Some(rb)) = (raw_u.find('['), raw_u.find(']')) {
-                            if let Some((a_str, b_str)) = raw_u[lb + 1..rb].split_once('-') {
-                                if let (Ok(a), Ok(b)) = (a_str.parse::<u32>(), b_str.parse::<u32>()) {
-                                    let width = a_str.len();
-                                    for i in a..=b.min(a + 100) {
-                                        let num = format!("{:0width$}", i, width = width);
-                                        let expanded = format!("{}{}{}", &raw_u[..lb], num, &raw_u[rb + 1..]);
-                                        engine.enqueue(&rt_handle, expanded, threads, referer.clone(), None);
-                                    }
+                } else if let Some(idx_str) = cmd.strip_prefix("DEL_BOOKMARK:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < bookmarks.len() {
+                            bookmarks.remove(idx);
+                            BrowserStorage::save_bookmarks(&bookmarks);
+                        }
+                    }
+                } else if cmd == "EXPORT_TXT_BOOKMARKS" {
+                    let _ = BrowserStorage::export_portable_txt_bookmarks(&bookmarks);
+                } else if cmd == "IMPORT_TXT_BOOKMARKS" {
+                    let _ = BrowserStorage::import_portable_txt_bookmarks(&mut bookmarks);
+                } else if cmd == "CLEAR_HISTORY" {
+                    history.clear();
+                    BrowserStorage::save_history(&history);
+                } else if cmd == "SAVE_OFFLINE_HTML" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let safe_name = tab
+                            .title
+                            .chars()
+                            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                            .take(40)
+                            .collect::<String>()
+                            .trim()
+                            .replace(' ', "_");
+                        let fname = if safe_name.is_empty() { "snapshot.html".to_string() } else { format!("{}.html", safe_name) };
+                        let out = BrowserStorage::downloads_root_dir().join(&fname);
+                        let _ = fs::write(
+                            out,
+                            format!("<!-- Saved Offline by Shunno Browser -->\n<meta http-equiv=\"refresh\" content=\"0;url={}\">", tab.url),
+                        );
+                    }
+                } else if cmd == "OPEN_SCRIPTS_FOLDER" {
+                    let dir = BrowserStorage::user_scripts_dir();
+                    let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if cmd == "OPEN_DOWNLOADS_FOLDER" {
+                    let dir = BrowserStorage::downloads_root_dir();
+                    let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if let Some(limit_str) = cmd.strip_prefix("SET_SPEED_LIMIT:") {
+                    if let Ok(bps) = limit_str.parse::<u64>() {
+                        global_settings.speed_limit_bps = bps;
+                        engine.speed_limit_bps.store(bps, Ordering::SeqCst);
+                        BrowserStorage::save_global_settings(&global_settings);
+                    }
+                } else if let Some(payload) = cmd.strip_prefix("ENQUEUE_DL:") {
+                    if let Some((threads_str, raw_urls)) = payload.split_once('|') {
+                        let threads = threads_str.parse::<usize>().unwrap_or(16);
+                        let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
+                        let re = Regex::new(r"\[(\d+)-(\d+)\]").unwrap();
+                        if let Some(caps) = re.captures(raw_urls) {
+                            let s_str = caps.get(1).map(|m| m.as_str()).unwrap_or("1");
+                            let e_str = caps.get(2).map(|m| m.as_str()).unwrap_or("1");
+                            if let (Ok(start), Ok(end)) = (s_str.parse::<u32>(), e_str.parse::<u32>()) {
+                                let width = s_str.len();
+                                let full_m = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+                                for i in start..=end.min(start + 100) {
+                                    let num = format!("{:0width$}", i, width = width);
+                                    let expanded = raw_urls.replace(full_m, &num);
+                                    engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), None);
                                 }
                             }
                         } else {
-                            engine.enqueue(&rt_handle, raw_u.to_string(), threads, referer, None);
+                            engine.enqueue(&rt_handle, raw_urls.to_string(), threads, ref_url, None);
                         }
                     }
-                } else if let Some(id_str) = cmd.strip_prefix("PAUSE_DL:") {
+                } else if let Some(id_str) = cmd.strip_prefix("DL_PAUSE:") {
                     if let Ok(id) = id_str.parse::<u64>() {
                         engine.pause(id);
                     }
-                } else if let Some(id_str) = cmd.strip_prefix("RESUME_DL:") {
+                } else if let Some(id_str) = cmd.strip_prefix("DL_RESUME:") {
                     if let Ok(id) = id_str.parse::<u64>() {
-                        engine.resume_or_fix(&rt_handle, id, None);
+                        engine.resume_or_restart(&rt_handle, id, None);
                     }
-                } else if let Some(fix_spec) = cmd.strip_prefix("FIX_DL:") {
-                    if let Some((id_str, new_u)) = fix_spec.split_once('|') {
+                } else if let Some(payload) = cmd.strip_prefix("DL_FIX:") {
+                    if let Some((id_str, new_url)) = payload.split_once('|') {
                         if let Ok(id) = id_str.parse::<u64>() {
-                            engine.resume_or_fix(&rt_handle, id, Some(new_u.to_string()));
+                            engine.resume_or_restart(&rt_handle, id, Some(new_url.to_string()));
                         }
                     }
-                } else if let Some(lim_str) = cmd.strip_prefix("SPEED_LIMIT:") {
-                    if let Ok(bps) = lim_str.parse::<u64>() {
-                        engine.speed_limit_bps.store(bps, Ordering::SeqCst);
+                } else if let Some(id_str) = cmd.strip_prefix("DL_DEL:") {
+                    if let Ok(id) = id_str.parse::<u64>() {
+                        engine.delete(id);
                     }
-                } else if cmd == "OPEN_FOLDER" {
-                    let dir = dirs::download_dir()
-                        .or_else(dirs::home_dir)
-                        .unwrap_or_default()
-                        .join("ShunnoBrowser");
-                    let _ = std::fs::create_dir_all(&dir);
-                    let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if let Some(path) = cmd.strip_prefix("DL_SHOW:") {
+                    if !path.is_empty() {
+                        let _ = Command::new("explorer.exe").arg(format!("/select,{}", path)).spawn();
+                    }
                 }
-                let _ = loop_proxy.send_event(AppEvent::SyncUi);
-            }
-            Event::UserEvent(AppEvent::SyncUi) => {
-                let tab_infos: Vec<TabInfo> = tabs
-                    .iter()
-                    .map(|t| TabInfo {
-                        title: t.title.clone(),
-                        url: t.url.clone(),
-                    })
-                    .collect();
-                let current_url = tabs.get(active_tab).map(|t| t.url.clone()).unwrap_or_default();
-                let dl_list = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
-                let blocked = blocked_ads.lock().map(|b| *b).unwrap_or(0);
 
-                let payload = UiStatePayload {
-                    tabs: tab_infos,
-                    active_tab,
-                    current_url,
-                    ad_block,
-                    blocked_ads: blocked,
-                    bg_audio,
-                    speed: playback_speed,
-                    oled_dark,
-                    downloads: dl_list,
-                    bookmarks: bookmarks.clone(),
-                };
-                if let Ok(json) = serde_json::to_string(&payload) {
-                    let _ = chrome_webview.evaluate_script(&format!("window.renderState && window.renderState({});", json));
-                }
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &engine,
+                );
             }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => *control_flow = ControlFlow::Exit,
+
             _ => {}
         }
     });
