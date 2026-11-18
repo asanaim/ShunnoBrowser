@@ -4,13 +4,20 @@ use std::fs;
 use std::path::PathBuf;
 use url::Url;
 
+pub const APP_VERSION: &str = "v1.0.0";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SearchEngine {
+    pub name: String,
+    pub query_url: String, // Must contain %s placeholder
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SitePolicy {
     pub adblock: bool,
     pub js_enabled: bool,
     pub images_enabled: bool,
     pub desktop_ua: bool,
-    pub oled_dark: bool,
     pub sponsorblock: bool,
     pub auto_reject_cookies: bool,
 }
@@ -22,7 +29,6 @@ impl Default for SitePolicy {
             js_enabled: true,
             images_enabled: true,
             desktop_ua: false,
-            oled_dark: false,
             sponsorblock: true,
             auto_reject_cookies: true,
         }
@@ -51,21 +57,48 @@ pub struct SavedTab {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GlobalSettings {
-    pub background_youtube_play: bool,
+    pub full_dark_mode: bool,
+    pub background_media_play: bool,
     pub strip_tracking_params: bool,
     pub block_popups: bool,
     pub default_threads: usize,
     pub speed_limit_bps: u64,
+    pub active_search_engine: usize,
+    pub search_engines: Vec<SearchEngine>,
 }
 
 impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
-            background_youtube_play: true,
+            full_dark_mode: false,
+            background_media_play: true,
             strip_tracking_params: true,
             block_popups: true,
             default_threads: 16,
             speed_limit_bps: 0,
+            active_search_engine: 0,
+            search_engines: vec![
+                SearchEngine {
+                    name: "DuckDuckGo".to_string(),
+                    query_url: "https://duckduckgo.com/?q=%s".to_string(),
+                },
+                SearchEngine {
+                    name: "Google".to_string(),
+                    query_url: "https://www.google.com/search?q=%s".to_string(),
+                },
+                SearchEngine {
+                    name: "Startpage".to_string(),
+                    query_url: "https://www.startpage.com/sp/search?query=%s".to_string(),
+                },
+                SearchEngine {
+                    name: "Bing".to_string(),
+                    query_url: "https://www.bing.com/search?q=%s".to_string(),
+                },
+                SearchEngine {
+                    name: "YouTube".to_string(),
+                    query_url: "https://www.youtube.com/results?search_query=%s".to_string(),
+                },
+            ],
         }
     }
 }
@@ -144,10 +177,17 @@ try {
 
     pub fn load_global_settings() -> GlobalSettings {
         let path = Self::app_data_dir().join("global_settings.json");
-        fs::read_to_string(path)
+        let mut cfg: GlobalSettings = fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if cfg.search_engines.is_empty() {
+            cfg.search_engines = GlobalSettings::default().search_engines;
+        }
+        if cfg.active_search_engine >= cfg.search_engines.len() {
+            cfg.active_search_engine = 0;
+        }
+        cfg
     }
 
     pub fn save_global_settings(settings: &GlobalSettings) {
@@ -180,17 +220,17 @@ try {
             .unwrap_or_else(|| {
                 vec![
                     BookmarkEntry {
-                        title: "DuckDuckGo Privacy Search".to_string(),
+                        title: "DuckDuckGo Search".to_string(),
                         url: "https://duckduckgo.com".to_string(),
                         created_at: 1,
                     },
                     BookmarkEntry {
-                        title: "YouTube (Background Audio + SponsorBlock)".to_string(),
+                        title: "YouTube".to_string(),
                         url: "https://www.youtube.com".to_string(),
                         created_at: 2,
                     },
                     BookmarkEntry {
-                        title: "Internet Archive (Lossless FLAC & Media)".to_string(),
+                        title: "Internet Archive (Lossless Audio & Video)".to_string(),
                         url: "https://archive.org".to_string(),
                         created_at: 3,
                     },
@@ -282,7 +322,7 @@ try {
     }
 }
 
-pub fn sanitize_url(raw: &str, strip_tracking: bool) -> String {
+pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return "https://duckduckgo.com".to_string();
@@ -302,10 +342,21 @@ pub fn sanitize_url(raw: &str, strip_tracking: bool) -> String {
                 _ => format!("%{:02X}", b),
             })
             .collect();
-        format!("https://duckduckgo.com/?q={}", encoded)
+
+        let template = global
+            .search_engines
+            .get(global.active_search_engine)
+            .map(|e| e.query_url.as_str())
+            .unwrap_or("https://duckduckgo.com/?q=%s");
+
+        if template.contains("%s") {
+            template.replace("%s", &encoded)
+        } else {
+            format!("{}{}", template, encoded)
+        }
     };
 
-    if !strip_tracking {
+    if !global.strip_tracking_params {
         return normalized;
     }
 

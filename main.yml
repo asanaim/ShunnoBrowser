@@ -1,4 +1,4 @@
-name: Build Shunno Browser Full Rust Windows EXE
+name: Build Shunno Browser
 
 on:
   push:
@@ -27,28 +27,23 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-exe | Out-Null
-          if (Test-Path "target\release\ShunnoBrowser.exe") {
-            Copy-Item "target\release\ShunnoBrowser.exe" "release-exe\ShunnoBrowser.exe" -Force
-          } else {
-            Get-ChildItem "target\release\*.exe" | Select-Object -First 1 | Copy-Item -Destination "release-exe\ShunnoBrowser.exe" -Force
-          }
+          Copy-Item "target\release\ShunnoBrowser.exe" "release-exe\ShunnoBrowser.exe" -Force
 
-      - name: Upload ShunnoBrowser Windows EXE Artifact
+      - name: Upload ShunnoBrowser Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShunnoBrowser-Full-Rust-Windows-EXE
+          name: ShunnoBrowser-Windows-EXE
           path: release-exe/ShunnoBrowser.exe
 
-      - name: Publish 1-Click Direct Download Release
+      - name: Publish Direct Download Release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Shunno Browser v1.0 for Windows (Full NBPro + Brave Audio + 32-Thread Shunno Get)"
+          name: "Shunno Browser v1.0.0"
           make_latest: true
           body: |
-            ### Direct 1-Click Download for Windows 10 & 11 (Native Rust)
-            Full-featured Naked Browser Pro alternative built in pure Rust + Edge WebView2 with multi-tab browsing, Incognito tabs, Brave-style background YouTube audio, SponsorBlock, per-site JS/Image/Desktop/OLED toggles, UserScripts, portable bookmarks, and built-in 32-thread Shunno Get downloads:
+            ### Direct Download for Windows 10 & 11 (64-bit)
             - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
           files: |
             release-exe/ShunnoBrowser.exe

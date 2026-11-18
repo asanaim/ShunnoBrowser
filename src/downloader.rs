@@ -32,6 +32,30 @@ pub struct DownloadTask {
     pub segment_map: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StreamProbeResult {
+    pub url: String,
+    pub size_bytes: Option<u64>,
+    pub size_label: String,
+    pub resolved_name: Option<String>,
+}
+
+pub fn format_human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 pub fn detect_download_category(file_name: &str) -> String {
     let ext = file_name
         .rsplit('.')
@@ -68,6 +92,100 @@ impl ShunnoGetDesktop {
             tasks: Arc::new(Mutex::new(loaded)),
             active_flags: Arc::new(Mutex::new(HashMap::new())),
             speed_limit_bps: Arc::new(AtomicU64::new(initial_speed_limit_bps)),
+        }
+    }
+
+    pub async fn probe_stream_metadata(
+        &self,
+        url: String,
+        referer: Option<String>,
+        cookie: Option<String>,
+    ) -> StreamProbeResult {
+        let mut req = self
+            .client
+            .head(&url)
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0");
+        if let Some(ref r) = referer {
+            if !r.is_empty() {
+                req = req.header(REFERER, r);
+            }
+        }
+        if let Some(ref c) = cookie {
+            if !c.is_empty() {
+                req = req.header(COOKIE, c);
+            }
+        }
+
+        let mut size_bytes: Option<u64> = None;
+        let mut resolved_name: Option<String> = None;
+
+        if let Ok(resp) = req.send().await {
+            size_bytes = resp
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|&n| n > 0);
+
+            if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
+                if let Some(part) = cd
+                    .split(';')
+                    .find(|p| p.trim().to_ascii_lowercase().starts_with("filename="))
+                {
+                    let name = part
+                        .split('=')
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches(''')
+                        .to_string();
+                    if !name.is_empty() {
+                        resolved_name = Some(name);
+                    }
+                }
+            }
+        }
+
+        if size_bytes.is_none() {
+            let mut range_req = self
+                .client
+                .get(&url)
+                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
+                .header(RANGE, "bytes=0-0");
+            if let Some(ref r) = referer {
+                if !r.is_empty() {
+                    range_req = range_req.header(REFERER, r);
+                }
+            }
+            if let Some(ref c) = cookie {
+                if !c.is_empty() {
+                    range_req = range_req.header(COOKIE, c);
+                }
+            }
+            if let Ok(resp) = range_req.send().await {
+                if resp.status() == StatusCode::PARTIAL_CONTENT {
+                    size_bytes = resp
+                        .headers()
+                        .get(CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.split('/').nth(1))
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|&n| n > 0);
+                }
+            }
+        }
+
+        let size_label = match size_bytes {
+            Some(b) => format_human_size(b),
+            None => "Stream".to_string(),
+        };
+
+        StreamProbeResult {
+            url,
+            size_bytes,
+            size_label,
+            resolved_name,
         }
     }
 
@@ -166,7 +284,15 @@ impl ShunnoGetDesktop {
             .and_then(|p| p.rsplit('/').next())
             .filter(|s| !s.is_empty() && s.contains('.'))
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("shunno_media_{}.mp4", SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() % 10000).unwrap_or(1)));
+            .unwrap_or_else(|| {
+                format!(
+                    "shunno_media_{}.mp4",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs() % 10000)
+                        .unwrap_or(1)
+                )
+            });
 
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -289,7 +415,7 @@ async fn run_parallel_download(
 ) -> Result<(), String> {
     let mut req = client
         .get(&task.url)
-        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser-Rust/1.0")
+        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
         .header(RANGE, "bytes=0-0");
     if let Some(ref r) = task.referer {
         if !r.is_empty() {
@@ -306,14 +432,17 @@ async fn run_parallel_download(
     let mut supports_range = false;
     if let Ok(resp) = req.send().await {
         if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
-            if let Some(fname_part) = cd.split(';').find(|p| p.trim().to_ascii_lowercase().starts_with("filename=")) {
+            if let Some(fname_part) = cd
+                .split(';')
+                .find(|p| p.trim().to_ascii_lowercase().starts_with("filename="))
+            {
                 let clean_cd_name = fname_part
                     .split('=')
                     .nth(1)
                     .unwrap_or("")
                     .trim()
                     .trim_matches('"')
-                    .trim_matches('\'')
+                    .trim_matches(''')
                     .to_string();
                 if !clean_cd_name.is_empty() {
                     if let Ok(mut list) = tasks.lock() {
@@ -450,7 +579,7 @@ async fn run_parallel_download(
                 }
                 let mut rb = c
                     .get(&u)
-                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser-Rust/1.0")
+                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0")
                     .header(RANGE, format!("bytes={}-{}", offset, end));
                 if let Some(ref r) = r_hdr {
                     if !r.is_empty() { rb = rb.header(REFERER, r); }
@@ -515,7 +644,7 @@ async fn run_parallel_download(
     } else {
         let mut rb = client
             .get(&task.url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser-Rust/1.0");
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.0");
         if let Some(ref r) = task.referer {
             if !r.is_empty() { rb = rb.header(REFERER, r); }
         }
@@ -557,7 +686,13 @@ async fn run_parallel_download(
         }
     }
 
-    finalize_completed(task, part_path, &task.file_name, tasks)
+    let current_name = tasks
+        .lock()
+        .ok()
+        .and_then(|l| l.iter().find(|i| i.id == task.id).map(|t| t.file_name.clone()))
+        .unwrap_or_else(|| task.file_name.clone());
+
+    finalize_completed(task, part_path, &current_name, tasks)
 }
 
 async fn run_hls_download(

@@ -5,8 +5,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <style>
   :root {
     --bg: #F2F2F7;
+    --tab-bg: #E5E5EA;
     --surface: #FFFFFF;
-    --border: #E5E5EA;
+    --border: #D8D8DF;
     --blue: #0A84FF;
     --blue-soft: #EBF4FF;
     --green: #30D158;
@@ -14,56 +15,77 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --orange: #FF9F0A;
     --red: #FF3B30;
     --text: #1C1C1E;
-    --muted: #8E8E93;
+    --muted: #6E6E73;
+    --input-bg: #F2F2F7;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
+  body.dark {
+    --bg: #0B0B0D;
+    --tab-bg: #141416;
+    --surface: #1C1C1E;
+    --border: #2C2C2E;
+    --blue: #0A84FF;
+    --blue-soft: #162942;
+    --green: #30D158;
+    --green-soft: #132E1C;
+    --orange: #FF9F0A;
+    --red: #FF453A;
+    --text: #F5F5F7;
+    --muted: #98989D;
+    --input-bg: #2C2C2E;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
   body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
 
   /* Tab Strip */
   .tab-bar {
     display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px;
-    background: #E5E5EA; border-bottom: 1px solid #D1D1D6; overflow-x: auto; height: 38px;
+    background: var(--tab-bg); border-bottom: 1px solid var(--border); overflow-x: auto; height: 38px;
   }
   .tab-bar::-webkit-scrollbar { display: none; }
   .brand-pill {
-    display: flex; align-items: center; gap: 5px; font-weight: 700; font-size: 12px;
-    background: linear-gradient(135deg, #0A84FF, #0040DD); color: #fff;
+    display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
+    background: linear-gradient(135deg, #0A84FF, #003EB3); color: #fff;
     padding: 4px 10px; border-radius: 9px; flex-shrink: 0;
   }
   .tab {
     display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 9px;
-    background: rgba(255,255,255,0.55); color: #3A3A3C; font-size: 12px; cursor: pointer;
-    max-width: 190px; min-width: 95px; transition: background 0.15s; flex-shrink: 0;
+    background: rgba(128,128,128,0.14); color: var(--text); font-size: 12px; cursor: pointer;
+    max-width: 200px; min-width: 95px; transition: background 0.15s; flex-shrink: 0;
   }
-  .tab.active { background: #FFFFFF; color: #000; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-  .tab.incognito.active { background: #1C1C1E; color: #FFFFFF; }
+  .tab.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+  .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; border: 1px solid #48484A; }
   .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .tab-close { font-size: 11px; color: var(--muted); padding: 1px 4px; border-radius: 4px; }
-  .tab-close:hover { background: #FFEBEA; color: var(--red); }
+  .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
   .tab-add {
-    border: none; background: rgba(255,255,255,0.75); color: var(--blue); font-weight: 700;
-    font-size: 13px; padding: 3px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+    border: none; background: rgba(128,128,128,0.16); color: var(--blue); font-weight: 700;
+    font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
   }
-  .tab-add:hover { background: #fff; }
+  .tab-add:hover { background: var(--surface); }
 
-  /* Main Cupertino Navigation & Power Toolbar */
+  /* Decluttered Main Navigation Bar */
   .nav-bar {
-    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    display: flex; align-items: center; gap: 7px; padding: 6px 12px;
     background: var(--surface); border-bottom: 1px solid var(--border); height: 48px;
   }
   .nav-btn {
-    border: none; background: var(--bg); color: var(--text); font-size: 14px; font-weight: 600;
-    padding: 5px 9px; border-radius: 9px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    border: none; background: var(--input-bg); color: var(--text); font-size: 13.5px; font-weight: 600;
+    padding: 6px 11px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
     white-space: nowrap; transition: all 0.12s;
   }
-  .nav-btn:hover { background: #E5E5EA; }
+  .nav-btn:hover { filter: brightness(0.95); }
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
-  .nav-btn.green { background: var(--green-soft); color: #1E9E42; }
-  .url-wrap {
-    flex: 1; display: flex; align-items: center; background: var(--bg);
-    border-radius: 11px; padding: 0 10px; height: 34px; border: 1px solid transparent;
+  .nav-btn.green { background: var(--green-soft); color: #24B44B; }
+
+  .search-picker {
+    border: none; background: var(--input-bg); color: var(--text); font-size: 12px; font-weight: 600;
+    padding: 6px 8px; border-radius: 10px; outline: none; cursor: pointer; max-width: 125px;
   }
-  .url-wrap:focus-within { background: #fff; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,0.15); }
+  .url-wrap {
+    flex: 1; display: flex; align-items: center; background: var(--input-bg);
+    border-radius: 11px; padding: 0 12px; height: 35px; border: 1px solid transparent;
+  }
+  .url-wrap:focus-within { background: var(--surface); border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,0.18); }
   #url-input {
     border: none; background: transparent; outline: none; width: 100%;
     font-size: 13px; color: var(--text); user-select: text;
@@ -71,84 +93,136 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Expandable Drawer Area */
   .drawer {
-    flex: 1; background: var(--bg); padding: 14px 18px; overflow-y: auto; display: none;
+    flex: 1; background: var(--bg); padding: 16px 20px; overflow-y: auto; display: none;
   }
   .drawer.open { display: block; }
   .card {
-    background: #fff; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
-    border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    background: var(--surface); border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
+    border: 1px solid var(--border);
   }
-  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-  .card-title { font-size: 15px; font-weight: 700; }
-  .grid-toggles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; flex-wrap: wrap; }
+  .card-title { font-size: 14.5px; font-weight: 700; }
+  .grid-toggles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
   .toggle-tile {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 10px 12px; border-radius: 11px; background: var(--bg); font-size: 12.5px; font-weight: 600;
+    padding: 10px 12px; border-radius: 11px; background: var(--input-bg); font-size: 12.5px; font-weight: 600;
   }
   .pill-btn {
     border: none; border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 600; cursor: pointer;
   }
   .pill-blue { background: var(--blue); color: #fff; }
   .pill-soft { background: var(--blue-soft); color: var(--blue); }
-  .pill-green { background: var(--green-soft); color: #1E9E42; }
-  .pill-orange { background: #FFF5E5; color: var(--orange); }
-  .pill-red { background: #FFEBEA; color: var(--red); }
+  .pill-green { background: var(--green-soft); color: #24B44B; }
+  .pill-orange { background: rgba(255,159,10,0.16); color: var(--orange); }
+  .pill-red { background: rgba(255,59,48,0.16); color: var(--red); }
 
   .input-row { display: flex; gap: 8px; margin-bottom: 10px; }
   .text-box {
-    flex: 1; padding: 8px 12px; border-radius: 10px; border: 1px solid #D1D1D6;
-    font-size: 13px; outline: none; user-select: text;
+    flex: 1; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--input-bg); color: var(--text); font-size: 13px; outline: none; user-select: text;
   }
-  .select-box { padding: 8px 10px; border-radius: 10px; border: 1px solid #D1D1D6; font-size: 12.5px; background: #fff; }
+  .select-box {
+    padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border);
+    font-size: 12.5px; background: var(--input-bg); color: var(--text);
+  }
 
-  .prog-track { width: 100%; height: 7px; background: #E5E5EA; border-radius: 4px; overflow: hidden; margin: 7px 0; }
+  .prog-track { width: 100%; height: 7px; background: var(--input-bg); border-radius: 4px; overflow: hidden; margin: 7px 0; }
   .prog-fill { height: 100%; background: var(--blue); transition: width 0.2s; }
   .prog-fill.done { background: var(--green); }
   .meta { font-size: 11.5px; color: var(--muted); }
   .list-row {
     display: flex; justify-content: space-between; align-items: center; padding: 8px 0;
-    border-bottom: 1px solid var(--bg); gap: 10px;
+    border-bottom: 1px solid var(--border); gap: 10px;
   }
   .list-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
 
-  <!-- 1. Cupertino Tab Bar -->
+  <!-- 1. Tab Strip -->
   <div class="tab-bar" id="tab-bar">
-    <div class="brand-pill">0 Shunno</div>
+    <div class="brand-pill">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+        <ellipse cx="12" cy="12" rx="7.5" ry="9.2" stroke="white" stroke-width="2.6"/>
+        <polygon points="12,5.5 14.8,12 12,10.8 9.2,12" fill="#30D158"/>
+        <polygon points="12,18.5 14.8,12 12,13.2 9.2,12" fill="#EBF4FF"/>
+      </svg>
+      <span>Shunno Browser</span>
+    </div>
     <div id="tabs-container" style="display:flex;gap:6px;align-items:center;"></div>
     <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">+ Tab</button>
-    <button class="tab-add" style="color:#1C1C1E" onclick="send('NEW_INCOGNITO')" title="New Private Incognito Tab">🕵 Private</button>
+    <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">🕵 Private</button>
   </div>
 
-  <!-- 2. Navigation & NBPro / Brave / Shunno Get Power Toolbar -->
+  <!-- 2. Clean, Uncluttered Navigation Toolbar -->
   <div class="nav-bar">
     <button class="nav-btn" onclick="send('BACK')" title="Back">‹</button>
     <button class="nav-btn" onclick="send('FORWARD')" title="Forward">›</button>
-    <button class="nav-btn" onclick="send('RELOAD')" title="Reload">↻</button>
+    <button class="nav-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">↻</button>
+
+    <select class="search-picker" id="engine-select" onchange="send('SET_SEARCH_ENGINE:' + this.value)" title="Select Search Engine"></select>
 
     <div class="url-wrap">
-      <input id="url-input" placeholder="Search DuckDuckGo or enter URL (tracking parameters auto-stripped)..."
+      <input id="url-input" placeholder="Search or enter website URL..."
              onkeydown="if(event.key==='Enter') send('NAV:' + this.value)" />
     </div>
 
-    <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')">🎯 Streams (0)</button>
-    <button class="nav-btn on" id="btn-bgaudio" onclick="send('TOGGLE_BG_AUDIO')" title="Brave-Style Background YouTube Audio">🎧 BG Audio</button>
-    <button class="nav-btn on" id="btn-adblock" onclick="send('TOGGLE_SITE:adblock')" title="Network + DOM AdBlock & SponsorBlock">🛡️ AdBlock</button>
-    <button class="nav-btn" id="btn-speed" onclick="cycleSpeed()" title="HTML5 Video/Audio Playback Speed">⏩ 1.0×</button>
-    <button class="nav-btn" onclick="send('READER_MODE')" title="Clean Cupertino Reader View">📖 Reader</button>
-    <button class="nav-btn" id="btn-oled" onclick="send('TOGGLE_SITE:oled_dark')" title="Per-Site True OLED Dark Mode">🌑 OLED</button>
-    <button class="nav-btn" onclick="toggleDrawer('find')" title="Find in Page">🔍 Find</button>
-    <button class="nav-btn" onclick="toggleDrawer('site')" title="NBPro Per-Site Controls & UserScripts">⚙️ Site</button>
-    <button class="nav-btn" onclick="toggleDrawer('bookmarks')" title="Bookmarks, History & Snapshot">⭐ Library</button>
-    <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Shunno Get 32-Thread Download Manager">⚡ Get (0)</button>
+    <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')">🎯 Media (0)</button>
+    <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Shunno Get Download Manager (Ctrl+J)">⚡ Downloads (0)</button>
+    <button class="nav-btn" id="btn-menu" onclick="toggleDrawer('menu')" title="Browser Menu & Settings">☰ Menu</button>
   </div>
 
   <!-- 3. Expandable Drawer Overlay -->
   <div class="drawer" id="drawer">
 
-    <!-- Drawer A: Find in Page -->
+    <!-- Panel A: Unified Clean Browser Menu (Replaces cluttered top buttons) -->
+    <div id="panel-menu" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">☰ Shunno Browser Controls</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span class="meta" id="version-badge" style="font-weight:700;">v1.0.0</span>
+            <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
+          </div>
+        </div>
+
+        <!-- Quick Action Pills -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+          <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find in Page (Ctrl+F)</button>
+          <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Bookmarks &amp; History</button>
+          <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader View</button>
+          <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ Video Speed: 1.0×</button>
+          <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save Page Offline</button>
+          <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📜 UserScripts Folder</button>
+        </div>
+
+        <!-- Global Appearance & Media Switches -->
+        <div class="grid-toggles" id="global-toggles-grid"></div>
+      </div>
+
+      <!-- Per-Site Settings Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" id="site-domain-title">🌐 Current Site Controls</span>
+        </div>
+        <div class="grid-toggles" id="site-toggles-grid"></div>
+      </div>
+
+      <!-- Search Engines Manager -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🔎 Search Engines</span>
+        </div>
+        <div class="input-row">
+          <input class="text-box" id="new-se-name" placeholder="Engine Name (e.g. Qwant)" style="max-width:180px;" />
+          <input class="text-box" id="new-se-url" placeholder="Search URL with %s (e.g. https://www.qwant.com/?q=%s)" />
+          <button class="pill-btn pill-blue" onclick="addSearchEngine()">+ Add Engine</button>
+        </div>
+        <div id="search-engines-list"></div>
+      </div>
+    </div>
+
+    <!-- Panel B: Find in Page -->
     <div id="panel-find" style="display:none">
       <div class="card">
         <div class="card-header">
@@ -156,7 +230,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
         </div>
         <div class="input-row">
-          <input class="text-box" id="find-input" placeholder="Type text to highlight on active page..."
+          <input class="text-box" id="find-input" placeholder="Type text to search on active page..."
                  oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
           <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑ Prev</button>
           <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓ Next</button>
@@ -164,44 +238,24 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Drawer B: Sniffed Media & Streams (HLS .m3u8 / FLAC / ALAC / MP4) -->
+    <!-- Panel C: Detected Media & Lossless Audio Streams -->
     <div id="panel-streams" style="display:none">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">🎯 Sniffed Media & Lossless Audio Streams</span>
+          <span class="card-title">🎯 Detected Media &amp; Lossless Audio Streams</span>
           <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
         </div>
         <div id="streams-list"></div>
       </div>
     </div>
 
-    <!-- Drawer C: NBPro Per-Site Controls, Global Privacy & UserScripts -->
-    <div id="panel-site" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title" id="site-domain-title">⚙️ Per-Site NBPro Whitelist Controls</span>
-          <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
-        </div>
-        <div class="grid-toggles" id="site-toggles-grid"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">🛡️ Global Privacy & Tampermonkey-Lite UserScripts</span>
-          <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📂 Open scripts/*.js Folder</button>
-        </div>
-        <div class="grid-toggles" id="global-toggles-grid"></div>
-      </div>
-    </div>
-
-    <!-- Drawer D: Portable Bookmarks, History & Offline Page Snapshot -->
+    <!-- Panel D: Bookmarks & History -->
     <div id="panel-bookmarks" style="display:none">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">⭐ Portable Bookmarks & Offline Snapshot</span>
+          <span class="card-title">⭐ Bookmarks</span>
           <div style="display:flex;gap:6px;">
             <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Bookmark Page</button>
-            <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML')">💾 Save Page Offline</button>
             <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export .TXT</button>
             <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import .TXT</button>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕ Close</button>
@@ -212,18 +266,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <div class="card">
         <div class="card-header">
-          <span class="card-title">🕒 Recent Browsing History</span>
+          <span class="card-title">🕒 Browsing History</span>
           <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear History</button>
         </div>
         <div id="history-list"></div>
       </div>
     </div>
 
-    <!-- Drawer E: Shunno Get 32-Thread Download Manager -->
+    <!-- Panel E: Shunno Get Multi-Threaded Download Manager -->
     <div id="panel-downloads" style="display:none">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">⚡ Shunno Get — 32-Thread Accelerated Download Engine</span>
+          <span class="card-title">⚡ Shunno Get — Multi-Threaded Download Manager</span>
           <div style="display:flex;gap:8px;align-items:center;">
             <span class="meta">Speed Limit:</span>
             <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
@@ -271,7 +325,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
     activeDrawer = name;
     document.getElementById('drawer').classList.add('open');
-    ['find', 'streams', 'site', 'bookmarks', 'downloads'].forEach(p => {
+    ['menu', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
     send('DRAWER_OPEN:1');
@@ -286,7 +340,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function cycleSpeed() {
     const idx = (speeds.indexOf(currentSpeed) + 1) % speeds.length;
     currentSpeed = speeds[idx];
-    document.getElementById('btn-speed').textContent = '⏩ ' + currentSpeed + '×';
+    document.getElementById('menu-speed-btn').textContent = '⏩ Video Speed: ' + currentSpeed + '×';
     send('SET_PLAYBACK_SPEED:' + currentSpeed);
   }
 
@@ -296,6 +350,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (!input.value.trim()) return;
     send('ENQUEUE_DL:' + threads + '|' + input.value.trim());
     input.value = '';
+  }
+
+  function addSearchEngine() {
+    const nameEl = document.getElementById('new-se-name');
+    const urlEl = document.getElementById('new-se-url');
+    const name = nameEl.value.trim();
+    const url = urlEl.value.trim();
+    if (!name || !url) return;
+    send('ADD_SEARCH_ENGINE:' + name + '|' + url);
+    nameEl.value = '';
+    urlEl.value = '';
   }
 
   function fmtBytes(b) {
@@ -308,6 +373,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   window.renderChromeState = function(state) {
+    // Apply Full Dark Mode class
+    if (state.global.full_dark_mode) {
+      document.body.classList.add('dark');
+    } else {
+      document.body.classList.remove('dark');
+    }
+
+    document.getElementById('version-badge').textContent = 'Shunno Browser ' + (state.version || 'v1.0.0');
+
     // Tabs
     const tc = document.getElementById('tabs-container');
     tc.innerHTML = state.tabs.map((t, idx) => `
@@ -318,6 +392,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
+    // Search Engine Selector
+    const seSelect = document.getElementById('engine-select');
+    if (state.global.search_engines && state.global.search_engines.length > 0) {
+      seSelect.innerHTML = state.global.search_engines.map((se, i) =>
+        `<option value="${i}" ${i === state.global.active_search_engine ? 'selected' : ''}>${escapeHtml(se.name)}</option>`
+      ).join('');
+    }
+
     const urlBox = document.getElementById('url-input');
     if (document.activeElement !== urlBox) {
       urlBox.value = state.active_url || '';
@@ -327,38 +409,50 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const sBtn = document.getElementById('btn-streams');
     if (state.streams.length > 0) {
       sBtn.style.display = 'inline-flex';
-      sBtn.textContent = `🎯 Streams (${state.streams.length})`;
+      sBtn.textContent = `🎯 Media (${state.streams.length})`;
     } else {
       sBtn.style.display = 'none';
     }
 
-    document.getElementById('btn-bgaudio').className = 'nav-btn ' + (state.global.background_youtube_play ? 'on' : '');
-    document.getElementById('btn-adblock').className = 'nav-btn ' + (state.site.adblock ? 'on' : '');
-    document.getElementById('btn-adblock').textContent = `🛡️ AdBlock (${state.blocked_count})`;
-    document.getElementById('btn-oled').className = 'nav-btn ' + (state.site.oled_dark ? 'on' : '');
-    document.getElementById('btn-downloads').textContent = `⚡ Get (${state.downloads.length})`;
+    document.getElementById('btn-downloads').textContent = `⚡ Downloads (${state.downloads.length})`;
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
     // Streams panel
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
       ? '<div class="meta">No media streams intercepted on this page yet.</div>'
-      : state.streams.map(u => `
+      : state.streams.map(s => `
           <div class="list-row">
-            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;">${escapeHtml(u)}</div>
-            <button class="pill-btn pill-green" onclick="send('ENQUEUE_DL:16|${encodeAttr(u)}'); toggleDrawer('downloads');">⚡ Grab (16T)</button>
+            <div style="overflow:hidden;">
+              <div style="font-size:12.5px;font-weight:600;">${escapeHtml(s.name)} <span class="pill-btn pill-green" style="padding:2px 6px;font-size:11px;">${escapeHtml(s.size_label)}</span></div>
+              <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(s.url)}</div>
+            </div>
+            <button class="pill-btn pill-blue" onclick="send('ENQUEUE_DL:16|${encodeAttr(s.url)}'); toggleDrawer('downloads');">⚡ Download</button>
           </div>
         `).join('');
 
-    // Site toggles
-    document.getElementById('site-domain-title').textContent = `⚙️ Per-Site NBPro Whitelist: ${state.active_host || 'Global'}`;
+    // Global toggles (including Full Dark Mode switch)
+    const globalItems = [
+      ['full_dark', '🌙 Full Dark Mode', state.global.full_dark_mode],
+      ['bg_audio', '🎧 Background Media Play', state.global.background_media_play],
+      ['strip_tracking', '✂️ Strip URL Trackers', state.global.strip_tracking_params],
+      ['block_popups', '🚫 Block Pop-Up Windows', state.global.block_popups]
+    ];
+    document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
+      <div class="toggle-tile">
+        <span>${label}</span>
+        <button class="pill-btn ${val ? 'pill-blue' : 'pill-soft'}" onclick="send('TOGGLE_GLOBAL:${key}')">${val ? 'ON' : 'OFF'}</button>
+      </div>
+    `).join('');
+
+    // Per-Site toggles
+    document.getElementById('site-domain-title').textContent = `🌐 Site Settings (${state.active_host || 'Global'} • ${state.blocked_count} ads blocked)`;
     const siteItems = [
       ['adblock', '🛡️ Ad & Tracker Blocker', state.site.adblock],
-      ['js_enabled', '⚙️ JavaScript Execution', state.site.js_enabled],
-      ['images_enabled', '🖼️ Load Page Images', state.site.images_enabled],
+      ['sponsorblock', '🎬 YouTube Ad & Shorts Clean', state.site.sponsorblock],
+      ['js_enabled', '⚙️ JavaScript', state.site.js_enabled],
+      ['images_enabled', '🖼️ Load Images', state.site.images_enabled],
       ['desktop_ua', '💻 Desktop User-Agent', state.site.desktop_ua],
-      ['oled_dark', '🌑 True OLED Dark (#000)', state.site.oled_dark],
-      ['sponsorblock', '🎬 SponsorBlock & Shorts Clean', state.site.sponsorblock],
-      ['auto_reject_cookies', '🍪 Auto-Reject Cookie Banners', state.site.auto_reject_cookies]
+      ['auto_reject_cookies', '🍪 Auto-Reject Cookies', state.site.auto_reject_cookies]
     ];
     document.getElementById('site-toggles-grid').innerHTML = siteItems.map(([key, label, val]) => `
       <div class="toggle-tile">
@@ -367,16 +461,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // Global toggles
-    const globalItems = [
-      ['bg_audio', '🎧 Brave Background YouTube Audio', state.global.background_youtube_play],
-      ['strip_tracking', '✂️ Strip URL Trackers (utm/fbclid)', state.global.strip_tracking_params],
-      ['block_popups', '🚫 Block Pop-Up Windows', state.global.block_popups]
-    ];
-    document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
-      <div class="toggle-tile">
-        <span>${label}</span>
-        <button class="pill-btn ${val ? 'pill-blue' : 'pill-soft'}" onclick="send('TOGGLE_GLOBAL:${key}')">${val ? 'ON' : 'OFF'}</button>
+    // Search engines list
+    document.getElementById('search-engines-list').innerHTML = (state.global.search_engines || []).map((se, i) => `
+      <div class="list-row">
+        <div>
+          <span style="font-size:13px;font-weight:600;">${escapeHtml(se.name)}</span>
+          <span class="meta" style="margin-left:8px;">${escapeHtml(se.query_url)}</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="pill-btn ${i === state.global.active_search_engine ? 'pill-blue' : 'pill-soft'}" onclick="send('SET_SEARCH_ENGINE:${i}')">
+            ${i === state.global.active_search_engine ? 'Default' : 'Set Default'}
+          </button>
+          ${state.global.search_engines.length > 1 ? `<button class="pill-btn pill-red" onclick="send('DEL_SEARCH_ENGINE:${i}')">✕</button>` : ''}
+        </div>
       </div>
     `).join('');
 
@@ -408,7 +505,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     // Downloads list
     document.getElementById('downloads-list').innerHTML = state.downloads.length === 0
-      ? '<div class="card"><div class="meta">No downloads in queue. Paste a URL above or click any downloadable file on a webpage.</div></div>'
+      ? '<div class="card"><div class="meta">No downloads in queue. Hover over any video, audio player, or downloadable file on a page to use the floating Shunno Get menu.</div></div>'
       : state.downloads.map(d => {
           const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
           const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);
@@ -437,7 +534,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
                     ? `<button class="pill-btn pill-orange" onclick="send('DL_PAUSE:${d.id}')">Pause</button>`
                     : d.status !== 'COMPLETED'
                       ? `<button class="pill-btn pill-soft" onclick="send('DL_RESUME:${d.id}')">Resume</button>
-                         <button class="pill-btn pill-soft" onclick="const u=prompt('Paste fresh mirror/CDN URL to resume from byte offset:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);">Fix Link</button>`
+                         <button class="pill-btn pill-soft" onclick="const u=prompt('Paste fresh mirror URL to resume from byte offset:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);">Fix Link</button>`
                       : `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')">Show File</button>`
                   }
                   <button class="pill-btn pill-red" onclick="send('DL_DEL:${d.id}')">✕</button>

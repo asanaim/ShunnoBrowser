@@ -4,7 +4,7 @@ mod downloader;
 mod state;
 mod ui_chrome;
 
-use downloader::ShunnoGetDesktop;
+use downloader::{ShunnoGetDesktop, StreamProbeResult};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use wry::{Rect, WebView, WebViewBuilder};
 
 use state::{
     extract_host, sanitize_url, BookmarkEntry, BrowserStorage, GlobalSettings, HistoryEntry,
-    SavedTab, SitePolicy,
+    SavedTab, SearchEngine, SitePolicy, APP_VERSION,
 };
 
 const CHROME_BAR_HEIGHT: f64 = 86.0;
@@ -31,6 +31,8 @@ enum AppEvent {
     ContentIpc(usize, String),
     DownloadIntercepted(String),
     NewWindowBlockedOrOpened(String),
+    NativeStreamCaptured(usize, String),
+    StreamSizeResolved(usize, StreamProbeResult),
     RefreshChrome,
 }
 
@@ -40,6 +42,13 @@ struct BrowserTab {
     url: String,
     incognito: bool,
     webview: WebView,
+}
+
+#[derive(Clone, Serialize)]
+struct SniffedStreamItem {
+    url: String,
+    name: String,
+    size_label: String,
 }
 
 #[derive(Serialize)]
@@ -52,6 +61,7 @@ struct TabSummary {
 
 #[derive(Serialize)]
 struct ChromeSnapshot {
+    version: &'static str,
     tabs: Vec<TabSummary>,
     active_tab: usize,
     active_url: String,
@@ -59,7 +69,7 @@ struct ChromeSnapshot {
     site: SitePolicy,
     global: GlobalSettings,
     blocked_count: usize,
-    streams: Vec<String>,
+    streams: Vec<SniffedStreamItem>,
     bookmarks: Vec<BookmarkEntry>,
     history: Vec<HistoryEntry>,
     downloads: Vec<downloader::DownloadTask>,
@@ -68,8 +78,8 @@ struct ChromeSnapshot {
 fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_js: &str) -> String {
     let mut script = String::new();
 
-    // 1. Brave-Style Background YouTube & Media Playback (Page Visibility API lock)
-    if global.background_youtube_play {
+    // 1. Background Media Playback (Page Visibility API lock)
+    if global.background_media_play {
         script.push_str(
             r#"
             (function() {
@@ -84,7 +94,75 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         );
     }
 
-    // 2. Network Sniffer + AdBlocker + TRUE IDM-STYLE FLOATING OBJECT MENU (Video / Audio / File Links)
+    // 2. Early Pre-Roll YouTube Ad Stripper (intercepts ytInitialPlayerResponse & JSON.parse BEFORE video starts)
+    if policy.adblock || policy.sponsorblock {
+        script.push_str(
+            r#"
+            (function() {
+                function stripAdFields(obj) {
+                    if (!obj || typeof obj !== 'object') return obj;
+                    try {
+                        if ('adPlacements' in obj) delete obj.adPlacements;
+                        if ('playerAds' in obj) delete obj.playerAds;
+                        if ('adSlots' in obj) delete obj.adSlots;
+                        if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
+                        if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) {
+                            delete obj.auxiliaryUi.messageRenderers;
+                        }
+                    } catch(e) {}
+                    return obj;
+                }
+
+                // Hook ytInitialPlayerResponse assignment immediately
+                let _ytPlayerResp = undefined;
+                try {
+                    Object.defineProperty(window, 'ytInitialPlayerResponse', {
+                        configurable: true,
+                        get() { return _ytPlayerResp; },
+                        set(val) { _ytPlayerResp = stripAdFields(val); }
+                    });
+                } catch(e) {}
+
+                // Hook JSON.parse for inline YouTube player payloads
+                const origParse = JSON.parse;
+                JSON.parse = function(text, reviver) {
+                    const res = origParse.apply(this, arguments);
+                    if (res && typeof res === 'object' && ('adPlacements' in res || 'playerAds' in res || 'adSlots' in res)) {
+                        stripAdFields(res);
+                    }
+                    return res;
+                };
+
+                // Hook Response.prototype.json for /youtubei/v1/player API calls
+                const origRespJson = Response.prototype.json;
+                Response.prototype.json = function() {
+                    return origRespJson.apply(this, arguments).then(data => stripAdFields(data));
+                };
+            })();
+            "#,
+        );
+    }
+
+    // 3. Full Dark Mode Injection when toggled ON
+    if global.full_dark_mode {
+        script.push_str(
+            r#"
+            (function() {
+                const st = document.createElement('style');
+                st.id = 'shunno-full-dark';
+                st.textContent = `
+                    html { filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; }
+                    img, video, picture, canvas, svg, [style*="background-image"] {
+                        filter: invert(1) hue-rotate(180deg) !important;
+                    }
+                `;
+                document.documentElement.appendChild(st);
+            })();
+            "#,
+        );
+    }
+
+    // 4. Network Sniffer + AdBlocker + Floating Download Menu with Live File Size Probing
     let adblock_flag = if policy.adblock { "true" } else { "false" };
     script.push_str(&format!(
         r#"
@@ -94,34 +172,65 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
                 'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
                 'popads.net', 'popcash.net', 'propellerads.com', 'exoclick.com',
-                'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com'
+                'scorecardresearch.com', 'criteo.com', 'pubmatic.com', 'rubiconproject.com',
+                'youtube.com/pagead/', 'youtube.com/api/stats/ads', 'youtube.com/ptracking'
             ];
             const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
             const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.apk', '.pdf', '.dmg', '.deb'];
             const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
             const capturedStreams = [];
+            const probedSizes = new Map();
+
+            function requestSizeProbe(targetUrl) {{
+                if (!targetUrl || probedSizes.has(targetUrl) || !window.ipc) return;
+                probedSizes.set(targetUrl, 'Probing...');
+                window.ipc.postMessage('PROBE_STREAM:' + JSON.stringify({{
+                    url: targetUrl,
+                    referer: location.href,
+                    cookie: document.cookie || ''
+                }}));
+            }}
 
             function addCapturedStream(rawUrl, kindHint) {{
                 if (!rawUrl || !String(rawUrl).startsWith('http')) return;
                 const urlStr = String(rawUrl);
+                if (urlStr.startsWith('blob:')) return;
                 if (capturedStreams.some(s => s.url === urlStr)) return;
                 const cleanPath = urlStr.split('?')[0].toLowerCase();
                 const ext = ALL_EXTS.find(e => cleanPath.endsWith(e)) || kindHint || '.mp4';
-                const labelName = decodeURIComponent(cleanPath.split('/').pop() || ('Stream ' + ext.toUpperCase()));
+                let labelName = 'Stream ' + ext.toUpperCase();
+                try {{
+                    const seg = cleanPath.split('/').pop();
+                    if (seg && seg.length > 2) labelName = decodeURIComponent(seg);
+                }} catch(e) {{}}
                 capturedStreams.unshift({{ url: urlStr, ext: ext.toUpperCase(), name: labelName }});
                 if (capturedStreams.length > 20) capturedStreams.pop();
+                requestSizeProbe(urlStr);
                 if (window.ipc) window.ipc.postMessage('STREAM:' + urlStr);
             }}
+
+            window.__shunnoOnStreamProbed = function(info) {{
+                if (!info || !info.url) return;
+                probedSizes.set(info.url, info.size_label || 'Stream');
+                const item = capturedStreams.find(s => s.url === info.url);
+                if (item && info.resolved_name) {{
+                    item.name = info.resolved_name;
+                }}
+                if (window.__shunnoRefreshFloatingPill) {{
+                    window.__shunnoRefreshFloatingPill(info.url, info.size_label);
+                }}
+            }};
 
             function inspectUrl(raw) {{
                 if (!raw) return false;
                 const str = String(raw);
-                const lower = str.split('?')[0].toLowerCase();
+                const lower = str.toLowerCase();
+                const cleanLower = lower.split('?')[0];
                 if (ADBLOCK_ON && AD_HOSTS.some(h => lower.includes(h))) {{
                     if (window.ipc) window.ipc.postMessage('AD_BLOCKED');
                     return true;
                 }}
-                if (ALL_EXTS.some(ext => lower.endsWith(ext)) && str.startsWith('http')) {{
+                if (ALL_EXTS.some(ext => cleanLower.endsWith(ext)) && str.startsWith('http')) {{
                     addCapturedStream(str);
                 }}
                 return false;
@@ -159,111 +268,111 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 window.ipc.postMessage('FLOAT_DL:' + payload);
             }}
 
-            function installIdmFloatingOverlay() {{
-                if (document.getElementById('shunno-idm-host')) return;
+            function installFloatingMenu() {{
+                if (!document.documentElement || document.getElementById('shunno-float-host')) return;
 
                 const host = document.createElement('div');
-                host.id = 'shunno-idm-host';
+                host.id = 'shunno-float-host';
                 host.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
                 const shadow = host.attachShadow({{ mode: 'open' }});
 
                 shadow.innerHTML = `
                     <style>
-                        .idm-pill {{
+                        .pill {{
                             position: fixed;
                             pointer-events: auto;
                             display: none;
                             align-items: center;
                             gap: 6px;
-                            background: rgba(28, 28, 30, 0.92);
+                            background: rgba(24, 24, 27, 0.94);
                             backdrop-filter: blur(14px);
                             color: #FFFFFF;
-                            border: 1px solid rgba(255, 255, 255, 0.22);
+                            border: 1px solid rgba(255, 255, 255, 0.24);
                             border-radius: 10px;
-                            padding: 5px 10px;
-                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                            padding: 6px 11px;
+                            font-family: "Segoe UI", sans-serif;
                             font-size: 12px;
                             font-weight: 600;
-                            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+                            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
                             cursor: pointer;
                             transition: transform 0.12s ease, background 0.12s ease;
                         }}
-                        .idm-pill:hover {{
+                        .pill:hover {{
                             background: #0A84FF;
                             transform: translateY(-1px);
                         }}
-                        .idm-badge {{
+                        .badge {{
                             background: #30D158;
                             color: #000;
                             font-size: 10px;
                             font-weight: 800;
-                            padding: 1px 5px;
+                            padding: 1px 6px;
                             border-radius: 5px;
                         }}
-                        .idm-menu {{
+                        .menu {{
                             position: fixed;
                             pointer-events: auto;
                             display: none;
                             flex-direction: column;
                             gap: 6px;
-                            min-width: 270px;
-                            max-width: 360px;
-                            background: rgba(28, 28, 30, 0.96);
+                            min-width: 290px;
+                            max-width: 390px;
+                            background: rgba(24, 24, 27, 0.97);
                             backdrop-filter: blur(18px);
                             color: #fff;
-                            border: 1px solid rgba(255, 255, 255, 0.22);
+                            border: 1px solid rgba(255, 255, 255, 0.24);
                             border-radius: 12px;
                             padding: 10px;
-                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                            font-family: "Segoe UI", sans-serif;
                             font-size: 12px;
-                            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+                            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
                         }}
-                        .idm-menu-hdr {{
+                        .menu-hdr {{
                             display: flex;
                             justify-content: space-between;
                             align-items: center;
                             font-weight: 700;
                             font-size: 12px;
                             color: #30D158;
-                            border-bottom: 1px solid rgba(255,255,255,0.12);
+                            border-bottom: 1px solid rgba(255,255,255,0.14);
                             padding-bottom: 6px;
                         }}
-                        .idm-row {{
+                        .row {{
                             display: flex;
                             justify-content: space-between;
                             align-items: center;
                             gap: 8px;
-                            padding: 5px 6px;
+                            padding: 6px 7px;
                             border-radius: 8px;
-                            background: rgba(255,255,255,0.07);
+                            background: rgba(255,255,255,0.08);
                         }}
-                        .idm-row:hover {{ background: rgba(10,132,255,0.35); }}
-                        .idm-name {{
+                        .row:hover {{ background: rgba(10,132,255,0.35); }}
+                        .name {{
                             overflow: hidden;
                             text-overflow: ellipsis;
                             white-space: nowrap;
                             flex: 1;
                             font-size: 11.5px;
                         }}
-                        .idm-go {{
+                        .go {{
                             background: #0A84FF;
                             color: #fff;
                             border: none;
                             border-radius: 6px;
-                            padding: 4px 8px;
+                            padding: 4px 9px;
                             font-size: 11px;
                             font-weight: 700;
                             cursor: pointer;
                             flex-shrink: 0;
                         }}
-                        .idm-go:hover {{ background: #30D158; color: #000; }}
+                        .go:hover {{ background: #30D158; color: #000; }}
                     </style>
-                    <div class="idm-pill" id="pill">
-                        <span class="idm-badge">0↓</span>
-                        <span id="pill-text">Download this video</span>
+                    <div class="pill" id="pill">
+                        <span class="badge">0↓</span>
+                        <span id="pill-text">Download</span>
                         <span style="opacity:0.75">▾</span>
                     </div>
-                    <div class="idm-menu" id="menu"></div>
+                    <div class="menu" id="menu"></div>
                 `;
                 document.documentElement.appendChild(host);
 
@@ -271,7 +380,14 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 const pillText = shadow.getElementById('pill-text');
                 const menu = shadow.getElementById('menu');
                 let activeItems = [];
+                let activeBaseLabel = 'Download';
                 let hideTimer = null;
+
+                window.__shunnoRefreshFloatingPill = function(url, sizeLabel) {{
+                    if (activeItems.length === 1 && activeItems[0].url === url && pill.style.display !== 'none') {{
+                        pillText.textContent = `${{activeBaseLabel}} (${{sizeLabel}})`;
+                    }}
+                }};
 
                 function scheduleHide() {{
                     clearTimeout(hideTimer);
@@ -280,7 +396,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                             pill.style.display = 'none';
                             menu.style.display = 'none';
                         }}
-                    }}, 450);
+                    }}, 650);
                 }}
 
                 pill.addEventListener('mouseenter', () => clearTimeout(hideTimer));
@@ -288,13 +404,22 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 menu.addEventListener('mouseenter', () => clearTimeout(hideTimer));
                 menu.addEventListener('mouseleave', scheduleHide);
 
-                function showPillAt(x, y, label, items) {{
+                function showPillAt(x, y, baseLabel, items) {{
                     if (!items || items.length === 0) return;
                     clearTimeout(hideTimer);
                     activeItems = items;
-                    pillText.textContent = label;
-                    const left = Math.min(window.innerWidth - 210, Math.max(8, x));
-                    const top = Math.min(window.innerHeight - 44, Math.max(8, y));
+                    activeBaseLabel = baseLabel;
+                    items.forEach(it => requestSizeProbe(it.url));
+
+                    if (items.length === 1) {{
+                        const sz = probedSizes.get(items[0].url);
+                        pillText.textContent = sz ? `${{baseLabel}} (${{sz}})` : baseLabel;
+                    }} else {{
+                        pillText.textContent = `${{baseLabel}} (${{items.length}})`;
+                    }}
+
+                    const left = Math.min(window.innerWidth - 230, Math.max(8, x));
+                    const top = Math.min(window.innerHeight - 48, Math.max(8, y));
                     pill.style.left = left + 'px';
                     pill.style.top = top + 'px';
                     pill.style.display = 'inline-flex';
@@ -307,19 +432,19 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                         pill.style.display = 'none';
                         return;
                     }}
-                    menu.innerHTML = `<div class="idm-menu-hdr"><span>⚡ Shunno Get (${{activeItems.length}} streams)</span><span style="cursor:pointer;color:#aaa" id="m-close">✕</span></div>` +
+                    menu.innerHTML = `<div class="menu-hdr"><span>⚡ Shunno Get (${{activeItems.length}} streams)</span><span style="cursor:pointer;color:#aaa" id="m-close">✕</span></div>` +
                         activeItems.map((it, i) => `
-                            <div class="idm-row">
-                                <span class="idm-badge">${{it.ext.replace('.', '')}}</span>
-                                <span class="idm-name" title="${{it.url}}">${{it.name}}</span>
-                                <button class="idm-go" data-idx="${{i}}">16T Get</button>
+                            <div class="row">
+                                <span class="badge">${{it.ext.replace('.', '')}} • ${{probedSizes.get(it.url) || '...'}}</span>
+                                <span class="name" title="${{it.url}}">${{it.name}}</span>
+                                <button class="go" data-idx="${{i}}">16T</button>
                             </div>
                         `).join('');
                     menu.style.left = pill.style.left;
                     menu.style.top = (parseFloat(pill.style.top) + 34) + 'px';
                     menu.style.display = 'flex';
                     shadow.getElementById('m-close').onclick = () => {{ menu.style.display = 'none'; }};
-                    menu.querySelectorAll('.idm-go').forEach(btn => {{
+                    menu.querySelectorAll('.go').forEach(btn => {{
                         btn.onclick = () => {{
                             const idx = parseInt(btn.getAttribute('data-idx'), 10);
                             if (activeItems[idx]) triggerShunnoGet(activeItems[idx].url, 16);
@@ -329,27 +454,40 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                     }});
                 }});
 
-                // Hover detection over <video>, <audio>, and downloadable <a> links (IDM behavior)
+                // Detect hover over video containers (including YouTube player wrappers), <video>, <audio>, and downloadable <a> links
                 document.addEventListener('mouseover', (e) => {{
                     const target = e.target;
                     if (!target || !target.closest) return;
 
-                    const mediaEl = target.closest('video, audio');
-                    if (mediaEl) {{
-                        const rect = mediaEl.getBoundingClientRect();
-                        if (rect.width >= 120 && rect.height >= 40) {{
+                    const playerContainer = target.closest('video, audio, .html5-video-player, #movie_player');
+                    if (playerContainer) {{
+                        const videoEl = playerContainer.matches('video, audio')
+                            ? playerContainer
+                            : playerContainer.querySelector('video, audio');
+                        const rect = playerContainer.getBoundingClientRect();
+                        if (rect.width >= 140 && rect.height >= 50) {{
                             const items = [];
-                            const directSrc = mediaEl.currentSrc || mediaEl.src;
-                            if (directSrc && directSrc.startsWith('http')) {{
-                                addCapturedStream(directSrc, mediaEl.tagName === 'AUDIO' ? '.m4a' : '.mp4');
+                            if (videoEl) {{
+                                const directSrc = videoEl.currentSrc || videoEl.src;
+                                if (directSrc && directSrc.startsWith('http')) {{
+                                    addCapturedStream(directSrc, videoEl.tagName === 'AUDIO' ? '.m4a' : '.mp4');
+                                }}
+                                videoEl.querySelectorAll('source').forEach(s => {{
+                                    if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
+                                }});
                             }}
-                            mediaEl.querySelectorAll('source').forEach(s => {{
-                                if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
-                            }});
                             capturedStreams.forEach(s => items.push(s));
+                            // On YouTube watch pages, always offer current video page stream option if MSE blob is active
+                            if (items.length === 0 && location.hostname.includes('youtube.com') && location.search.includes('v=')) {{
+                                items.push({{
+                                    url: location.href,
+                                    ext: '.MP4',
+                                    name: (document.title || 'YouTube Video').replace(' - YouTube', '')
+                                }});
+                            }}
                             if (items.length > 0) {{
-                                const kind = mediaEl.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video';
-                                showPillAt(rect.right - 185, rect.top + 10, kind, items);
+                                const kind = (videoEl && videoEl.tagName === 'AUDIO') ? 'Download audio' : 'Download video';
+                                showPillAt(rect.right - 205, rect.top + 12, kind, items);
                                 return;
                             }}
                         }}
@@ -361,11 +499,14 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                         const matchedExt = ALL_EXTS.find(ext => cleanHref.endsWith(ext));
                         if (matchedExt) {{
                             const rect = linkEl.getBoundingClientRect();
-                            const fname = decodeURIComponent(cleanHref.split('/').pop() || ('File ' + matchedExt));
+                            let fname = 'File ' + matchedExt;
+                            try {{
+                                fname = decodeURIComponent(cleanHref.split('/').pop() || fname);
+                            }} catch(e) {{}}
                             showPillAt(
                                 rect.left,
                                 rect.top - 34,
-                                'Get ' + matchedExt.toUpperCase(),
+                                'Download ' + matchedExt.toUpperCase(),
                                 [{{ url: linkEl.href, ext: matchedExt.toUpperCase(), name: fname }}]
                             );
                         }}
@@ -373,21 +514,21 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 }}, true);
 
                 document.addEventListener('mouseout', (e) => {{
-                    if (e.target && e.target.closest && (e.target.closest('video, audio, a[href]'))) {{
+                    if (e.target && e.target.closest && e.target.closest('video, audio, .html5-video-player, #movie_player, a[href]')) {{
                         scheduleHide();
                     }}
                 }}, true);
             }}
 
+            if (document.documentElement) installFloatingMenu();
             window.addEventListener('DOMContentLoaded', () => {{
                 if (window.ipc) window.ipc.postMessage('META:' + JSON.stringify({{ title: document.title, url: location.href }}));
                 document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {{
                     if (el.src) inspectUrl(el.src);
                 }});
-                installIdmFloatingOverlay();
+                installFloatingMenu();
             }});
 
-            // Keyboard shortcuts inside content area
             document.addEventListener('keydown', (e) => {{
                 if (e.ctrlKey && !e.shiftKey && !e.altKey) {{
                     const k = e.key.toLowerCase();
@@ -401,7 +542,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         "#
     ));
 
-    // 3. Per-Site NBPro Controls: JavaScript Gate, Image Blocker, Desktop User-Agent, OLED Force-Dark, SponsorBlock & Cookie Rejector
+    // 5. Per-Site Controls: JavaScript Gate, Image Blocker, Desktop UA, & Fast YouTube Ad Skipper
     if !policy.js_enabled {
         script.push_str(
             r#"
@@ -432,7 +573,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
             (function() {
                 try {
                     Object.defineProperty(navigator, 'userAgent', {
-                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+                        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
                     });
                 } catch(e) {}
             })();
@@ -440,21 +581,9 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         );
     }
 
-    if policy.oled_dark {
-        script.push_str(
-            r#"
-            (function() {
-                const st = document.createElement('style');
-                st.textContent = 'html, body, div, section, article, main, header, footer, nav, aside { background-color: #000000 !important; color: #E5E5EA !important; border-color: #2C2C2E !important; } a { color: #0A84FF !important; }';
-                document.documentElement.appendChild(st);
-            })();
-            "#,
-        );
-    }
-
     if policy.adblock || policy.sponsorblock || policy.auto_reject_cookies {
         let hide_ads = if policy.adblock || policy.sponsorblock {
-            "ytd-reel-shelf-renderer, ytd-rich-section-renderer, .ad-showing, .ytp-ad-module, ins.adsbygoogle, [id^=\"google_ads_\"], [class*=\"taboola\"], [class*=\"outbrain\"] { display: none !important; }"
+            "ytd-reel-shelf-renderer, ytd-rich-section-renderer, ytd-ad-slot-renderer, ytd-banner-promo-renderer, #masthead-ad, .ad-showing .ytp-ad-player-overlay, .ytp-ad-module, ins.adsbygoogle, [id^=\"google_ads_\"], [class*=\"taboola\"], [class*=\"outbrain\"] { display: none !important; }"
         } else {
             ""
         };
@@ -470,29 +599,129 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
 
                 setInterval(() => {{
                     if ({auto_skip}) {{
-                        const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+                        const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button');
                         if (sk) sk.click();
+                        const adShowing = document.querySelector('.ad-showing, .ad-interrupting');
                         const v = document.querySelector('video');
-                        if (v && document.querySelector('.ad-showing')) {{
-                            v.playbackRate = 16.0;
+                        if (v && adShowing) {{
                             v.muted = true;
+                            if (isFinite(v.duration) && v.duration > 0) {{
+                                v.currentTime = v.duration;
+                            }} else {{
+                                v.playbackRate = 16.0;
+                            }}
                         }}
                     }}
                     if ({reject_cookies}) {{
                         document.querySelectorAll('[id*="reject"], [class*="reject"], #onetrust-reject-all-handler, .fc-cta-do-not-consent').forEach(b => b.click());
                     }}
-                }}, 900);
+                }}, 150);
             }})();
             "#
         ));
     }
 
-    // 4. Custom User-Scripts (Downloads/ShunnoBrowser/scripts/*.js)
     if !user_js.is_empty() {
         script.push_str(user_js);
     }
 
     script
+}
+
+#[cfg(windows)]
+fn attach_native_webview2_interceptor(
+    webview: &WebView,
+    tab_id: usize,
+    adblock_enabled: bool,
+    proxy: EventLoopProxy<AppEvent>,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2WebResourceResponse,
+    };
+    use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+    use windows::core::{w, HSTRING, PCWSTR};
+    use wry::WebViewExtWindows;
+
+    let controller = webview.controller();
+    unsafe {
+        let Ok(core) = controller.CoreWebView2() else {
+            return;
+        };
+        let Ok(env) = core.Environment() else {
+            return;
+        };
+
+        let _ = core.AddWebResourceRequestedFilter(
+            w!("*"),
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        );
+
+        let mut token = std::mem::zeroed();
+        let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let Ok(request) = args.Request() else {
+                return Ok(());
+            };
+            let mut uri_ptr = windows::core::PWSTR::null();
+            if request.Uri(&mut uri_ptr).is_ok() {
+                let uri = take_pwstr(uri_ptr);
+                let lower = uri.to_ascii_lowercase();
+                let clean_lower = lower.split('?').next().unwrap_or("");
+
+                const AD_DOMAINS: &[&str] = &[
+                    "doubleclick.net",
+                    "googlesyndication.com",
+                    "googleadservices.com",
+                    "adnxs.com",
+                    "adsrvr.org",
+                    "taboola.com",
+                    "outbrain.com",
+                    "popads.net",
+                    "popcash.net",
+                    "propellerads.com",
+                    "exoclick.com",
+                    "youtube.com/pagead/",
+                    "youtube.com/api/stats/ads",
+                    "youtube.com/ptracking",
+                ];
+
+                if adblock_enabled && AD_DOMAINS.iter().any(|d| lower.contains(d)) {
+                    let empty_resp: ICoreWebView2WebResourceResponse = env.CreateWebResourceResponse(
+                        None,
+                        403,
+                        &HSTRING::from("Blocked by Shunno AdBlock"),
+                        PCWSTR::null(),
+                    )?;
+                    let _ = args.SetResponse(&empty_resp);
+                    let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "AD_BLOCKED".to_string()));
+                    return Ok(());
+                }
+
+                const MEDIA_EXTS: &[&str] = &[
+                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".flac", ".alac", ".m4a", ".wav",
+                    ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
+                ];
+
+                if uri.starts_with("http") && MEDIA_EXTS.iter().any(|ext| clean_lower.ends_with(ext)) {
+                    let _ = proxy.send_event(AppEvent::NativeStreamCaptured(tab_id, uri));
+                }
+            }
+            Ok(())
+        }));
+
+        let _ = core.add_WebResourceRequested(&handler, &mut token);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_native_webview2_interceptor(
+    _webview: &WebView,
+    _tab_id: usize,
+    _adblock_enabled: bool,
+    _proxy: EventLoopProxy<AppEvent>,
+) {
 }
 
 fn create_tab_webview(
@@ -526,13 +755,15 @@ fn create_tab_webview(
         })
         .with_download_started_handler(move |dl_url, _dest| {
             let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(dl_url));
-            false // Route to Shunno Get 32-Thread Engine
+            false
         })
         .with_new_window_req_handler(move |popup_url| {
             let _ = win_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(popup_url));
             false
         })
         .build()?;
+
+    attach_native_webview2_interceptor(&wv, tab_id, policy.adblock, proxy);
 
     let _ = wv.set_visible(!drawer_open);
     Ok(wv)
@@ -576,7 +807,7 @@ fn main() -> wry::Result<()> {
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
-        .with_title("Shunno Browser — NBPro + Brave Background Audio + 32-Thread Shunno Get")
+        .with_title("Shunno Browser")
         .with_inner_size(LogicalSize::new(1220.0, 780.0))
         .build(&event_loop)
         .unwrap();
@@ -598,9 +829,8 @@ fn main() -> wry::Result<()> {
     let mut active_tab_idx: usize = 0;
     let mut drawer_open = false;
     let mut blocked_count: usize = 0;
-    let mut sniffed_streams: Vec<String> = Vec::new();
+    let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
 
-    // Restore previous session or open default start page
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
         vec!["https://duckduckgo.com".to_string()]
@@ -623,7 +853,6 @@ fn main() -> wry::Result<()> {
         }
     }
 
-    // Periodic background refresh timer to keep download progress bars & speeds updated smoothly
     let ticker_proxy = proxy.clone();
     rt_handle.spawn(async move {
         loop {
@@ -638,7 +867,7 @@ fn main() -> wry::Result<()> {
                              site_policies: &HashMap<String, SitePolicy>,
                              global_settings: &GlobalSettings,
                              blocked_count: usize,
-                             sniffed_streams: &[String],
+                             sniffed_streams: &[SniffedStreamItem],
                              bookmarks: &[BookmarkEntry],
                              history: &[HistoryEntry],
                              engine: &ShunnoGetDesktop| {
@@ -648,6 +877,7 @@ fn main() -> wry::Result<()> {
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
 
         let snap = ChromeSnapshot {
+            version: APP_VERSION,
             tabs: tabs
                 .iter()
                 .map(|t| TabSummary {
@@ -719,6 +949,53 @@ fn main() -> wry::Result<()> {
                 );
             }
 
+            Event::UserEvent(AppEvent::NativeStreamCaptured(tab_id, stream_url)) => {
+                if !sniffed_streams.iter().any(|s| s.url == stream_url) {
+                    let name = stream_url
+                        .split('?')
+                        .next()
+                        .and_then(|p| p.rsplit('/').next())
+                        .unwrap_or("Media Stream")
+                        .to_string();
+                    sniffed_streams.insert(
+                        0,
+                        SniffedStreamItem {
+                            url: stream_url.clone(),
+                            name,
+                            size_label: "Probing...".to_string(),
+                        },
+                    );
+                    if sniffed_streams.len() > 25 {
+                        sniffed_streams.truncate(25);
+                    }
+                    let ref_url = tabs.iter().find(|t| t.id == tab_id).map(|t| t.url.clone());
+                    let eng = engine.clone();
+                    let px = proxy.clone();
+                    rt_handle.spawn(async move {
+                        let res = eng.probe_stream_metadata(stream_url, ref_url, None).await;
+                        let _ = px.send_event(AppEvent::StreamSizeResolved(tab_id, res));
+                    });
+                }
+            }
+
+            Event::UserEvent(AppEvent::StreamSizeResolved(tab_id, probe)) => {
+                if let Some(item) = sniffed_streams.iter_mut().find(|s| s.url == probe.url) {
+                    item.size_label = probe.size_label.clone();
+                    if let Some(ref rname) = probe.resolved_name {
+                        item.name = rname.clone();
+                    }
+                }
+                if let Some(tab) = tabs.iter().find(|t| t.id == tab_id) {
+                    if let Ok(json) = serde_json::to_string(&probe) {
+                        let js = format!(
+                            "if (window.__shunnoOnStreamProbed) window.__shunnoOnStreamProbed({});",
+                            json
+                        );
+                        let _ = tab.webview.evaluate_script(&js);
+                    }
+                }
+            }
+
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
                 let ref_url = tabs.get(active_tab_idx).map(|t| t.url.clone());
                 engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, None);
@@ -748,7 +1025,7 @@ fn main() -> wry::Result<()> {
                 if global_settings.block_popups && is_ad_popup {
                     blocked_count += 1;
                 } else if popup_url.starts_with("http") {
-                    let clean = sanitize_url(&popup_url, global_settings.strip_tracking_params);
+                    let clean = sanitize_url(&popup_url, &global_settings);
                     let host = extract_host(&clean);
                     let pol = site_policies.get(&host).cloned().unwrap_or_default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
@@ -781,6 +1058,20 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(AppEvent::ContentIpc(tab_id, msg)) => {
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
+                } else if let Some(probe_json) = msg.strip_prefix("PROBE_STREAM:") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(probe_json) {
+                        let target_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                        if target_url.starts_with("http") {
+                            let eng = engine.clone();
+                            let px = proxy.clone();
+                            rt_handle.spawn(async move {
+                                let res = eng.probe_stream_metadata(target_url, referer, cookie).await;
+                                let _ = px.send_event(AppEvent::StreamSizeResolved(tab_id, res));
+                            });
+                        }
+                    }
                 } else if let Some(float_json) = msg.strip_prefix("FLOAT_DL:") {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(float_json) {
                         let dl_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -807,7 +1098,11 @@ fn main() -> wry::Result<()> {
                             }
                         }
                         "w" => {
-                            if tabs.len() > 1 && active_tab_idx < tabs.len() {
+                            if tabs.len() <= 1 {
+                                BrowserStorage::save_session(&[]);
+                                *control_flow = ControlFlow::Exit;
+                                return;
+                            } else if active_tab_idx < tabs.len() {
                                 tabs.remove(active_tab_idx);
                                 if active_tab_idx >= tabs.len() { active_tab_idx = tabs.len() - 1; }
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -836,8 +1131,21 @@ fn main() -> wry::Result<()> {
                         let _ = fs::write(out, html);
                     }
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
-                    if !sniffed_streams.iter().any(|s| s == stream_url) {
-                        sniffed_streams.insert(0, stream_url.to_string());
+                    if !sniffed_streams.iter().any(|s| s.url == stream_url) {
+                        let name = stream_url
+                            .split('?')
+                            .next()
+                            .and_then(|p| p.rsplit('/').next())
+                            .unwrap_or("Media Stream")
+                            .to_string();
+                        sniffed_streams.insert(
+                            0,
+                            SniffedStreamItem {
+                                url: stream_url.to_string(),
+                                name,
+                                size_label: "Probing...".to_string(),
+                            },
+                        );
                         if sniffed_streams.len() > 25 {
                             sniffed_streams.truncate(25);
                         }
@@ -902,7 +1210,7 @@ fn main() -> wry::Result<()> {
                         let _ = tab.webview.evaluate_script("location.reload();");
                     }
                 } else if let Some(raw_nav) = cmd.strip_prefix("NAV:") {
-                    let clean = sanitize_url(raw_nav, global_settings.strip_tracking_params);
+                    let clean = sanitize_url(raw_nav, &global_settings);
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
                         tab.url = clean.clone();
@@ -932,7 +1240,11 @@ fn main() -> wry::Result<()> {
                         }
                     }
                 } else if cmd == "CLOSE_ACTIVE_TAB" {
-                    if tabs.len() > 1 && active_tab_idx < tabs.len() {
+                    if tabs.len() <= 1 {
+                        BrowserStorage::save_session(&[]);
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    } else if active_tab_idx < tabs.len() {
                         tabs.remove(active_tab_idx);
                         if active_tab_idx >= tabs.len() {
                             active_tab_idx = tabs.len() - 1;
@@ -941,7 +1253,11 @@ fn main() -> wry::Result<()> {
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
-                        if tabs.len() > 1 && idx < tabs.len() {
+                        if tabs.len() <= 1 {
+                            BrowserStorage::save_session(&[]);
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        } else if idx < tabs.len() {
                             tabs.remove(idx);
                             if active_tab_idx >= tabs.len() {
                                 active_tab_idx = tabs.len() - 1;
@@ -949,12 +1265,63 @@ fn main() -> wry::Result<()> {
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
                     }
-                } else if cmd == "TOGGLE_BG_AUDIO" {
-                    global_settings.background_youtube_play = !global_settings.background_youtube_play;
-                    BrowserStorage::save_global_settings(&global_settings);
+                } else if let Some(idx_str) = cmd.strip_prefix("SET_SEARCH_ENGINE:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < global_settings.search_engines.len() {
+                            global_settings.active_search_engine = idx;
+                            BrowserStorage::save_global_settings(&global_settings);
+                        }
+                    }
+                } else if let Some(payload) = cmd.strip_prefix("ADD_SEARCH_ENGINE:") {
+                    if let Some((name, qurl)) = payload.split_once('|') {
+                        let clean_name = name.trim().to_string();
+                        let mut clean_url = qurl.trim().to_string();
+                        if !clean_name.is_empty() && clean_url.starts_with("http") {
+                            if !clean_url.contains("%s") {
+                                clean_url.push_str("%s");
+                            }
+                            global_settings.search_engines.push(SearchEngine {
+                                name: clean_name,
+                                query_url: clean_url,
+                            });
+                            global_settings.active_search_engine = global_settings.search_engines.len() - 1;
+                            BrowserStorage::save_global_settings(&global_settings);
+                        }
+                    }
+                } else if let Some(idx_str) = cmd.strip_prefix("DEL_SEARCH_ENGINE:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if global_settings.search_engines.len() > 1 && idx < global_settings.search_engines.len() {
+                            global_settings.search_engines.remove(idx);
+                            if global_settings.active_search_engine >= global_settings.search_engines.len() {
+                                global_settings.active_search_engine = 0;
+                            }
+                            BrowserStorage::save_global_settings(&global_settings);
+                        }
+                    }
                 } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
                     match gkey {
-                        "bg_audio" => global_settings.background_youtube_play = !global_settings.background_youtube_play,
+                        "full_dark" => {
+                            global_settings.full_dark_mode = !global_settings.full_dark_mode;
+                            // Reload active tab so Full Dark Mode applies immediately to web content
+                            if let Some(tab) = tabs.get(active_tab_idx) {
+                                let host = extract_host(&tab.url);
+                                let pol = site_policies.get(&host).cloned().unwrap_or_default();
+                                let current_url = tab.url.clone();
+                                let is_incog = tab.incognito;
+                                let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                                if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &pol, &global_settings, proxy.clone(), drawer_open) {
+                                    tabs[active_tab_idx] = BrowserTab {
+                                        id: tid,
+                                        title: tab.title.clone(),
+                                        url: current_url,
+                                        incognito: is_incog,
+                                        webview: new_wv,
+                                    };
+                                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                }
+                            }
+                        }
+                        "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
                         _ => {}
@@ -969,7 +1336,6 @@ fn main() -> wry::Result<()> {
                             "js_enabled" => pol.js_enabled = !pol.js_enabled,
                             "images_enabled" => pol.images_enabled = !pol.images_enabled,
                             "desktop_ua" => pol.desktop_ua = !pol.desktop_ua,
-                            "oled_dark" => pol.oled_dark = !pol.oled_dark,
                             "sponsorblock" => pol.sponsorblock = !pol.sponsorblock,
                             "auto_reject_cookies" => pol.auto_reject_cookies = !pol.auto_reject_cookies,
                             _ => {}
@@ -977,7 +1343,6 @@ fn main() -> wry::Result<()> {
                         let updated_pol = pol.clone();
                         BrowserStorage::save_site_policies(&site_policies);
 
-                        // Recreate tab WebView with updated site policy & reload
                         let current_url = tab.url.clone();
                         let is_incog = tab.incognito;
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
@@ -1002,7 +1367,7 @@ fn main() -> wry::Result<()> {
                         let js = r#"
                             (function() {
                                 const text = (document.querySelector('article') || document.body).innerText;
-                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
+                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 BlinkMacSystemFont,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
                                     text.split('\n').filter(p => p.trim().length > 0).map(p => '<p style="margin-bottom:16px;">' + p + '</p>').join('') + '</div>';
                             })();
                         "#;
