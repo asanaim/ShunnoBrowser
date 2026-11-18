@@ -639,7 +639,14 @@
       }
     }
 
+    let lastHoverCheck = 0;
     document.addEventListener('mouseover', (e) => inspectHoverTarget(e.target), true);
+    document.addEventListener('mousemove', (e) => {
+      const now = Date.now();
+      if (now - lastHoverCheck < 180) return;
+      lastHoverCheck = now;
+      inspectHoverTarget(e.target);
+    }, { passive: true, capture: true });
     document.addEventListener('mouseout', (e) => {
       if (e.target && e.target.closest && e.target.closest('video, audio, ytd-player, .html5-video-player, #movie_player, a[href]')) {
         scheduleHide();

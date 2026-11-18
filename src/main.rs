@@ -180,10 +180,12 @@ fn attach_native_webview2_hooks(
             let mut audio_token = Default::default();
             let audio_proxy = proxy.clone();
             let audio_handler = IsDocumentPlayingAudioChangedEventHandler::create(Box::new(move |sender, _| {
-                if let Some(wv8) = sender {
-                    let mut playing = BOOL::default();
-                    if wv8.IsDocumentPlayingAudio(&mut playing).is_ok() {
-                        let _ = audio_proxy.send_event(AppEvent::TabAudioChanged(tab_id, playing.as_bool()));
+                if let Some(wv) = sender {
+                    if let Ok(wv8) = wv.cast::<ICoreWebView2_8>() {
+                        let mut playing = BOOL::default();
+                        if wv8.IsDocumentPlayingAudio(&mut playing).is_ok() {
+                            let _ = audio_proxy.send_event(AppEvent::TabAudioChanged(tab_id, playing.as_bool()));
+                        }
                     }
                 }
                 Ok(())

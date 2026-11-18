@@ -1,3 +1,7 @@
+## v1.1.1 (2026-11-18)
+- Fixed `ICoreWebView2` -> `ICoreWebView2_8` COM interface cast inside `IsDocumentPlayingAudioChangedEventHandler` (`src/main.rs:184`).
+- Added throttled `mousemove` fallback for the Trusted-Types safe floating media download pill so players with transparent overlay shields always trigger the pill.
+
 # Changelog
 
 ## v1.1.0 (2026-11-18)
