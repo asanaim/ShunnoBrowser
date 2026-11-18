@@ -17,6 +17,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --text: #1C1C1E;
     --muted: #6E6E73;
     --input-bg: #F2F2F7;
+    --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
   }
   body.dark {
     --bg: #0B0B0D;
@@ -34,46 +35,74 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --input-bg: #2C2C2E;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
-  html, body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+  html, body { background: var(--bg); color: var(--text); overflow: hidden; display: flex; flex-direction: column; height: 100vh; transition: background 0.24s var(--ease-spring), color 0.24s var(--ease-spring); }
 
   .chrome-top {
     background: var(--surface);
     z-index: 10;
   }
 
-  /* Auto-Resizing Tab Strip with + and Private buttons immediately adjacent to last tab */
+  /* Polished Tab Strip — Single Iconic Emblem (Zero Duplicate Text) + Smooth Tab Transitions */
   .tab-bar {
-    display: flex; align-items: center; gap: 5px; padding: 5px 10px 4px 10px;
+    display: flex; align-items: center; gap: 6px; padding: 5px 10px 4px 10px;
     background: var(--tab-bg); border-bottom: 1px solid var(--border); height: 38px; overflow: hidden;
   }
-  .brand-pill {
-    display: flex; align-items: center; gap: 6px; font-weight: 800; font-size: 12px; letter-spacing: -0.2px;
-    background: linear-gradient(135deg, #0D47A1, #0A84FF); color: #fff;
-    padding: 4px 10px; border-radius: 9px; flex-shrink: 0;
+  .logo-badge {
+    width: 26px; height: 26px; border-radius: 8px;
+    background: linear-gradient(135deg, #0D47A1, #0A84FF);
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; box-shadow: 0 2px 6px rgba(10,132,255,0.32);
+    transition: transform 0.2s var(--ease-spring), box-shadow 0.2s var(--ease-spring);
   }
+  .logo-badge:hover {
+    transform: scale(1.06);
+    box-shadow: 0 3px 10px rgba(10,132,255,0.45);
+  }
+
   #tabs-container {
     display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
   }
+
+  @keyframes tabSlideIn {
+    from { opacity: 0; transform: translateY(5px) scale(0.95); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
   .tab {
-    display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 9px;
-    background: rgba(128,128,128,0.14); color: var(--text); font-size: 12px; cursor: pointer;
-    flex: 1 1 165px; min-width: 36px; max-width: 195px; overflow: hidden; transition: background 0.12s;
+    display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 9px;
+    background: rgba(128,128,128,0.13); color: var(--text); font-size: 12px; cursor: pointer;
+    flex: 1 1 165px; min-width: 36px; max-width: 195px; overflow: hidden;
+    animation: tabSlideIn 0.2s var(--ease-spring);
+    transition: background 0.18s var(--ease-spring), transform 0.16s var(--ease-spring), box-shadow 0.2s var(--ease-spring), color 0.18s ease;
   }
-  .tab.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.14); }
+  .tab:hover { background: rgba(128,128,128,0.22); }
+  .tab:active { transform: scale(0.97); }
+  .tab.active {
+    background: var(--surface); color: var(--text); font-weight: 600;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.14);
+  }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; border: 1px solid #48484A; }
+
   .tab-audio {
-    font-size: 11px; padding: 0 3px; border-radius: 4px; flex-shrink: 0;
+    font-size: 11px; padding: 0 4px; border-radius: 4px; flex-shrink: 0;
     background: rgba(10,132,255,0.14); color: var(--blue);
+    transition: background 0.15s ease, transform 0.15s var(--ease-spring);
   }
-  .tab-audio:hover { background: var(--blue); color: #fff; }
+  .tab-audio:hover { background: var(--blue); color: #fff; transform: scale(1.08); }
   .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-  .tab-close { font-size: 10.5px; color: var(--muted); padding: 1px 4px; border-radius: 4px; flex-shrink: 0; }
-  .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
-  .tab-add {
-    border: none; background: rgba(128,128,128,0.16); color: var(--blue); font-weight: 700;
-    font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+  .tab-close {
+    font-size: 10.5px; color: var(--muted); padding: 1px 4px; border-radius: 4px; flex-shrink: 0;
+    transition: background 0.15s ease, color 0.15s ease;
   }
-  .tab-add:hover { background: var(--surface); }
+  .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
+
+  .tab-add {
+    border: none; background: rgba(128,128,128,0.15); color: var(--blue); font-weight: 700;
+    font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+    transition: background 0.16s ease, transform 0.14s var(--ease-spring);
+  }
+  .tab-add:hover { background: var(--surface); transform: translateY(-0.5px); }
+  .tab-add:active { transform: scale(0.94); }
 
   /* Minimalist Navigation Toolbar */
   .nav-bar {
@@ -83,19 +112,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .nav-btn {
     border: none; background: var(--input-bg); color: var(--text); font-size: 13.5px; font-weight: 600;
     padding: 6px 11px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
-    white-space: nowrap; transition: all 0.12s;
+    white-space: nowrap;
+    transition: background 0.16s var(--ease-spring), transform 0.14s var(--ease-spring), color 0.16s ease, box-shadow 0.18s ease;
   }
-  .nav-btn:hover { filter: brightness(0.95); }
+  .nav-btn:hover { filter: brightness(0.96); transform: translateY(-0.5px); }
+  .nav-btn:active { transform: scale(0.95); }
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
   .nav-btn.green { background: var(--green-soft); color: #24B44B; }
 
   .search-picker {
     border: none; background: var(--input-bg); color: var(--text); font-size: 12px; font-weight: 600;
     padding: 6px 8px; border-radius: 10px; outline: none; cursor: pointer; max-width: 120px;
+    transition: background 0.16s ease;
   }
   .url-wrap {
     flex: 1; display: flex; align-items: center; background: var(--input-bg);
     border-radius: 11px; padding: 0 12px; height: 35px; border: 1px solid transparent; min-width: 120px;
+    transition: background 0.18s var(--ease-spring), border-color 0.18s var(--ease-spring), box-shadow 0.2s var(--ease-spring);
   }
   .url-wrap:focus-within { background: var(--surface); border-color: var(--blue); box-shadow: 0 0 0 3px rgba(10,132,255,0.18); }
   #url-input {
@@ -103,7 +136,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 13px; color: var(--text); user-select: text;
   }
 
-  /* Non-Overlapping Right Docked Panel — strictly aligned to the 440px right strip! */
+  /* Smooth Animated Right Docked Panel */
+  @keyframes panelGlideIn {
+    from { opacity: 0; transform: translateX(22px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes cardReveal {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
   .dock-panel {
     width: 440px;
     max-width: 65vw;
@@ -116,14 +158,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     padding: 12px;
     overflow-y: auto;
     overflow-x: hidden;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
   }
   .dock-panel.open {
     display: flex;
+    animation: panelGlideIn 0.24s var(--ease-spring);
   }
 
   .card {
     background: var(--surface); border-radius: 13px; padding: 11px 12px; margin-bottom: 10px;
     border: 1px solid var(--border); min-width: 0;
+    animation: cardReveal 0.22s var(--ease-spring);
+    transition: background 0.2s ease, border-color 0.2s ease;
   }
   .card:last-child { margin-bottom: 0; }
   .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap; }
@@ -133,13 +179,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: center; gap: 4px;
     padding: 7px 8px; border-radius: 9px; background: var(--input-bg); font-size: 11.5px; font-weight: 600;
     min-width: 0;
+    transition: background 0.16s ease;
   }
   .toggle-tile span {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .pill-btn {
     border: none; border-radius: 8px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+    transition: background 0.16s var(--ease-spring), transform 0.12s var(--ease-spring), color 0.16s ease;
   }
+  .pill-btn:hover { filter: brightness(0.95); }
+  .pill-btn:active { transform: scale(0.94); }
   .pill-blue { background: var(--blue); color: #fff; }
   .pill-soft { background: var(--blue-soft); color: var(--blue); }
   .pill-green { background: var(--green-soft); color: #24B44B; }
@@ -150,14 +200,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .text-box {
     flex: 1; min-width: 110px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; user-select: text;
+    transition: border-color 0.16s ease, background 0.16s ease;
   }
+  .text-box:focus { border-color: var(--blue); background: var(--surface); }
   .select-box {
     padding: 7px 9px; border-radius: 9px; border: 1px solid var(--border);
     font-size: 12px; background: var(--input-bg); color: var(--text);
   }
 
   .prog-track { width: 100%; height: 6px; background: var(--input-bg); border-radius: 4px; overflow: hidden; margin: 6px 0; }
-  .prog-fill { height: 100%; background: var(--blue); transition: width 0.2s; }
+  .prog-fill { height: 100%; background: var(--blue); transition: width 0.25s var(--ease-spring), background 0.2s ease; }
   .prog-fill.done { background: var(--green); }
   .meta { font-size: 11px; color: var(--muted); }
   .list-row {
@@ -170,14 +222,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <body>
 
   <div class="chrome-top">
-    <!-- 1. Auto-Resizing Tab Strip with + and Private buttons right next to the open tabs -->
+    <!-- 1. Tab Strip: Single Geometric Zero Emblem + Auto-Resizing Tabs + Adjacent New Tab Buttons -->
     <div class="tab-bar" id="tab-bar">
-      <div class="brand-pill">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <ellipse cx="12" cy="12" rx="6.8" ry="8.8" stroke="white" stroke-width="2.8"/>
-          <line x1="7.5" y1="16.5" x2="16.5" y2="7.5" stroke="#30D158" stroke-width="2.6" stroke-linecap="round"/>
+      <div class="logo-badge" title="Shunno Browser">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <ellipse cx="12" cy="12" rx="6.6" ry="8.8" stroke="white" stroke-width="3"/>
+          <line x1="7.2" y1="16.8" x2="16.8" y2="7.2" stroke="#30D158" stroke-width="2.8" stroke-linecap="round"/>
         </svg>
-        <span>Shunno</span>
       </div>
       <div id="tabs-container"></div>
       <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">+</button>
@@ -203,16 +254,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- 3. Docked Right Side Panel (Live webpage remains visible on the left!) -->
+  <!-- 3. Docked Right Side Panel -->
   <div class="dock-panel" id="drawer">
 
     <!-- Panel A: Controls & Settings -->
     <div id="panel-controls" style="display:none">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Shunno Browser</span>
+          <span class="card-title">Controls</span>
           <div style="display:flex;gap:6px;align-items:center;">
-            <span class="meta" id="version-badge" style="font-weight:700;">v1.1.0</span>
+            <span class="meta" id="version-badge" style="font-weight:700;">v1.3.0</span>
             <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Toggle Full Screen (F11)">⛶ F11</button>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
           </div>
@@ -309,7 +360,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Panel E: Shunno Get Downloads (with Duplicate Detection & Auto-Cleanup) -->
+    <!-- Panel E: Shunno Get Downloads (with Site Grabber, Batch Queue, Duplicate Detection & Auto-Cleanup) -->
     <div id="panel-downloads" style="display:none">
       <div class="card">
         <div class="card-header">
@@ -317,6 +368,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
             <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
             <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
+            <button class="pill-btn pill-soft" onclick="send('GRAB_PAGE_LINKS')" title="IDM Site Grabber: Scan all links & media on active page">🕸️ Grab Page</button>
             <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items from list">🧹 Clean</button>
             <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
               <option value="0">Unlimited</option>
@@ -367,11 +419,21 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       closeDrawer();
       return;
     }
+    const drawer = document.getElementById('drawer');
+    const wasClosed = !activeDrawer;
     activeDrawer = name;
-    document.getElementById('drawer').classList.add('open');
+
     ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
+
+    if (wasClosed) {
+      drawer.classList.remove('open');
+      void drawer.offsetWidth; // trigger smooth entrance animation
+      drawer.classList.add('open');
+    } else {
+      drawer.classList.add('open');
+    }
     send('DRAWER_OPEN:' + name);
   }
 
@@ -432,7 +494,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.2.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.3.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -475,7 +537,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('btn-downloads').textContent = `⚡ ${state.downloads.length}`;
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
-    // Duplicate Download Banner
     const dupBanner = document.getElementById('duplicate-banner');
     if (state.duplicate_alert) {
       dupBanner.style.display = 'block';
@@ -540,7 +601,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    // UserScripts approval list
     document.getElementById('userscripts-list').innerHTML = (!state.userscripts || state.userscripts.length === 0)
       ? '<div class="meta">No .js scripts in %LOCALAPPDATA%\\ShunnoBrowser\\scripts\\</div>'
       : state.userscripts.map(us => `
@@ -596,7 +656,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         `).join('');
 
     document.getElementById('downloads-list').innerHTML = state.downloads.length === 0
-      ? '<div class="card"><div class="meta">No downloads yet. Hover over any video or file on a page to use the floating download pill.</div></div>'
+      ? '<div class="card"><div class="meta">No downloads yet. Hover over any video/file or click 🕸️ Grab Page to scan all downloadable files on the active tab.</div></div>'
       : state.downloads.map(d => {
           const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
           const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);

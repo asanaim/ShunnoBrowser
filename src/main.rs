@@ -767,6 +767,10 @@ fn main() -> wry::Result<()> {
                         let out = BrowserStorage::downloads_root_dir().join(&safe_name);
                         let _ = fs::write(out, html);
                     }
+                } else if msg.starts_with("GRAB_DONE:") {
+                    drawer_open = true;
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    let _ = chrome_wv.evaluate_script("toggleDrawer('streams');");
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
                     if !sniffed_streams.iter().any(|s| s.url == stream_url) {
                         let name = stream_url
@@ -1124,6 +1128,10 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "OPEN_DOWNLOADS_FOLDER" {
                     let dir = BrowserStorage::downloads_root_dir();
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
+                } else if cmd == "GRAB_PAGE_LINKS" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        let _ = tab.webview.evaluate_script("if (window.__shunnoGrabAllPageLinks) window.__shunnoGrabAllPageLinks();");
+                    }
                 } else if cmd == "CLEAR_COMPLETED_DL" {
                     engine.clear_completed();
                 } else if cmd == "DISMISS_DUP" {

@@ -1,4 +1,4 @@
-# Shunno Browser — Architecture Overview (`v1.2.0`)
+# Shunno Browser — Architecture Overview (`v1.3.0`)
 
 ## 1. Process & Window Model
 - **Window & Event Loop (`tao`):** Native Win32 window hosting two child `wry` Edge WebView2 surfaces (`chrome_wv` and active `BrowserTab.webview`).

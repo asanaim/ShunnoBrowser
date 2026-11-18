@@ -290,6 +290,10 @@
 
     const styleEl = document.createElement('style');
     styleEl.textContent = `
+      @keyframes shunnoPopIn {
+        from { opacity: 0; transform: translateY(6px) scale(0.95); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+      }
       .pill-wrap {
         position: fixed;
         pointer-events: auto;
@@ -305,6 +309,8 @@
         font-size: 12px;
         font-weight: 600;
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+        animation: shunnoPopIn 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+        transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1), top 0.16s cubic-bezier(0.22, 1, 0.36, 1);
       }
       .pill-main {
         display: inline-flex;
@@ -779,6 +785,24 @@
         requestSizeProbe(it.url);
       }
     });
+  };
+
+  window.__shunnoGrabAllPageLinks = function() {
+    const found = new Set();
+    document.querySelectorAll('a[href], video[src], audio[src], source[src]').forEach(el => {
+      const raw = el.href || el.src;
+      if (!raw || !String(raw).startsWith('http')) return;
+      const clean = String(raw).split('?')[0].toLowerCase();
+      if (ALL_EXTS.some(ext => clean.endsWith(ext))) {
+        found.add(String(raw));
+      }
+    });
+    if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {
+      window.__shunnoYtStreams.forEach(s => { if (s.url) found.add(s.url); });
+    }
+    capturedStreams.forEach(s => { if (s.url) found.add(s.url); });
+    found.forEach(u => addCapturedStream(u));
+    postSecure('GRAB_DONE:' + found.size);
   };
 
   if (document.documentElement) installFloatingOverlay();
