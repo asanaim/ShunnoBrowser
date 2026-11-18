@@ -16,7 +16,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::window::{Window, WindowBuilder};
+use tao::keyboard::KeyCode;
+use tao::window::{Fullscreen, Window, WindowBuilder};
 use wry::{Rect, WebView, WebViewBuilder};
 
 use state::{
@@ -96,20 +97,53 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
         );
     }
 
-    // 2. Early Pre-Roll YouTube Ad Stripper (intercepts ytInitialPlayerResponse & JSON.parse BEFORE video starts)
+    // 2. Early Pre-Roll YouTube Ad Stripper + Direct Stream Extractor (for IDM Floating Pill on YouTube)
     if policy.adblock || policy.sponsorblock {
         script.push_str(
             r#"
             (function() {
+                window.__shunnoYtStreams = [];
+
+                function harvestYtStreams(obj) {
+                    try {
+                        const sd = obj && obj.streamingData;
+                        if (!sd) return;
+                        const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
+                        const title = (obj.videoDetails && obj.videoDetails.title) || document.title.replace(' - YouTube', '') || 'YouTube_Video';
+                        const found = [];
+                        for (const f of all) {
+                            if (f && f.url && String(f.url).startsWith('http')) {
+                                const mime = String(f.mimeType || '');
+                                const isAudio = mime.startsWith('audio/');
+                                const ext = isAudio ? '.M4A' : (mime.includes('webm') ? '.WEBM' : '.MP4');
+                                const qual = f.qualityLabel || (isAudio ? (Math.round((f.bitrate || 128000)/1000) + 'kbps Audio') : 'Video');
+                                found.push({
+                                    url: f.url,
+                                    ext: ext,
+                                    name: `${qual} - ${title}${ext.toLowerCase()}`
+                                });
+                            }
+                        }
+                        if (found.length > 0) {
+                            window.__shunnoYtStreams = found;
+                            if (window.__shunnoSyncYtStreams) window.__shunnoSyncYtStreams(found);
+                        }
+                    } catch(e) {}
+                }
+
                 function stripAdFields(obj) {
                     if (!obj || typeof obj !== 'object') return obj;
                     try {
-                        if ('adPlacements' in obj) delete obj.adPlacements;
-                        if ('playerAds' in obj) delete obj.playerAds;
-                        if ('adSlots' in obj) delete obj.adSlots;
+                        if ('streamingData' in obj) harvestYtStreams(obj);
+                        if ('adPlacements' in obj) { obj.adPlacements = []; delete obj.adPlacements; }
+                        if ('playerAds' in obj) { obj.playerAds = []; delete obj.playerAds; }
+                        if ('adSlots' in obj) { obj.adSlots = []; delete obj.adSlots; }
                         if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
                         if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) {
                             delete obj.auxiliaryUi.messageRenderers;
+                        }
+                        if (obj.playerConfig && obj.playerConfig.ssapConfig) {
+                            delete obj.playerConfig.ssapConfig;
                         }
                     } catch(e) {}
                     return obj;
@@ -127,7 +161,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 const origParse = JSON.parse;
                 JSON.parse = function(text, reviver) {
                     const res = origParse.apply(this, arguments);
-                    if (res && typeof res === 'object' && ('adPlacements' in res || 'playerAds' in res || 'adSlots' in res)) {
+                    if (res && typeof res === 'object' && ('adPlacements' in res || 'playerAds' in res || 'adSlots' in res || 'streamingData' in res)) {
                         stripAdFields(res);
                     }
                     return res;
@@ -137,6 +171,24 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 Response.prototype.json = function() {
                     return origRespJson.apply(this, arguments).then(data => stripAdFields(data));
                 };
+
+                const origXhrText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText');
+                if (origXhrText && origXhrText.get) {
+                    Object.defineProperty(XMLHttpRequest.prototype, 'responseText', {
+                        configurable: true,
+                        get() {
+                            const txt = origXhrText.get.call(this);
+                            if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"'))) {
+                                try {
+                                    const parsed = origParse(txt);
+                                    stripAdFields(parsed);
+                                    return JSON.stringify(parsed);
+                                } catch(e) {}
+                            }
+                            return txt;
+                        }
+                    });
+                }
             })();
             "#,
         );
@@ -538,8 +590,15 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                                     if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
                                 }});
                             }}
-                            capturedStreams.forEach(s => items.push(s));
-                            if (items.length === 0 && location.hostname.includes('youtube.com') && location.search.includes('v=')) {{
+                            if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {{
+                                window.__shunnoYtStreams.forEach(ys => {{
+                                    if (!items.some(x => x.url === ys.url)) items.push(ys);
+                                }});
+                            }}
+                            capturedStreams.forEach(s => {{
+                                if (!items.some(x => x.url === s.url)) items.push(s);
+                            }});
+                            if (items.length === 0 && location.hostname.includes('youtube.com')) {{
                                 items.push({{
                                     url: location.href,
                                     ext: '.MP4',
@@ -548,7 +607,7 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                             }}
                             if (items.length > 0) {{
                                 const kind = (videoEl && videoEl.tagName === 'AUDIO') ? 'Download audio' : 'Download video';
-                                showPillAt(rect.right - 205, rect.top + 12, kind, items);
+                                showPillAt(rect.right - 215, Math.max(8, rect.top + 12), kind, items);
                                 return;
                             }}
                         }}
@@ -596,8 +655,21 @@ fn build_content_init_script(policy: &SitePolicy, global: &GlobalSettings, user_
                 installFloatingOverlay();
             }});
 
+            window.__shunnoSyncYtStreams = function(list) {{
+                if (!Array.isArray(list)) return;
+                list.forEach(it => {{
+                    if (it && it.url && !capturedStreams.some(s => s.url === it.url)) {{
+                        capturedStreams.push(it);
+                        requestSizeProbe(it.url);
+                    }}
+                }});
+            }};
+
             document.addEventListener('keydown', (e) => {{
-                if (e.ctrlKey && !e.shiftKey && !e.altKey) {{
+                if (e.key === 'F11') {{
+                    e.preventDefault();
+                    if (window.ipc) window.ipc.postMessage('KEY:f11');
+                }} else if (e.ctrlKey && !e.shiftKey && !e.altKey) {{
                     const k = e.key.toLowerCase();
                     if (k === 't' || k === 'w' || k === 'j') {{
                         e.preventDefault();
@@ -757,6 +829,10 @@ fn attach_native_webview2_interceptor(
                     "youtube.com/pagead/",
                     "youtube.com/api/stats/ads",
                     "youtube.com/ptracking",
+                    "youtube.com/get_midroll_",
+                    "googlevideo.com/initplayback?source=youtube&oad",
+                    "&ctier=l",
+                    "&adformat=",
                 ];
 
                 if adblock_enabled && AD_DOMAINS.iter().any(|d| lower.contains(d)) {
@@ -837,7 +913,7 @@ fn create_tab_webview(
 
     attach_native_webview2_interceptor(&wv, tab_id, policy.adblock, proxy);
 
-    let _ = wv.set_visible(!drawer_open);
+    let _ = wv.set_visible(true);
     Ok(wv)
 }
 
@@ -858,7 +934,8 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
             size: LogicalSize::new(w, content_h).into(),
         });
-        let _ = tab.webview.set_visible(!drawer_open && idx == active_idx);
+        // Keep active tab visible behind the compact floating popover!
+        let _ = tab.webview.set_visible(idx == active_idx);
     }
 }
 
@@ -990,6 +1067,17 @@ fn main() -> wry::Result<()> {
                 ..
             } => {
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+            }
+
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput { event: key_ev, .. },
+                ..
+            } => {
+                if key_ev.physical_key == KeyCode::F11 && key_ev.state == tao::event::ElementState::Pressed {
+                    let is_fs = window.fullscreen().is_some();
+                    window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                }
             }
 
             Event::WindowEvent {
@@ -1193,6 +1281,11 @@ fn main() -> wry::Result<()> {
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
                         }
+                        "f11" => {
+                            let is_fs = window.fullscreen().is_some();
+                            window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        }
                         "j" => {
                             drawer_open = true;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -1283,7 +1376,11 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ChromeIpc(cmd)) => {
-                if let Some(open_flag) = cmd.strip_prefix("DRAWER_OPEN:") {
+                if cmd == "TOGGLE_FULLSCREEN" {
+                    let is_fs = window.fullscreen().is_some();
+                    window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                } else if let Some(open_flag) = cmd.strip_prefix("DRAWER_OPEN:") {
                     drawer_open = open_flag == "1";
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd == "BACK" {
