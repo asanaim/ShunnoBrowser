@@ -161,10 +161,8 @@ fn attach_native_webview2_hooks(
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2, ICoreWebView2_8,
         ICoreWebView2WebResourceResponse,
     };
-    use webview2_com::{
-        take_pwstr, IsDocumentPlayingAudioChangedEventHandler, WebResourceRequestedEventHandler,
-    };
-    use windows::core::{w, Interface, PCWSTR, PWSTR};
+    use webview2_com::{IsDocumentPlayingAudioChangedEventHandler, WebResourceRequestedEventHandler};
+    use windows::core::{w, Interface, PCWSTR};
     use windows::Win32::Foundation::BOOL;
     use windows::Win32::System::Com::IStream;
     use wry::WebViewExtWindows;
@@ -201,72 +199,48 @@ fn attach_native_webview2_hooks(
             return;
         };
 
-        let _ = core.AddWebResourceRequestedFilter(
-            w!("*"),
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        );
-
-        let mut token = Default::default();
-        let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
-            let Some(args) = args else {
-                return Ok(());
-            };
-            let Ok(request) = args.Request() else {
-                return Ok(());
-            };
-            let mut uri_ptr = PWSTR::null();
-            if request.Uri(&mut uri_ptr).is_ok() {
-                let uri = take_pwstr(uri_ptr);
-                let lower = uri.to_ascii_lowercase();
-                let clean_lower = lower.split('?').next().unwrap_or("");
-
-                const AD_DOMAINS: &[&str] = &[
-                    "doubleclick.net",
-                    "googlesyndication.com",
-                    "googleadservices.com",
-                    "adnxs.com",
-                    "adsrvr.org",
-                    "taboola.com",
-                    "outbrain.com",
-                    "popads.net",
-                    "popcash.net",
-                    "propellerads.com",
-                    "exoclick.com",
-                    "youtube.com/pagead/",
-                    "youtube.com/api/stats/ads",
-                    "youtube.com/ptracking",
-                    "youtube.com/get_midroll_",
-                    "googlevideo.com/initplayback?source=youtube&oad",
-                    "&ctier=l",
-                    "&adformat=",
-                ];
-
-                if adblock_enabled && AD_DOMAINS.iter().any(|d| lower.contains(d)) {
-                    let empty_resp: ICoreWebView2WebResourceResponse = env.CreateWebResourceResponse(
-                        None::<&IStream>,
-                        403,
-                        w!("Blocked by Shunno AdBlock"),
-                        PCWSTR::null(),
-                    )?;
-                    let _ = args.SetResponse(&empty_resp);
-                    let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
-                    return Ok(());
-                }
-
-                // Skip .m4s / .ts chunk spam to keep UI fast and responsive
-                const MEDIA_EXTS: &[&str] = &[
-                    ".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".flac", ".alac", ".m4a", ".wav",
-                    ".mp3", ".zip", ".7z", ".rar", ".iso", ".exe", ".msi", ".apk", ".pdf",
-                ];
-
-                if uri.starts_with("http") && MEDIA_EXTS.iter().any(|ext| clean_lower.ends_with(ext)) {
-                    let _ = proxy.send_event(AppEvent::NativeStreamCaptured(tab_id, uri));
-                }
+        // Only intercept known ad/tracker URL patterns so 99% of page traffic runs at full native Chromium speed
+        if adblock_enabled {
+            let ad_filters = [
+                w!("*://*.doubleclick.net/*"),
+                w!("*://*.googlesyndication.com/*"),
+                w!("*://*.googleadservices.com/*"),
+                w!("*://*.adnxs.com/*"),
+                w!("*://*.adsrvr.org/*"),
+                w!("*://*.taboola.com/*"),
+                w!("*://*.outbrain.com/*"),
+                w!("*://*.popads.net/*"),
+                w!("*://*.popcash.net/*"),
+                w!("*://*.propellerads.com/*"),
+                w!("*://*.exoclick.com/*"),
+                w!("*://*.youtube.com/pagead/*"),
+                w!("*://*.youtube.com/api/stats/ads*"),
+                w!("*://*.youtube.com/ptracking*"),
+                w!("*://*.youtube.com/get_midroll_*"),
+                w!("*://*.googlevideo.com/initplayback*oad*"),
+            ];
+            for pat in ad_filters {
+                let _ = core.AddWebResourceRequestedFilter(pat, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
             }
-            Ok(())
-        }));
 
-        let _ = core.add_WebResourceRequested(&handler, &mut token);
+            let mut token = Default::default();
+            let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let empty_resp: ICoreWebView2WebResourceResponse = env.CreateWebResourceResponse(
+                    None::<&IStream>,
+                    403,
+                    w!("Blocked by Shunno AdBlock"),
+                    PCWSTR::null(),
+                )?;
+                let _ = args.SetResponse(&empty_resp);
+                let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
+                Ok(())
+            }));
+
+            let _ = core.add_WebResourceRequested(&handler, &mut token);
+        }
     }
 }
 

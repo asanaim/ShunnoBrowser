@@ -103,31 +103,39 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 13px; color: var(--text); user-select: text;
   }
 
-  /* Non-Overlapping Docked Side Panel (100% clickable while running webpage stays visible beside it!) */
+  /* Non-Overlapping Right Docked Panel — strictly aligned to the 440px right strip! */
   .dock-panel {
-    flex: 1;
+    width: 440px;
+    max-width: 65vw;
+    height: calc(100vh - 86px);
+    margin-left: auto;
     display: none;
     flex-direction: column;
     background: var(--bg);
     border-left: 1px solid var(--border);
     padding: 12px;
     overflow-y: auto;
+    overflow-x: hidden;
   }
   .dock-panel.open {
     display: flex;
   }
 
   .card {
-    background: var(--surface); border-radius: 13px; padding: 12px 14px; margin-bottom: 10px;
-    border: 1px solid var(--border);
+    background: var(--surface); border-radius: 13px; padding: 11px 12px; margin-bottom: 10px;
+    border: 1px solid var(--border); min-width: 0;
   }
   .card:last-child { margin-bottom: 0; }
   .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap; }
-  .card-title { font-size: 13.5px; font-weight: 700; }
-  .grid-toggles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+  .card-title { font-size: 13px; font-weight: 700; }
+  .grid-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .toggle-tile {
-    display: flex; justify-content: space-between; align-items: center; gap: 6px;
-    padding: 8px 10px; border-radius: 10px; background: var(--input-bg); font-size: 12px; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center; gap: 4px;
+    padding: 7px 8px; border-radius: 9px; background: var(--input-bg); font-size: 11.5px; font-weight: 600;
+    min-width: 0;
+  }
+  .toggle-tile span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .pill-btn {
     border: none; border-radius: 8px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
@@ -424,7 +432,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.1.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.2.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';

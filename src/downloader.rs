@@ -141,7 +141,7 @@ pub fn detect_download_category(file_name: &str) -> String {
         "mp4" | "mkv" | "webm" | "mov" | "avi" | "ts" | "m3u8" | "m4s" => "Videos".to_string(),
         "flac" | "alac" | "m4a" | "wav" | "mp3" | "ogg" | "opus" => "Lossless Audio".to_string(),
         "zip" | "rar" | "7z" | "tar" | "gz" | "iso" => "Archives".to_string(),
-        "exe" | "msi" | "apk" => "Programs".to_string(),
+        "exe" | "msi" => "Programs".to_string(),
         _ => "Documents".to_string(),
     }
 }
@@ -162,7 +162,6 @@ fn infer_extension_from_mime(mime: &str) -> Option<&'static str> {
         "application/x-7z-compressed" => Some("7z"),
         "application/x-rar-compressed" | "application/vnd.rar" => Some("rar"),
         "application/pdf" => Some("pdf"),
-        "application/vnd.android.package-archive" => Some("apk"),
         "application/x-msdownload" => Some("exe"),
         _ => None,
     }

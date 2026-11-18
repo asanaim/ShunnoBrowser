@@ -16,6 +16,16 @@
     }
   }
 
+  function formatBytesJS(bytes) {
+    const b = Number(bytes);
+    if (!b || isNaN(b) || b <= 0) return null;
+    const kb = 1024, mb = kb * 1024, gb = mb * 1024;
+    if (b >= gb) return (b / gb).toFixed(2) + ' GB';
+    if (b >= mb) return (b / mb).toFixed(1) + ' MB';
+    if (b >= kb) return (b / kb).toFixed(0) + ' KB';
+    return b + ' B';
+  }
+
   // 1. Background Media Playback (Page Visibility API lock)
   if (BG_MEDIA_ON) {
     try {
@@ -55,52 +65,58 @@
     (document.head || document.documentElement).appendChild(st);
   }
 
-  // 5. YouTube Pre-Roll Ad Stripper + Direct Stream Harvester (scoped to YouTube origins)
+  // 5. YouTube Pre-Roll Ad Stripper + Direct Stream & Quality Harvester
   const isYouTube = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(location.hostname);
   window.__shunnoYtStreams = [];
+  const probedSizes = new Map();
+
+  function harvestYtStreams(obj) {
+    try {
+      const sd = obj && obj.streamingData;
+      if (!sd) return;
+      const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
+      const rawTitle = (obj.videoDetails && obj.videoDetails.title) || document.title.replace(' - YouTube', '') || 'YouTube_Video';
+      const title = rawTitle.trim();
+      const found = [];
+      for (const f of all) {
+        if (f && f.url && String(f.url).startsWith('http')) {
+          const mime = String(f.mimeType || '');
+          const isAudio = mime.startsWith('audio/');
+          const ext = isAudio ? '.M4A' : (mime.includes('webm') ? '.WEBM' : '.MP4');
+          const qual = f.qualityLabel || (isAudio ? (Math.round((f.bitrate || 128000) / 1000) + 'kbps Audio') : 'Video');
+          if (f.contentLength) {
+            const szLabel = formatBytesJS(f.contentLength);
+            if (szLabel) probedSizes.set(f.url, szLabel);
+          }
+          found.push({
+            url: f.url,
+            ext: ext,
+            name: qual + ' - ' + title + ext.toLowerCase()
+          });
+        }
+      }
+      if (found.length > 0) {
+        window.__shunnoYtStreams = found;
+        if (window.__shunnoSyncYtStreams) window.__shunnoSyncYtStreams(found);
+      }
+    } catch (e) {}
+  }
+
+  function stripAdFields(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    try {
+      if ('streamingData' in obj) harvestYtStreams(obj);
+      if ('adPlacements' in obj) { obj.adPlacements = []; delete obj.adPlacements; }
+      if ('playerAds' in obj) { obj.playerAds = []; delete obj.playerAds; }
+      if ('adSlots' in obj) { obj.adSlots = []; delete obj.adSlots; }
+      if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
+      if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) delete obj.auxiliaryUi.messageRenderers;
+      if (obj.playerConfig && obj.playerConfig.ssapConfig) delete obj.playerConfig.ssapConfig;
+    } catch (e) {}
+    return obj;
+  }
 
   if (isYouTube && (ADBLOCK_ON || SPONSORBLOCK_ON)) {
-    function harvestYtStreams(obj) {
-      try {
-        const sd = obj && obj.streamingData;
-        if (!sd) return;
-        const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
-        const title = ((obj.videoDetails && obj.videoDetails.title) || document.title.replace(' - YouTube', '') || 'YouTube_Video').trim();
-        const found = [];
-        for (const f of all) {
-          if (f && f.url && String(f.url).startsWith('http')) {
-            const mime = String(f.mimeType || '');
-            const isAudio = mime.startsWith('audio/');
-            const ext = isAudio ? '.M4A' : (mime.includes('webm') ? '.WEBM' : '.MP4');
-            const qual = f.qualityLabel || (isAudio ? (Math.round((f.bitrate || 128000) / 1000) + 'kbps Audio') : 'Video');
-            found.push({
-              url: f.url,
-              ext: ext,
-              name: qual + ' - ' + title + ext.toLowerCase()
-            });
-          }
-        }
-        if (found.length > 0) {
-          window.__shunnoYtStreams = found;
-          if (window.__shunnoSyncYtStreams) window.__shunnoSyncYtStreams(found);
-        }
-      } catch (e) {}
-    }
-
-    function stripAdFields(obj) {
-      if (!obj || typeof obj !== 'object') return obj;
-      try {
-        if ('streamingData' in obj) harvestYtStreams(obj);
-        if ('adPlacements' in obj) { obj.adPlacements = []; delete obj.adPlacements; }
-        if ('playerAds' in obj) { obj.playerAds = []; delete obj.playerAds; }
-        if ('adSlots' in obj) { obj.adSlots = []; delete obj.adSlots; }
-        if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
-        if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) delete obj.auxiliaryUi.messageRenderers;
-        if (obj.playerConfig && obj.playerConfig.ssapConfig) delete obj.playerConfig.ssapConfig;
-      } catch (e) {}
-      return obj;
-    }
-
     let _ytPlayerResp = undefined;
     try {
       Object.defineProperty(window, 'ytInitialPlayerResponse', {
@@ -130,7 +146,7 @@
         configurable: true,
         get() {
           const txt = origXhrText.get.call(this);
-          if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"'))) {
+          if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"') || txt.includes('"streamingData"'))) {
             try {
               const parsed = origParse(txt);
               stripAdFields(parsed);
@@ -141,9 +157,18 @@
         }
       });
     }
+
+    // Re-harvest on YouTube SPA navigation & player updates
+    window.addEventListener('yt-navigate-finish', () => {
+      if (window.ytInitialPlayerResponse) stripAdFields(window.ytInitialPlayerResponse);
+      const mp = document.getElementById('movie_player');
+      if (mp && typeof mp.getPlayerResponse === 'function') {
+        stripAdFields(mp.getPlayerResponse());
+      }
+    });
   }
 
-  // 6. Network Sniffer + AdBlocker + Trusted-Types Safe Floating Pill (with PiP) & Drop Basket
+  // 6. Lightweight Network Sniffer + Built-in IDM Floating Pill (Hover, Selection, Right-Click & Drop Basket)
   const AD_HOSTS = [
     'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
     'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
@@ -152,10 +177,9 @@
     'youtube.com/pagead/', 'youtube.com/api/stats/ads', 'youtube.com/ptracking'
   ];
   const MEDIA_EXTS = ['.mp4', '.mkv', '.webm', '.mov', '.m3u8', '.mpd', '.flac', '.alac', '.m4a', '.wav', '.mp3', '.ogg', '.opus'];
-  const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.apk', '.pdf', '.dmg', '.deb'];
+  const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.pdf', '.dmg', '.deb'];
   const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
   const capturedStreams = [];
-  const probedSizes = new Map();
 
   function requestSizeProbe(targetUrl) {
     if (!targetUrl || probedSizes.has(targetUrl) || targetUrl === location.href) return;
@@ -256,7 +280,6 @@
     } catch (e) {}
   };
 
-  // Pure DOM API builder (100% immune to Trusted Types CSP on YouTube & GitHub!)
   function installFloatingOverlay() {
     if (!document.documentElement || document.getElementById('shunno-float-host')) return;
 
@@ -273,23 +296,22 @@
         display: none;
         align-items: center;
         gap: 4px;
-        background: rgba(24, 24, 27, 0.94);
-        backdrop-filter: blur(14px);
+        background: rgba(20, 20, 24, 0.95);
         color: #FFFFFF;
-        border: 1px solid rgba(255, 255, 255, 0.24);
+        border: 1px solid rgba(255, 255, 255, 0.25);
         border-radius: 10px;
         padding: 4px 8px;
         font-family: system-ui, "Segoe UI", sans-serif;
         font-size: 12px;
         font-weight: 600;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
       }
       .pill-main {
         display: inline-flex;
         align-items: center;
         gap: 6px;
         cursor: pointer;
-        padding: 2px 4px;
+        padding: 2px 5px;
         border-radius: 6px;
       }
       .pill-main:hover { background: #0A84FF; }
@@ -318,19 +340,18 @@
         display: none;
         flex-direction: column;
         gap: 6px;
-        min-width: 290px;
-        max-width: 390px;
+        min-width: 300px;
+        max-width: 400px;
         max-height: 320px;
         overflow-y: auto;
-        background: rgba(24, 24, 27, 0.97);
-        backdrop-filter: blur(18px);
+        background: rgba(20, 20, 24, 0.97);
         color: #fff;
-        border: 1px solid rgba(255, 255, 255, 0.24);
+        border: 1px solid rgba(255, 255, 255, 0.25);
         border-radius: 12px;
         padding: 10px;
         font-family: system-ui, "Segoe UI", sans-serif;
         font-size: 12px;
-        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.50);
       }
       .menu-hdr {
         display: flex;
@@ -379,10 +400,9 @@
         display: ${BASKET_ON ? 'flex' : 'none'};
         align-items: center;
         gap: 6px;
-        background: rgba(10, 132, 255, 0.90);
-        backdrop-filter: blur(12px);
+        background: rgba(10, 132, 255, 0.92);
         color: #fff;
-        border: 1.5px dashed rgba(255, 255, 255, 0.65);
+        border: 1.5px dashed rgba(255, 255, 255, 0.7);
         border-radius: 14px;
         padding: 7px 12px;
         font-family: system-ui, "Segoe UI", sans-serif;
@@ -495,7 +515,7 @@
           pillWrap.style.display = 'none';
           menu.style.display = 'none';
         }
-      }, 900);
+      }, 1100);
     }
 
     pillWrap.addEventListener('mouseenter', () => clearTimeout(hideTimer));
@@ -509,7 +529,7 @@
       activeItems = items;
       activeBaseLabel = baseLabel;
       pipBtn.style.display = isVideo ? 'inline-block' : 'none';
-      items.forEach(it => requestSizeProbe(it.url));
+      items.slice(0, 6).forEach(it => requestSizeProbe(it.url));
 
       if (items.length === 1) {
         const sz = probedSizes.get(items[0].url);
@@ -518,7 +538,7 @@
         pillText.textContent = baseLabel + ' (' + items.length + ')';
       }
 
-      const left = Math.min(window.innerWidth - 260, Math.max(8, x));
+      const left = Math.min(window.innerWidth - 270, Math.max(8, x));
       const top = Math.min(window.innerHeight - 48, Math.max(8, y));
       pillWrap.style.left = left + 'px';
       pillWrap.style.top = top + 'px';
@@ -537,7 +557,7 @@
       const hdr = document.createElement('div');
       hdr.className = 'menu-hdr';
       const hdrTitle = document.createElement('span');
-      hdrTitle.textContent = '⚡ Shunno Get (' + activeItems.length + ' streams)';
+      hdrTitle.textContent = '⚡ Shunno Get (' + activeItems.length + ' items)';
       const closeBtn = document.createElement('span');
       closeBtn.style.cssText = 'cursor:pointer;color:#aaa;padding:0 4px;';
       closeBtn.textContent = '✕';
@@ -580,6 +600,13 @@
       if (!target || !target.closest) return;
       const playerContainer = target.closest('video, audio, ytd-player, .html5-video-player, #movie_player');
       if (playerContainer) {
+        if (isYouTube && window.__shunnoYtStreams.length === 0) {
+          if (window.ytInitialPlayerResponse) stripAdFields(window.ytInitialPlayerResponse);
+          const mp = document.getElementById('movie_player');
+          if (mp && typeof mp.getPlayerResponse === 'function') {
+            stripAdFields(mp.getPlayerResponse());
+          }
+        }
         const videoEl = playerContainer.matches('video, audio')
           ? playerContainer
           : playerContainer.querySelector('video, audio');
@@ -612,7 +639,7 @@
           }
           if (items.length > 0) {
             const isAud = videoEl && videoEl.tagName === 'AUDIO';
-            showPillAt(rect.right - 255, Math.max(8, rect.top + 12), isAud ? 'Download audio' : 'Download video', items, !isAud);
+            showPillAt(rect.right - 265, Math.max(8, rect.top + 12), isAud ? 'Download audio' : 'Download video', items, !isAud);
             return;
           }
         }
@@ -639,6 +666,35 @@
       }
     }
 
+    // IDM-style "Download Selected Links" floating bar when highlighting text/links on any page
+    document.addEventListener('mouseup', (e) => {
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return;
+        const foundUrls = new Set();
+        const text = sel.toString() || '';
+        const urlMatches = text.match(/https?:\/\/[^\s"'<>]+/g);
+        if (urlMatches) {
+          urlMatches.forEach(u => foundUrls.add(u));
+        }
+        if (sel.rangeCount > 0) {
+          const frag = sel.getRangeAt(0).cloneContents();
+          frag.querySelectorAll('a[href]').forEach(a => {
+            if (a.href && a.href.startsWith('http')) foundUrls.add(a.href);
+          });
+        }
+        if (foundUrls.size > 0) {
+          const items = Array.from(foundUrls).slice(0, 25).map(u => {
+            const clean = u.split('?')[0];
+            const seg = decodeURIComponent(clean.split('/').pop() || 'link');
+            const ext = ALL_EXTS.find(ex => clean.toLowerCase().endsWith(ex)) || '.LINK';
+            return { url: u, ext: ext.toUpperCase(), name: seg };
+          });
+          showPillAt(e.clientX + 10, e.clientY + 12, 'Download Selected', items, false);
+        }
+      }, 30);
+    }, true);
+
     let lastHoverCheck = 0;
     document.addEventListener('mouseover', (e) => inspectHoverTarget(e.target), true);
     document.addEventListener('mousemove', (e) => {
@@ -654,7 +710,7 @@
     }, true);
   }
 
-  // 7. Debounced MutationObserver for YouTube Ad Skipper & Cookie Auto-Rejector (Zero Polling Battery Drain!)
+  // 7. Debounced MutationObserver for YouTube Ad Skipper & Cookie Auto-Rejector
   if (ADBLOCK_ON || SPONSORBLOCK_ON || REJECT_COOKIES_ON) {
     const styleSheet = document.createElement('style');
     if (ADBLOCK_ON || SPONSORBLOCK_ON) {
@@ -729,6 +785,9 @@
   window.addEventListener('DOMContentLoaded', () => {
     if (JS_DISABLED) {
       document.querySelectorAll('script').forEach(s => s.remove());
+    }
+    if (isYouTube && window.ytInitialPlayerResponse) {
+      stripAdFields(window.ytInitialPlayerResponse);
     }
     postSecure('META:' + JSON.stringify({
       title: document.title,
