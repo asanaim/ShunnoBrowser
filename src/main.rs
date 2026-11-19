@@ -269,6 +269,66 @@ fn attach_native_webview2_hooks(
             }));
             let _ = core4.add_DownloadStarting(&dl_handler, &mut dl_token);
         }
+        // 4. Native WebView2 ContextMenuRequested Hook: Replace "Open link in new window" with "Open link in new tab"
+        use webview2_com::ContextMenuRequestedEventHandler;
+        use webview2_com::CustomItemSelectedEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND;
+        let mut ctx_token = Default::default();
+        let ctx_proxy = proxy.clone();
+        let env_for_menu = env.clone();
+        let ctx_handler = ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()); };
+            let Ok(target) = args.ContextMenuTarget() else { return Ok(()); };
+            let mut has_link = windows::Win32::Foundation::BOOL::default();
+            let _ = target.HasLinkUri(&mut has_link);
+            if has_link.as_bool() {
+                let mut link_ptr = windows::core::PWSTR::null();
+                if target.LinkUri(&mut link_ptr).is_ok() {
+                    let link_uri = webview2_com::take_pwstr(link_ptr);
+                    if link_uri.starts_with("http") {
+                        if let Ok(items) = args.MenuItems() {
+                            let mut count = 0u32;
+                            let _ = items.Count(&mut count);
+                            // Remove built-in "Open link in new window" command (command id 1003 / label match)
+                            let mut idx = 0u32;
+                            while idx < count {
+                                if let Ok(item) = items.GetValueAtIndex(idx) {
+                                    let mut name_ptr = windows::core::PWSTR::null();
+                                    if item.Name(&mut name_ptr).is_ok() {
+                                        let name = webview2_com::take_pwstr(name_ptr);
+                                        if name.eq_ignore_ascii_case("openLinkInNewWindow") {
+                                            let _ = items.RemoveValueAtIndex(idx);
+                                            count -= 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                idx += 1;
+                            }
+
+                            // Insert custom "Open link in new tab" at the top of the right-click menu
+                            if let Ok(new_tab_item) = env_for_menu.CreateContextMenuItem(
+                                w!("Open link in new tab"),
+                                None::<&IStream>,
+                                COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                            ) {
+                                let mut sel_token = Default::default();
+                                let sel_proxy = ctx_proxy.clone();
+                                let sel_uri = link_uri.clone();
+                                let sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = sel_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(sel_uri.clone()));
+                                    Ok(())
+                                }));
+                                let _ = new_tab_item.add_CustomItemSelected(&sel_handler, &mut sel_token);
+                                let _ = items.InsertValueAtIndex(0, &new_tab_item);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.add_ContextMenuRequested(&ctx_handler, &mut ctx_token);
     }
 }
 
@@ -397,17 +457,16 @@ fn load_embedded_window_icon() -> Option<Icon> {
 fn capture_tab_preview_to_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
     use webview2_com::CapturePreviewCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
-    use windows::Win32::System::Com::CreateStreamOnHGlobal;
-    use windows::Win32::System::Com::StructuredStorage::GetHGlobalFromStream;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::Com::StructuredStorage::{CreateStreamOnHGlobal, GetHGlobalFromStream};
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use wry::WebViewExtWindows;
 
     let controller = tab_wv.controller();
     unsafe {
         let Ok(core) = controller.CoreWebView2() else { return; };
-        let Ok(stream) = CreateStreamOnHGlobal(None, true) else { return; };
+        let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else { return; };
         let stream_clone = stream.clone();
-        // Evaluate via raw pointer sendable wrapper on UI thread
         let chrome_ptr = chrome_wv as *const WebView as usize;
         let handler = CapturePreviewCompletedHandler::create(Box::new(move |res| {
             if res.is_ok() {

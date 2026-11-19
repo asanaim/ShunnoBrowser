@@ -1,3 +1,7 @@
+## v1.6.1 (2026-11-19)
+- Fixed Win32 COM stream & memory feature flags (`Win32_System_Com_StructuredStorage`, `Win32_System_Memory`) and `HGLOBAL::default()` in `capture_tab_preview_to_chrome`.
+- Replaced Edge WebView2's right-click **"Open link in new window"** context menu item with **"Open link in new tab"**.
+
 ## v1.6.0 (2026-11-18)
 - Fixed `ICoreWebView2` -> `ICoreWebView2_8` COM interface cast inside `IsDocumentPlayingAudioChangedEventHandler` (`src/main.rs:184`).
 - Added throttled `mousemove` fallback for the Trusted-Types safe floating media download pill so players with transparent overlay shields always trigger the pill.
