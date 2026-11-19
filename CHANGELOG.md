@@ -1,3 +1,6 @@
+## v1.6.2 (2026-11-19)
+- Cast `ICoreWebView2` to `ICoreWebView2_11` (`add_ContextMenuRequested`) and `ICoreWebView2Environment` to `ICoreWebView2Environment9` (`CreateContextMenuItem`) in `src/main.rs`.
+
 ## v1.6.1 (2026-11-19)
 - Fixed Win32 COM stream & memory feature flags (`Win32_System_Com_StructuredStorage`, `Win32_System_Memory`) and `HGLOBAL::default()` in `capture_tab_preview_to_chrome`.
 - Replaced Edge WebView2's right-click **"Open link in new window"** context menu item with **"Open link in new tab"**.
