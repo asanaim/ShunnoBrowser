@@ -882,23 +882,27 @@
       if (k === 't' || k === 'w' || k === 'j') {
         e.preventDefault();
         postSecure('KEY:' + k);
-      } else if (k === '=' || k === '+') {
+      } else if (e.code === 'Equal' || e.code === 'NumpadAdd' || k === '=' || k === '+') {
         e.preventDefault();
+        e.stopPropagation();
         postSecure('KEY:zoom_in');
-      } else if (k === '-') {
+      } else if (e.code === 'Minus' || e.code === 'NumpadSubtract' || k === '-') {
         e.preventDefault();
+        e.stopPropagation();
         postSecure('KEY:zoom_out');
-      } else if (k === '0') {
+      } else if (e.code === 'Digit0' || e.code === 'Numpad0' || k === '0') {
         e.preventDefault();
+        e.stopPropagation();
         postSecure('KEY:zoom_reset');
       }
     }
-  });
+  }, true);
 
   document.addEventListener('wheel', (e) => {
     if (e.ctrlKey) {
       e.preventDefault();
+      e.stopPropagation();
       postSecure(e.deltaY < 0 ? 'KEY:zoom_in' : 'KEY:zoom_out');
     }
-  }, { passive: false });
+  }, { passive: false, capture: true });
 })();

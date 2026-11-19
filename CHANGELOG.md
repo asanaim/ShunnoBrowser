@@ -1,4 +1,9 @@
-## v1.7.0 (2026-11-19)
+## v1.7.1 (2026-11-19)
+- Fixed `proxy` clone (`ad_proxy`) in `WebResourceRequestedEventHandler` (`src/main.rs:242`).
+- Added native `ICoreWebView2Controller::SetZoomFactor` + capture-phase `Ctrl++` / `Ctrl+-` / `Ctrl+0` / `Ctrl+Wheel` zoom handling.
+- Added the Shunno compass-ring emblem inside `New Tab` pills.
+
+## v1.7.1 (2026-11-19)
 - Cast `ICoreWebView2` to `ICoreWebView2_11` (`add_ContextMenuRequested`) and `ICoreWebView2Environment` to `ICoreWebView2Environment9` (`CreateContextMenuItem`) in `src/main.rs`.
 
 ## v1.6.1 (2026-11-19)

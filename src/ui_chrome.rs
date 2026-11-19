@@ -773,10 +773,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.renderedTitle = displayTitle;
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
+        const isNewTab = t.url === 'shunno://newtab';
+        const tabLogoHtml = (!hasAudio && isNewTab)
+          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
+          : '';
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
           : '';
-        el.innerHTML = `${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>`;
+        el.innerHTML = `${tabLogoHtml}${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>`;
       }
     });
   }
@@ -797,7 +801,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.7.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.7.1';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';

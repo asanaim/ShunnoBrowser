@@ -129,6 +129,21 @@ fn build_content_init_script(
 }
 
 #[cfg(windows)]
+#[cfg(windows)]
+fn apply_tab_zoom(webview: &WebView, factor: f64) {
+    use wry::WebViewExtWindows;
+    let _ = webview.zoom(factor);
+    let controller = webview.controller();
+    unsafe {
+        let _ = controller.SetZoomFactor(factor);
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_tab_zoom(webview: &WebView, factor: f64) {
+    let _ = webview.zoom(factor);
+}
+
 fn set_webview_muted(webview: &WebView, muted: bool) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
     use windows::core::Interface;
@@ -148,6 +163,21 @@ fn set_webview_muted(webview: &WebView, muted: bool) {
 }
 
 #[cfg(not(windows))]
+#[cfg(windows)]
+fn apply_tab_zoom(webview: &WebView, factor: f64) {
+    use wry::WebViewExtWindows;
+    let _ = webview.zoom(factor);
+    let controller = webview.controller();
+    unsafe {
+        let _ = controller.SetZoomFactor(factor);
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_tab_zoom(webview: &WebView, factor: f64) {
+    let _ = webview.zoom(factor);
+}
+
 fn set_webview_muted(webview: &WebView, muted: bool) {
     let js = format!("document.querySelectorAll('video,audio').forEach(m => m.muted = {});", muted);
     let _ = webview.evaluate_script(&js);
@@ -228,6 +258,7 @@ fn attach_native_webview2_hooks(
 
             let mut token = Default::default();
             let env_for_ad = env.clone();
+            let ad_proxy = proxy.clone();
             let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
                 let Some(args) = args else {
                     return Ok(());
@@ -239,7 +270,7 @@ fn attach_native_webview2_hooks(
                     PCWSTR::null(),
                 )?;
                 let _ = args.SetResponse(&empty_resp);
-                let _ = proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
+                let _ = ad_proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
                 Ok(())
             }));
 
@@ -1100,19 +1131,19 @@ fn main() -> wry::Result<()> {
                         "zoom_in" => {
                             if let Some(tab) = tabs.get_mut(active_tab_idx) {
                                 tab.zoom = (tab.zoom + 0.1).min(3.0);
-                                let _ = tab.webview.zoom(tab.zoom);
+                                apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_out" => {
                             if let Some(tab) = tabs.get_mut(active_tab_idx) {
                                 tab.zoom = (tab.zoom - 0.1).max(0.4);
-                                let _ = tab.webview.zoom(tab.zoom);
+                                apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_reset" => {
                             if let Some(tab) = tabs.get_mut(active_tab_idx) {
                                 tab.zoom = 1.0;
-                                let _ = tab.webview.zoom(tab.zoom);
+                                apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "f11" => {
@@ -1298,7 +1329,7 @@ fn main() -> wry::Result<()> {
                         } else {
                             tab.zoom = 1.0;
                         }
-                        let _ = tab.webview.zoom(tab.zoom);
+                        apply_tab_zoom(&tab.webview, tab.zoom);
                     }
                 } else if let Some(payload) = cmd.strip_prefix("ADD_SHORTCUT:") {
                     if let Some((t, u)) = payload.split_once('|') {
@@ -1551,7 +1582,7 @@ fn main() -> wry::Result<()> {
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                         if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone()) {
                             if is_muted { set_webview_muted(&new_wv, true); }
-                            if (tab.zoom - 1.0).abs() > f64::EPSILON { let _ = new_wv.zoom(tab.zoom); }
+                            if (tab.zoom - 1.0).abs() > f64::EPSILON { apply_tab_zoom(&new_wv, tab.zoom); }
                             tabs[active_tab_idx] = BrowserTab {
                                 id: tid,
                                 title: tab.title.clone(),
