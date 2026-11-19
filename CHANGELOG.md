@@ -1,4 +1,4 @@
-## v1.6.2 (2026-11-19)
+## v1.7.0 (2026-11-19)
 - Cast `ICoreWebView2` to `ICoreWebView2_11` (`add_ContextMenuRequested`) and `ICoreWebView2Environment` to `ICoreWebView2Environment9` (`CreateContextMenuItem`) in `src/main.rs`.
 
 ## v1.6.1 (2026-11-19)

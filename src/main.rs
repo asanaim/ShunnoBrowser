@@ -227,11 +227,12 @@ fn attach_native_webview2_hooks(
             }
 
             let mut token = Default::default();
+            let env_for_ad = env.clone();
             let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
                 let Some(args) = args else {
                     return Ok(());
                 };
-                let empty_resp: ICoreWebView2WebResourceResponse = env.CreateWebResourceResponse(
+                let empty_resp: ICoreWebView2WebResourceResponse = env_for_ad.CreateWebResourceResponse(
                     None::<&IStream>,
                     403,
                     w!("Blocked by Shunno AdBlock"),
@@ -402,6 +403,59 @@ fn create_tab_webview(
 /// When a drawer/popover is open, `chrome_wv` occupies the top bar + right docked panel `(w - panel_w, CHROME_BAR_HEIGHT, panel_w, content_h)`
 /// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
+#[cfg(windows)]
+fn apply_native_taskbar_icon(window: &Window) {
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateIconFromResourceEx, SendMessageW, ICON_BIG, ICON_SMALL, LR_DEFAULTCOLOR, WM_SETICON,
+    };
+
+    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+    if ICO_BYTES.len() < 22 {
+        return;
+    }
+    let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
+    let hwnd = HWND(window.hwnd() as isize);
+
+    for i in 0..count {
+        let off = 6 + i * 16;
+        if off + 16 > ICO_BYTES.len() {
+            break;
+        }
+        let w = ICO_BYTES[off] as i32;
+        let bytes_in_res = u32::from_le_bytes([
+            ICO_BYTES[off + 8],
+            ICO_BYTES[off + 9],
+            ICO_BYTES[off + 10],
+            ICO_BYTES[off + 11],
+        ]) as usize;
+        let img_offset = u32::from_le_bytes([
+            ICO_BYTES[off + 12],
+            ICO_BYTES[off + 13],
+            ICO_BYTES[off + 14],
+            ICO_BYTES[off + 15],
+        ]) as usize;
+
+        if img_offset + bytes_in_res <= ICO_BYTES.len() {
+            let slice = &ICO_BYTES[img_offset..img_offset + bytes_in_res];
+            unsafe {
+                if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
+                    if w >= 32 {
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
+                    }
+                    if w == 16 || w == 24 {
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_native_taskbar_icon(_window: &Window) {}
+
 fn load_embedded_window_icon() -> Option<Icon> {
     // Decode the 32x32 uncompressed BGRA entry from assets/app.ico for native taskbar & Alt+Tab icon
     const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
@@ -578,6 +632,7 @@ fn main() -> wry::Result<()> {
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
+    apply_native_taskbar_icon(&window);
 
     let chrome_proxy = proxy.clone();
     let chrome_wv = WebViewBuilder::new_as_child(&window)
@@ -1065,6 +1120,18 @@ fn main() -> wry::Result<()> {
                             window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
+                        "next_tab" => {
+                            if !tabs.is_empty() {
+                                active_tab_idx = (active_tab_idx + 1) % tabs.len();
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
+                        "prev_tab" => {
+                            if !tabs.is_empty() {
+                                active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
                         "t" => {
                             let start = "shunno://newtab".to_string();
                             let pol = SitePolicy::default();
@@ -1320,6 +1387,16 @@ fn main() -> wry::Result<()> {
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    }
+                } else if cmd == "NEXT_TAB" {
+                    if !tabs.is_empty() {
+                        active_tab_idx = (active_tab_idx + 1) % tabs.len();
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    }
+                } else if cmd == "PREV_TAB" {
+                    if !tabs.is_empty() {
+                        active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("SWITCH_TAB:") {

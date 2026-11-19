@@ -134,8 +134,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     display: flex; align-items: center; gap: 4px; flex-shrink: 0;
   }
   .win-btn {
-    width: 28px; height: 24px; border: none; border-radius: 7px;
-    background: transparent; color: var(--text); font-size: 12px; font-weight: 600;
+    width: 30px; height: 26px; border: none; border-radius: 7px;
+    background: transparent; color: var(--text); font-size: 13px; line-height: 1; font-weight: 600;
     cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
     transition: background 0.18s var(--ease-fluid), color 0.18s ease;
   }
@@ -173,12 +173,29 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 0 0 3.5px rgba(10, 132, 255, 0.18);
     max-width: 740px;
   }
-  .engine-chip {
+  .engine-logo-btn {
     border: none; background: var(--surface-solid); color: var(--text);
-    font-size: 11.5px; font-weight: 700; padding: 4px 8px; border-radius: 8px;
-    outline: none; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    transition: background 0.2s ease;
+    width: 28px; height: 26px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.10);
+    transition: transform 0.18s var(--ease-spring), background 0.2s ease;
   }
+  .engine-logo-btn:hover { transform: scale(1.06); }
+  .engine-menu {
+    position: fixed; top: 82px; left: 50%; transform: translateX(-280px);
+    background: var(--surface-solid); border: 1px solid var(--border);
+    border-radius: 13px; padding: 6px; min-width: 170px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.20); z-index: 90;
+    display: none; flex-direction: column; gap: 3px;
+  }
+  .engine-menu.open { display: flex; }
+  .engine-opt {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-radius: 9px; border: none; background: transparent; color: var(--text);
+    font-size: 12.5px; font-weight: 600; cursor: pointer; text-align: left;
+  }
+  .engine-opt:hover { background: var(--input-bg); }
+  .engine-opt.active { background: var(--blue-soft); color: var(--blue); }
   #url-input {
     border: none; background: transparent; outline: none; flex: 1; min-width: 60px;
     font-size: 13px; color: var(--text); user-select: text;
@@ -385,9 +402,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">🕵</button>
       <div class="win-drag-spacer" onmousedown="send('WIN_DRAG')" ondblclick="send('WIN_MAXIMIZE')"></div>
       <div class="win-controls">
-        <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">—</button>
-        <button class="win-btn" onclick="send('WIN_MAXIMIZE')" title="Maximize / Restore">□</button>
-        <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">✕</button>
+        <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
+          <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="win-btn" onclick="send('WIN_MAXIMIZE')" title="Maximize / Restore">
+          <svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">
+          <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
       </div>
     </div>
 
@@ -401,8 +424,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div class="firefox-capsule">
-        <select class="engine-chip" id="engine-select" onchange="send('SET_SEARCH_ENGINE:' + this.value)" title="Search Engine"></select>
-        <input id="url-input" placeholder="Search with engine or enter address..."
+        <button class="engine-logo-btn" id="engine-logo-btn" onclick="toggleEngineMenu(event)" title="Switch Search Engine"></button>
+        <input id="url-input" placeholder="Search or enter address..."
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
       </div>
@@ -414,9 +437,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 3. Chrome-Style Bookmarks & Library Strip Under Address Bar -->
+    <!-- 3. Always-Visible Bookmarks & Library Strip Under Address Bar -->
     <div class="bookmarks-strip" id="bookmarks-strip"></div>
   </div>
+  <div class="engine-menu" id="engine-menu"></div>
 
   <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
   <div class="home-canvas" id="home-canvas">
@@ -738,6 +762,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       }
 
       el.onclick = () => send('SWITCH_TAB:' + idx);
+      el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
       el.title = t.title || 'New Tab';
 
       const displayTitle = (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
@@ -772,7 +797,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.6.2';
+    document.getElementById('version-badge').textContent = state.version || 'v1.7.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -826,11 +851,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">⭐ ${escapeHtml(b.title)}</button>
     `).join('');
 
-    const seSelect = document.getElementById('engine-select');
+    const seBtn = document.getElementById('engine-logo-btn');
+    const seMenu = document.getElementById('engine-menu');
     if (state.global.search_engines && state.global.search_engines.length > 0) {
-      seSelect.innerHTML = state.global.search_engines.map((se, i) =>
-        `<option value="${i}" ${i === state.global.active_search_engine ? 'selected' : ''}>${escapeHtml(se.name)}</option>`
-      ).join('');
+      const activeSe = state.global.search_engines[state.global.active_search_engine] || state.global.search_engines[0];
+      seBtn.innerHTML = getEngineLogoSvg(activeSe.name);
+      seBtn.title = 'Search Engine: ' + activeSe.name;
+      seMenu.innerHTML = state.global.search_engines.map((se, i) => `
+        <button class="engine-opt ${i === state.global.active_search_engine ? 'active' : ''}"
+                onclick="send('SET_SEARCH_ENGINE:${i}'); document.getElementById('engine-menu').classList.remove('open');">
+          ${getEngineLogoSvg(se.name)}
+          <span>${escapeHtml(se.name)}</span>
+        </button>
+      `).join('');
     }
 
     const urlBox = document.getElementById('url-input');
@@ -1012,6 +1045,37 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         }).join('');
   };
 
+  function getEngineLogoSvg(name) {
+    const n = String(name || '').toLowerCase();
+    if (n.includes('google')) {
+      return '<svg width="15" height="15" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-3l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.2 0-5.9-2.1-6.8-5H1.2v3.1C3.2 21.3 7.3 24 12 24z"/><path fill="#FBBC05" d="M5.2 14.2c-.2-.7-.4-1.4-.4-2.2s.2-1.5.4-2.2V6.7H1.2C.4 8.3 0 10.1 0 12s.4 3.7 1.2 5.3l4-3.1z"/><path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4C18 1.2 15.2 0 12 0 7.3 0 3.2 2.7 1.2 6.7l4 3.1c.9-2.9 3.6-5 6.8-5z"/></svg>';
+    }
+    if (n.includes('duck')) {
+      return '<svg width="15" height="15" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#DE5833"/><circle cx="12" cy="12" r="6" fill="#FFF"/><circle cx="13.5" cy="10.5" r="1.5" fill="#1C1C1E"/><path d="M15 13c2 0 3.5.8 3.5 1.8S17 16.5 15 16.5s-3-.7-3-1.7S13 13 15 13z" fill="#FBB03B"/></svg>';
+    }
+    if (n.includes('bing')) {
+      return '<svg width="15" height="15" viewBox="0 0 24 24"><path fill="#008373" d="M5 3v16.5l4.2 2.5 9.8-5.6v-4.6l-6.8-2.4 2.1 5.1-4.3 2.5V5.4L5 3z"/></svg>';
+    }
+    if (n.includes('youtube')) {
+      return '<svg width="15" height="15" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="4" fill="#FF0000"/><polygon points="10,8.5 16,12 10,15.5" fill="#FFF"/></svg>';
+    }
+    if (n.includes('startpage')) {
+      return '<svg width="15" height="15" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#6573FF"/><circle cx="11" cy="11" r="4" fill="none" stroke="#FFF" stroke-width="2.2"/><line x1="14" y1="14" x2="17.5" y2="17.5" stroke="#FFF" stroke-width="2.2" stroke-linecap="round"/></svg>';
+    }
+    const letter = escapeHtml((name || 'S').charAt(0).toUpperCase());
+    return `<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:4px;background:var(--blue);color:#fff;font-size:10px;font-weight:800;">${letter}</span>`;
+  }
+
+  function toggleEngineMenu(e) {
+    e.stopPropagation();
+    const menu = document.getElementById('engine-menu');
+    menu.classList.toggle('open');
+  }
+  document.addEventListener('click', () => {
+    const menu = document.getElementById('engine-menu');
+    if (menu) menu.classList.remove('open');
+  });
+
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   }
@@ -1023,6 +1087,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (e.key === 'F11') {
       e.preventDefault();
       send('TOGGLE_FULLSCREEN');
+    } else if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      send(e.shiftKey ? 'PREV_TAB' : 'NEXT_TAB');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 't') { e.preventDefault(); send('NEW_TAB'); }

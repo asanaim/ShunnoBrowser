@@ -874,6 +874,9 @@
     if (e.key === 'F11') {
       e.preventDefault();
       postSecure('KEY:f11');
+    } else if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      postSecure(e.shiftKey ? 'KEY:prev_tab' : 'KEY:next_tab');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 't' || k === 'w' || k === 'j') {
