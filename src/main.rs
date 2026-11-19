@@ -43,6 +43,7 @@ enum AppEvent {
     TabAudioChanged(usize, bool),
     TabTitleChanged(usize, String),
     TabUrlChanged(usize, String),
+    TabZoomChanged(usize, f64),
     RefreshChrome,
 }
 
@@ -54,6 +55,7 @@ struct BrowserTab {
     incognito: bool,
     playing_audio: bool,
     muted: bool,
+    reader_active: bool,
     zoom: f64,
     webview: WebView,
 }
@@ -84,6 +86,8 @@ struct ChromeSnapshot {
     active_url: String,
     active_host: String,
     active_zoom: f64,
+    active_reader: bool,
+    idm_available: bool,
     site: SitePolicy,
     global: GlobalSettings,
     blocked_count: usize,
@@ -187,6 +191,21 @@ fn attach_native_webview2_hooks(
 
     let controller = webview.controller();
     unsafe {
+        // 0. Native Ctrl+Wheel / Pinch Zoom Synchronization
+        use webview2_com::ZoomFactorChangedEventHandler;
+        let mut zoom_token = Default::default();
+        let zoom_proxy = proxy.clone();
+        let zoom_handler = ZoomFactorChangedEventHandler::create(Box::new(move |sender, _| {
+            if let Some(ctrl) = sender {
+                let mut z = 1.0f64;
+                if ctrl.ZoomFactor(&mut z).is_ok() {
+                    let _ = zoom_proxy.send_event(AppEvent::TabZoomChanged(tab_id, z));
+                }
+            }
+            Ok(())
+        }));
+        let _ = controller.add_ZoomFactorChanged(&zoom_handler, &mut zoom_token);
+
         let Ok(core) = controller.CoreWebView2() else {
             return;
         };
@@ -420,179 +439,143 @@ fn create_tab_webview(
 /// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
 #[cfg(windows)]
-fn apply_native_taskbar_icon(window: &Window) {
+fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use tao::platform::windows::WindowExtWindows;
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateIconFromResourceEx, SendMessageW, ICON_BIG, ICON_SMALL, LR_DEFAULTCOLOR, WM_SETICON,
+        GetClientRect, GetWindowLongW, GetWindowRect, LoadImageW, SendMessageW, SetClassLongPtrW,
+        SetWindowLongW, SetWindowPos, GCLP_HICON, GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE,
+        HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
+        HTTOPRIGHT, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, SWP_FRAMECHANGED,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON,
+        WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
-
-    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
-    if ICO_BYTES.len() < 22 {
-        return;
-    }
-    let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-    let hwnd = HWND(window.hwnd() as isize);
-
-    for i in 0..count {
-        let off = 6 + i * 16;
-        if off + 16 > ICO_BYTES.len() {
-            break;
-        }
-        let w = ICO_BYTES[off] as i32;
-        let bytes_in_res = u32::from_le_bytes([
-            ICO_BYTES[off + 8],
-            ICO_BYTES[off + 9],
-            ICO_BYTES[off + 10],
-            ICO_BYTES[off + 11],
-        ]) as usize;
-        let img_offset = u32::from_le_bytes([
-            ICO_BYTES[off + 12],
-            ICO_BYTES[off + 13],
-            ICO_BYTES[off + 14],
-            ICO_BYTES[off + 15],
-        ]) as usize;
-
-        if img_offset + bytes_in_res <= ICO_BYTES.len() {
-            let slice = &ICO_BYTES[img_offset..img_offset + bytes_in_res];
-            unsafe {
-                if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                    if w >= 32 {
-                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
-                    }
-                    if w == 16 || w == 24 {
-                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0));
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn apply_native_taskbar_icon(_window: &Window) {}
-
-fn load_embedded_window_icon() -> Option<Icon> {
-    // Decode the 32x32 uncompressed BGRA entry from assets/app.ico for native taskbar & Alt+Tab icon
-    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
-    if ICO_BYTES.len() < 22 {
-        return None;
-    }
-    let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-    for i in 0..count {
-        let off = 6 + i * 16;
-        if off + 16 > ICO_BYTES.len() {
-            break;
-        }
-        let w = ICO_BYTES[off] as u32;
-        let h = ICO_BYTES[off + 1] as u32;
-        let bytes_in_res = u32::from_le_bytes([
-            ICO_BYTES[off + 8],
-            ICO_BYTES[off + 9],
-            ICO_BYTES[off + 10],
-            ICO_BYTES[off + 11],
-        ]) as usize;
-        let img_offset = u32::from_le_bytes([
-            ICO_BYTES[off + 12],
-            ICO_BYTES[off + 13],
-            ICO_BYTES[off + 14],
-            ICO_BYTES[off + 15],
-        ]) as usize;
-
-        if (w == 32 || w == 48) && img_offset + 40 + (w * h * 4) as usize <= ICO_BYTES.len() && bytes_in_res >= 40 {
-            let pixel_start = img_offset + 40;
-            let row_bytes = (w * 4) as usize;
-            let mut rgba = vec![0u8; (w * h * 4) as usize];
-            // BMP inside ICO is stored bottom-up in BGRA order; convert to top-down RGBA
-            for y in 0..(h as usize) {
-                let src_row = pixel_start + ((h as usize - 1 - y) * row_bytes);
-                let dst_row = y * row_bytes;
-                for x in 0..(w as usize) {
-                    let s = src_row + x * 4;
-                    let d = dst_row + x * 4;
-                    rgba[d] = ICO_BYTES[s + 2];     // R
-                    rgba[d + 1] = ICO_BYTES[s + 1]; // G
-                    rgba[d + 2] = ICO_BYTES[s];     // B
-                    rgba[d + 3] = ICO_BYTES[s + 3]; // A
-                }
-            }
-            if let Ok(icon) = Icon::from_rgba(rgba, w, h) {
-                return Some(icon);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn capture_tab_preview_to_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
-    use webview2_com::CapturePreviewCompletedHandler;
-    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
-    use windows::Win32::Foundation::HGLOBAL;
-    use windows::Win32::System::Com::StructuredStorage::{CreateStreamOnHGlobal, GetHGlobalFromStream};
-    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use wry::WebViewExtWindows;
 
-    let controller = tab_wv.controller();
+    let hwnd = HWND(window.hwnd() as isize);
+
     unsafe {
-        let Ok(core) = controller.CoreWebView2() else { return; };
-        let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else { return; };
-        let stream_clone = stream.clone();
-        let chrome_ptr = chrome_wv as *const WebView as usize;
-        let handler = CapturePreviewCompletedHandler::create(Box::new(move |res| {
-            if res.is_ok() {
-                if let Ok(hglobal) = GetHGlobalFromStream(&stream_clone) {
-                    let size = GlobalSize(hglobal);
-                    let ptr = GlobalLock(hglobal);
-                    if !ptr.is_null() && size > 0 {
-                        let slice = std::slice::from_raw_parts(ptr as *const u8, size);
-                        let b64 = base64_encode(slice);
-                        let _ = GlobalUnlock(hglobal);
-                        let wv_ref = &*(chrome_ptr as *const WebView);
-                        let js = format!(
-                            "if (window.setOverlayBackdropImage) window.setOverlayBackdropImage('data:image/png;base64,{}');",
-                            b64
-                        );
-                        let _ = wv_ref.evaluate_script(&js);
+        // 1. Enable WS_THICKFRAME + WS_EX_APPWINDOW so borderless window supports mouse resizing & Windows Snap!
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        let new_style = style | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_SYSMENU.0;
+        SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        SetWindowLongW(hwnd, GWL_EXSTYLE, (ex_style | WS_EX_APPWINDOW.0) as i32);
+
+        let _ = SetWindowPos(
+            hwnd,
+            HWND(0),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
+
+        // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class so Taskbar never shows a black circle!
+        if let Ok(hinst) = GetModuleHandleW(None) {
+            if let Ok(hicon_big) = LoadImageW(
+                hinst,
+                PCWSTR(1 as *const u16),
+                IMAGE_ICON,
+                48,
+                48,
+                LR_SHARED,
+            ) {
+                SetClassLongPtrW(hwnd, GCLP_HICON, hicon_big.0);
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon_big.0));
+            }
+            if let Ok(hicon_sm) = LoadImageW(
+                hinst,
+                PCWSTR(1 as *const u16),
+                IMAGE_ICON,
+                16,
+                16,
+                LR_DEFAULTSIZE | LR_SHARED,
+            ) {
+                SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon_sm.0);
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon_sm.0));
+            }
+        }
+
+        // 3. Make chrome_wv WebView2 background transparent (A=0) so overlays float cleanly over the live webpage without flicker!
+        let chrome_ctrl = chrome_wv.controller();
+        if let Ok(ctrl2) = chrome_ctrl.cast::<ICoreWebView2Controller2>() {
+            let _ = ctrl2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 0, R: 0, G: 0, B: 0 });
+        }
+
+        // 4. Subclass window procedure for 8-directional mouse resize on borderless frame
+        unsafe extern "system" fn borderless_resize_proc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+            _uid: usize,
+            _ref_data: usize,
+        ) -> LRESULT {
+            match msg {
+                WM_NCCALCSIZE => {
+                    if wparam.0 != 0 {
+                        return LRESULT(0);
                     }
                 }
+                WM_NCHITTEST => {
+                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
+                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let mut rc = RECT::default();
+                    if GetWindowRect(hwnd, &mut rc).is_ok() {
+                        let border = 8;
+                        let on_left = x >= rc.left && x < rc.left + border;
+                        let on_right = x <= rc.right && x > rc.right - border;
+                        let on_top = y >= rc.top && y < rc.top + border;
+                        let on_bottom = y <= rc.bottom && y > rc.bottom - border;
+
+                        if on_top && on_left { return LRESULT(HTTOPLEFT as isize); }
+                        if on_top && on_right { return LRESULT(HTTOPRIGHT as isize); }
+                        if on_bottom && on_left { return LRESULT(HTBOTTOMLEFT as isize); }
+                        if on_bottom && on_right { return LRESULT(HTBOTTOMRIGHT as isize); }
+                        if on_left { return LRESULT(HTLEFT as isize); }
+                        if on_right { return LRESULT(HTRIGHT as isize); }
+                        if on_top { return LRESULT(HTTOP as isize); }
+                        if on_bottom { return LRESULT(HTBOTTOM as isize); }
+                        let _ = GetClientRect(hwnd, &mut rc);
+                        return LRESULT(HTCLIENT as isize);
+                    }
+                }
+                _ => {}
             }
-            Ok(())
-        }));
-        let _ = core.CapturePreview(
-            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-            &stream,
-            &handler,
-        );
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+
+        let _ = SetWindowSubclass(hwnd, Some(borderless_resize_proc), 1, 0);
     }
 }
 
 #[cfg(not(windows))]
-fn capture_tab_preview_to_chrome(_tab_wv: &WebView, _chrome_wv: &WebView) {}
+fn install_native_win32_window_features(_window: &Window, _chrome_wv: &WebView) {}
 
-fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(((data.len() + 2) / 3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 63) as usize] as char);
-        } else {
-            out.push('=');
+#[cfg(windows)]
+fn bring_chrome_above_tabs(chrome_wv: &WebView) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use wry::WebViewExtWindows;
+
+    let ctrl = chrome_wv.controller();
+    unsafe {
+        let mut parent = HWND::default();
+        if ctrl.ParentWindow(&mut parent).is_ok() && parent.0 != 0 {
+            let _ = SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
-    out
 }
+
+#[cfg(not(windows))]
+fn bring_chrome_above_tabs(_chrome_wv: &WebView) {}
 
 fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], active_idx: usize, drawer_open: bool) {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
@@ -616,8 +599,13 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
             size: LogicalSize::new(w, content_h).into(),
         });
-        let show_web = !drawer_open && idx == active_idx && tab.url != "shunno://newtab";
+        // Keep active webpage ALWAYS visible (never hide or flash it when opening Menu/Downloads!)
+        let show_web = idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
+    }
+
+    if drawer_open {
+        bring_chrome_above_tabs(chrome_wv);
     }
 }
 
@@ -644,11 +632,9 @@ fn main() -> wry::Result<()> {
     let window = WindowBuilder::new()
         .with_title("Shunno Browser")
         .with_decorations(false)
-        .with_window_icon(load_embedded_window_icon())
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
-    apply_native_taskbar_icon(&window);
 
     let chrome_proxy = proxy.clone();
     let chrome_wv = WebViewBuilder::new_as_child(&window)
@@ -656,11 +642,14 @@ fn main() -> wry::Result<()> {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: LogicalSize::new(1240.0, CHROME_BAR_HEIGHT).into(),
         })
+        .with_transparent(true)
         .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
             let _ = chrome_proxy.send_event(AppEvent::ChromeIpc(req.body().clone()));
         })
         .build()?;
+
+    install_native_win32_window_features(&window, &chrome_wv);
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
     let mut tabs: Vec<BrowserTab> = Vec::new();
@@ -729,6 +718,7 @@ fn main() -> wry::Result<()> {
                 incognito: false,
                 playing_audio: false,
                 muted: false,
+                reader_active: false,
                 zoom: 1.0,
                 webview: wv,
             });
@@ -765,6 +755,8 @@ fn main() -> wry::Result<()> {
                              engine: &ShunnoGetDesktop| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
+        let active_reader = tabs.get(active_idx).map(|t| t.reader_active).unwrap_or(false);
+        let idm_available = BrowserStorage::find_external_idm().is_some();
         let active_host = extract_host(&active_url);
         let site = site_policies.get(&active_host).cloned().unwrap_or_default();
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
@@ -918,6 +910,25 @@ fn main() -> wry::Result<()> {
                 );
             }
 
+            Event::UserEvent(AppEvent::TabZoomChanged(tab_id, new_zoom)) => {
+                if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                    tab.zoom = new_zoom;
+                }
+                push_chrome_state(
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    &engine,
+                );
+            }
+
             Event::UserEvent(AppEvent::TabAudioChanged(tab_id, playing)) => {
                 if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.playing_audio = playing;
@@ -992,6 +1003,12 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
+                if global_settings.use_external_idm {
+                    if let Some(idm_exe) = BrowserStorage::find_external_idm() {
+                        let _ = Command::new(idm_exe).args(["/d", &dl_url, "/n"]).spawn();
+                        return;
+                    }
+                }
                 let (ref_url, cookie_val) = tabs
                     .get(active_tab_idx)
                     .map(|t| (Some(t.url.clone()), t.cookie.clone()))
@@ -1040,6 +1057,7 @@ fn main() -> wry::Result<()> {
                             incognito: false,
                             playing_audio: false,
                             muted: false,
+                            reader_active: false,
                             zoom: 1.0,
                             webview: wv,
                         });
@@ -1077,6 +1095,10 @@ fn main() -> wry::Result<()> {
 
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
+                } else if let Some(r_flag) = msg.strip_prefix("READER_STATE:") {
+                    if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.reader_active = r_flag == "1";
+                    }
                 } else if let Some(aud_flag) = msg.strip_prefix("AUDIO_STATE:") {
                     if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.playing_audio = aud_flag == "1";
@@ -1153,7 +1175,7 @@ fn main() -> wry::Result<()> {
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                             if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, zoom: 1.0, webview: wv });
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, reader_active: false, zoom: 1.0, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
@@ -1339,13 +1361,6 @@ fn main() -> wry::Result<()> {
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
-                    if let Some(tab) = tabs.get(active_tab_idx) {
-                        if tab.url != "shunno://newtab" {
-                            capture_tab_preview_to_chrome(&tab.webview, &chrome_wv);
-                        } else {
-                            let _ = chrome_wv.evaluate_script("if (window.setOverlayBackdropImage) window.setOverlayBackdropImage('');");
-                        }
-                    }
                     drawer_open = true;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd == "DRAWER_CLOSE" {
@@ -1399,6 +1414,7 @@ fn main() -> wry::Result<()> {
                             incognito: is_incog,
                             playing_audio: false,
                             muted: false,
+                            reader_active: false,
                             zoom: 1.0,
                             webview: wv,
                         });
@@ -1506,6 +1522,7 @@ fn main() -> wry::Result<()> {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
                             reload_active = true;
                         }
+                        "use_external_idm" => global_settings.use_external_idm = !global_settings.use_external_idm,
                         "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
                         "auto_pip" => global_settings.auto_pip_on_blur = !global_settings.auto_pip_on_blur,
                         "auto_clean" => {
@@ -1537,6 +1554,7 @@ fn main() -> wry::Result<()> {
                                     incognito: is_incog,
                                     playing_audio: false,
                                     muted: is_muted,
+                                    reader_active: false,
                                     zoom: tab.zoom,
                                     webview: new_wv,
                                 };
@@ -1589,14 +1607,7 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "READER_MODE" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let js = r#"
-                            (function() {
-                                const text = (document.querySelector('article') || document.body).innerText;
-                                document.body.innerHTML = '<div style="max-width:720px;margin:36px auto;padding:20px;font:19px/1.7 system-ui,Segoe UI,sans-serif;color:#1C1C1E;background:#F2F2F7;">' +
-                                    text.split('\n').filter(p => p.trim().length > 0).map(p => '<p style="margin-bottom:16px;">' + p + '</p>').join('') + '</div>';
-                            })();
-                        "#;
-                        let _ = tab.webview.evaluate_script(js);
+                        let _ = tab.webview.evaluate_script("if (window.__shunnoToggleReader) window.__shunnoToggleReader();");
                     }
                 } else if let Some(query) = cmd.strip_prefix("FIND:") {
                     if let Some(tab) = tabs.get(active_tab_idx) {
@@ -1621,6 +1632,19 @@ fn main() -> wry::Result<()> {
                             });
                             BrowserStorage::save_bookmarks(&bookmarks);
                         }
+                    }
+                } else if let Some(payload) = cmd.strip_prefix("RENAME_BOOKMARK:") {
+                    if let Some((idx_str, new_title)) = payload.split_once('|') {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            if idx < bookmarks.len() && !new_title.trim().is_empty() {
+                                bookmarks[idx].title = new_title.trim().to_string();
+                                BrowserStorage::save_bookmarks(&bookmarks);
+                            }
+                        }
+                    }
+                } else if let Some(idm_url) = cmd.strip_prefix("SEND_TO_IDM:") {
+                    if let Some(idm_exe) = BrowserStorage::find_external_idm() {
+                        let _ = Command::new(idm_exe).args(["/d", idm_url.trim(), "/n"]).spawn();
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("DEL_BOOKMARK:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {

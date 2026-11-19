@@ -289,17 +289,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
     display: none; justify-content: flex-end; align-items: flex-start;
     padding: 12px 14px;
-    background-color: rgba(15, 15, 20, 0.24);
-    background-size: cover;
-    background-position: top left;
+    background: rgba(15, 15, 20, 0.08);
+    backdrop-filter: blur(1.5px);
     z-index: 50;
-  }
-  .overlay-backdrop::before {
-    content: "";
-    position: absolute; inset: 0;
-    background: rgba(18, 18, 22, 0.18);
-    backdrop-filter: blur(8px) saturate(140%);
-    pointer-events: none;
   }
   .overlay-backdrop.open {
     display: flex;
@@ -483,7 +475,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
             <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
-            <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader</button>
+            <button class="pill-btn pill-soft" id="btn-reader-toggle" onclick="send('READER_MODE');">📖 Reader</button>
             <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
             <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
             <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
@@ -801,7 +793,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.7.2';
+    document.getElementById('version-badge').textContent = state.version || 'v1.8.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -851,8 +843,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
         </svg>
       </button>
-    ` + state.bookmarks.slice(0, 14).map(b => `
-      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">⭐ ${escapeHtml(b.title)}</button>
+    ` + state.bookmarks.slice(0, 14).map((b, i) => `
+      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')"
+              oncontextmenu="event.preventDefault(); const nt=prompt('Rename bookmark (leave empty to remove):','${encodeAttr(b.title)}'); if(nt===null) return; if(nt.trim()===''){send('DEL_BOOKMARK:${i}');}else{send('RENAME_BOOKMARK:${i}|'+nt.trim());}"
+              title="${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
     `).join('');
 
     const seBtn = document.getElementById('engine-logo-btn');
@@ -914,13 +908,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <div style="font-size:12px;font-weight:600;">${escapeHtml(s.name)} <span class="pill-btn pill-green" style="padding:1px 5px;font-size:10.5px;">${escapeHtml(s.size_label)}</span></div>
               <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(s.url)}</div>
             </div>
-            <button class="pill-btn pill-blue" onclick="send('ENQUEUE_DL:16|${encodeAttr(s.url)}'); toggleDrawer('downloads');">⚡</button>
+            <div style="display:flex;gap:4px;flex-shrink:0;">
+              ${state.idm_available ? `<button class="pill-btn pill-green" onclick="send('SEND_TO_IDM:${encodeAttr(s.url)}');" title="Send to Internet Download Manager">IDM</button>` : ''}
+              <button class="pill-btn pill-blue" onclick="send('ENQUEUE_DL:16|${encodeAttr(s.url)}'); toggleDrawer('downloads');">⚡</button>
+            </div>
           </div>
         `).join('');
+
+    const rBtn = document.getElementById('btn-reader-toggle');
+    if (rBtn) {
+      rBtn.className = 'pill-btn ' + (state.active_reader ? 'pill-blue' : 'pill-soft');
+      rBtn.textContent = state.active_reader ? '📖 Reader: ON' : '📖 Reader';
+    }
 
     const globalItems = [
       ['full_dark', '🌙 Dark Mode', state.global.full_dark_mode],
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
+      ['use_external_idm', '🚀 External IDM', state.global.use_external_idm],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
       ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
@@ -987,7 +991,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0;">
           <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(b.url)}'); closeDrawer();">Open</button>
-          <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')">✕</button>
+          <button class="pill-btn pill-soft" onclick="const nt=prompt('Rename bookmark:','${encodeAttr(b.title)}'); if(nt && nt.trim()) send('RENAME_BOOKMARK:${i}|'+nt.trim());" title="Rename">✎</button>
+          <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
         </div>
       </div>
     `).join('');

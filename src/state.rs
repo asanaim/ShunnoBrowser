@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const APP_VERSION: &str = "v1.7.2";
+pub const APP_VERSION: &str = "v1.8.0";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
@@ -73,6 +73,8 @@ pub struct GlobalSettings {
     #[serde(default)]
     pub auto_clean_completed: bool,
     #[serde(default)]
+    pub use_external_idm: bool,
+    #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
     pub quick_shortcuts: Vec<QuickShortcut>,
@@ -92,6 +94,7 @@ impl Default for GlobalSettings {
             drop_basket_enabled: true,
             auto_pip_on_blur: false,
             auto_clean_completed: false,
+            use_external_idm: false,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
@@ -153,6 +156,20 @@ impl BrowserStorage {
         let dir = Self::downloads_root_dir().join("bin");
         let _ = fs::create_dir_all(&dir);
         dir
+    }
+
+    pub fn find_external_idm() -> Option<PathBuf> {
+        let candidates = [
+            r"C:\Program Files (x86)\Internet Download Manager\IDMan.exe",
+            r"C:\Program Files\Internet Download Manager\IDMan.exe",
+        ];
+        for p in candidates {
+            let pb = PathBuf::from(p);
+            if pb.exists() {
+                return Some(pb);
+            }
+        }
+        None
     }
 
     pub fn find_ffmpeg() -> Option<PathBuf> {
