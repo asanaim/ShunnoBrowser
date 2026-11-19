@@ -1,3 +1,6 @@
+## v2.1.1 (2026-11-20)
+- Fixed `HMODULE` -> `HINSTANCE(hmodule.0)` type conversion in `LoadImageW` inside `install_native_win32_window_features` (`src/main.rs`).
+
 ## v2.1.0 (2026-11-19)
 - Fixed `SetWindowSubclass` / `DefSubclassProc` error by using standard `SetWindowLongPtrW(GWLP_WNDPROC)` + `CallWindowProcW`, and removed unused `Icon` import (0 errors, 0 warnings).
 - Added **Live Download Speed Sparkline Graph** (`⚡` current & peak throughput SVG area chart) inside **Downloads**.

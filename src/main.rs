@@ -451,7 +451,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use tao::platform::windows::WindowExtWindows;
     use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
     use windows::core::{Interface, PCWSTR};
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -490,7 +490,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
         );
 
         // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class
-        if let Ok(hinst) = GetModuleHandleW(None) {
+        if let Ok(hmodule) = GetModuleHandleW(None) {
+            let hinst = HINSTANCE(hmodule.0);
             if let Ok(hicon_big) = LoadImageW(
                 hinst,
                 PCWSTR(1 as *const u16),

@@ -1,6 +1,6 @@
 [package]
 name = "shunno-browser"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
