@@ -801,7 +801,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.7.1';
+    document.getElementById('version-badge').textContent = state.version || 'v1.7.2';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';

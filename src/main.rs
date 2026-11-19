@@ -129,7 +129,6 @@ fn build_content_init_script(
 }
 
 #[cfg(windows)]
-#[cfg(windows)]
 fn apply_tab_zoom(webview: &WebView, factor: f64) {
     use wry::WebViewExtWindows;
     let _ = webview.zoom(factor);
@@ -144,6 +143,7 @@ fn apply_tab_zoom(webview: &WebView, factor: f64) {
     let _ = webview.zoom(factor);
 }
 
+#[cfg(windows)]
 fn set_webview_muted(webview: &WebView, muted: bool) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
     use windows::core::Interface;
@@ -163,21 +163,6 @@ fn set_webview_muted(webview: &WebView, muted: bool) {
 }
 
 #[cfg(not(windows))]
-#[cfg(windows)]
-fn apply_tab_zoom(webview: &WebView, factor: f64) {
-    use wry::WebViewExtWindows;
-    let _ = webview.zoom(factor);
-    let controller = webview.controller();
-    unsafe {
-        let _ = controller.SetZoomFactor(factor);
-    }
-}
-
-#[cfg(not(windows))]
-fn apply_tab_zoom(webview: &WebView, factor: f64) {
-    let _ = webview.zoom(factor);
-}
-
 fn set_webview_muted(webview: &WebView, muted: bool) {
     let js = format!("document.querySelectorAll('video,audio').forEach(m => m.muted = {});", muted);
     let _ = webview.evaluate_script(&js);

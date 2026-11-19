@@ -1,3 +1,6 @@
+## v1.7.2 (2026-11-19)
+- Fixed `#[cfg(windows)]` / `#[cfg(not(windows))]` attribute pairing on `apply_tab_zoom` and `set_webview_muted` in `src/main.rs` (`E0428`).
+
 ## v1.7.1 (2026-11-19)
 - Fixed `proxy` clone (`ad_proxy`) in `WebResourceRequestedEventHandler` (`src/main.rs:242`).
 - Added native `ICoreWebView2Controller::SetZoomFactor` + capture-phase `Ctrl++` / `Ctrl+-` / `Ctrl+0` / `Ctrl+Wheel` zoom handling.
