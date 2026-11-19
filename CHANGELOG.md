@@ -1,10 +1,15 @@
-## v1.8.0 (2026-11-19)
+## v1.9.0 (2026-11-19)
+- Fixed `E0063` missing fields (`active_reader` in `ChromeSnapshot`, `reader_active` in `BrowserTab`).
+- Removed all external IDM / standalone downloader branding and merged 100% of multi-threaded download manager features natively into Shunno Browser's built-in **Downloads (`⚡`)** manager.
+- Added **Drag-to-Reorder Tabs** in the tab strip (`REORDER_TAB`) and **Bookmark Folder Grouping** across the Bookmarks Bar and Library.
+
+## v1.9.0 (2026-11-19)
 - Fixed `proxy` clone (`ad_proxy`) in `WebResourceRequestedEventHandler` (`E0382`).
 - Fixed Taskbar Icon via `LoadImageW` from embedded EXE icon resource #1 + `SetClassLongPtrW` (`GCLP_HICON`/`GCLP_HICONSM`) + `WM_SETICON`.
 - Added native Win32 8-directional mouse window resizing (`WM_NCHITTEST` + `WS_THICKFRAME`) on borderless window.
 - Added `ZoomFactorChangedEventHandler` so `Ctrl + Mouse Scroll` zooms smoothly and updates the zoom indicator.
 - Eliminated Menu/Download open flicker by keeping the live webpage visible beneath a transparent `chrome_wv` (`SetDefaultBackgroundColor` alpha=0) with a 10% subtle blur.
-- Added On/Off toggle for Reader Mode (`📖 Reader`), Rename (`✎`) & Remove (`✕`) on Bookmarks, and coordinate-based IDM media detection + optional `IDMan.exe` forwarding.
+- Added On/Off toggle for Reader Mode (`📖 Reader`), Rename (`✎`) & Remove (`✕`) on Bookmarks, and coordinate-based IDM media detection + optional `native engine` forwarding.
 
 ## v1.7.2 (2026-11-19)
 - Fixed `#[cfg(windows)]` / `#[cfg(not(windows))]` attribute pairing on `apply_tab_zoom` and `set_webview_muted` in `src/main.rs` (`E0428`).

@@ -104,6 +104,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
   }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
+  .tab.drag-over-left { box-shadow: -3px 0 0 0 var(--blue); }
+  .tab.drag-over-right { box-shadow: 3px 0 0 0 var(--blue); }
+  .folder-pills { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+  .folder-pill {
+    border: none; border-radius: 8px; padding: 3px 9px; font-size: 11px; font-weight: 600;
+    background: var(--input-bg); color: var(--text); cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+  }
+  .folder-pill.active { background: var(--blue); color: #fff; }
 
   .tab-audio {
     font-size: 11px; padding: 0 4px; border-radius: 5px; flex-shrink: 0;
@@ -424,7 +433,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <div class="nav-group">
         <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')" title="Detected Media">🎯 0</button>
-        <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Shunno Get Downloads (Ctrl+J)">⚡ 0</button>
+        <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
     </div>
@@ -548,12 +557,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title">⭐ Bookmarks</span>
             <div style="display:flex;gap:5px;">
-              <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Save</button>
+              <button class="pill-btn pill-blue" onclick="promptSaveBookmarkWithFolder()">+ Save</button>
               <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
               <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
           </div>
+          <div class="folder-pills" id="bookmark-folders-bar"></div>
           <div id="bookmarks-list"></div>
         </div>
 
@@ -566,11 +576,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Panel E: Shunno Get Downloads -->
+      <!-- Panel E: Downloads Downloads -->
       <div id="panel-downloads" style="display:none">
         <div class="card">
           <div class="card-header">
-            <span class="card-title">⚡ Shunno Get</span>
+            <span class="card-title">⚡ Downloads</span>
             <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
               <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
               <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
@@ -605,6 +615,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         </div>
 
+        <div class="folder-pills" id="dl-category-bar"></div>
         <div id="duplicate-banner" class="card" style="display:none;border-color:var(--orange);"></div>
         <div id="downloads-list"></div>
       </div>
@@ -617,6 +628,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   let currentSpeed = 1.0;
   const speeds = [1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 0.75];
   let knownTabIds = new Set();
+  let draggedTabIdx = null;
+  let activeBookmarkFolder = 'All';
+  let activeDlCategory = 'All';
+
+  function promptSaveBookmarkWithFolder() {
+    const folder = prompt('Save bookmark to folder:', activeBookmarkFolder === 'All' ? 'General' : activeBookmarkFolder);
+    if (folder === null) return;
+    send('ADD_BOOKMARK:' + (folder.trim() || 'General'));
+  }
 
   function send(msg) {
     if (window.ipc) window.ipc.postMessage(msg);
@@ -753,6 +773,37 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.classList.toggle('incognito', !!t.incognito);
       }
 
+      el.draggable = true;
+      el.ondragstart = (ev) => {
+        draggedTabIdx = idx;
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', String(idx));
+        }
+      };
+      el.ondragover = (ev) => {
+        ev.preventDefault();
+        if (draggedTabIdx === null || draggedTabIdx === idx) return;
+        const rect = el.getBoundingClientRect();
+        const isRight = (ev.clientX - rect.left) > (rect.width / 2);
+        el.classList.toggle('drag-over-right', isRight);
+        el.classList.toggle('drag-over-left', !isRight);
+      };
+      el.ondragleave = () => {
+        el.classList.remove('drag-over-left', 'drag-over-right');
+      };
+      el.ondrop = (ev) => {
+        ev.preventDefault();
+        el.classList.remove('drag-over-left', 'drag-over-right');
+        if (draggedTabIdx !== null && draggedTabIdx !== idx) {
+          send('REORDER_TAB:' + draggedTabIdx + '|' + idx);
+        }
+        draggedTabIdx = null;
+      };
+      el.ondragend = () => {
+        draggedTabIdx = null;
+        el.classList.remove('drag-over-left', 'drag-over-right');
+      };
       el.onclick = () => send('SWITCH_TAB:' + idx);
       el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
       el.title = t.title || 'New Tab';
@@ -793,7 +844,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.8.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.9.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -834,19 +885,30 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       homeCanvas.classList.remove('active');
     }
 
-    // Chrome-style Bookmarks & Library Bar under address bar
+    // Bookmarks & Folder Grouping Bar under address bar
+    const allFolders = ['All'].concat(Array.from(new Set(state.bookmarks.map(b => b.folder || 'General'))));
+    if (!allFolders.includes(activeBookmarkFolder)) activeBookmarkFolder = 'All';
+
     const bmStrip = document.getElementById('bookmarks-strip');
+    const visibleBarBms = state.bookmarks
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
+
     bmStrip.innerHTML = `
       <button class="bm-chip action" onclick="toggleDrawer('bookmarks')" title="Open Library">📚 Library</button>
-      <button class="bm-chip action" onclick="send('ADD_BOOKMARK')" title="Bookmark Current Page" style="padding:3px 7px;">
+      <button class="bm-chip action" onclick="promptSaveBookmarkWithFolder()" title="Bookmark Current Page" style="padding:3px 7px;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
         </svg>
       </button>
-    ` + state.bookmarks.slice(0, 14).map((b, i) => `
+    ` + allFolders.filter(f => f !== 'All').map(f => `
+      <button class="bm-chip ${activeBookmarkFolder === f ? 'action' : ''}"
+              onclick="activeBookmarkFolder = (activeBookmarkFolder === '${encodeAttr(f)}' ? 'All' : '${encodeAttr(f)}'); send('REFRESH_UI');"
+              title="Filter folder: ${escapeHtml(f)}">📁 ${escapeHtml(f)}</button>
+    `).join('') + visibleBarBms.slice(0, 12).map(({ b, i }) => `
       <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')"
               oncontextmenu="event.preventDefault(); const nt=prompt('Rename bookmark (leave empty to remove):','${encodeAttr(b.title)}'); if(nt===null) return; if(nt.trim()===''){send('DEL_BOOKMARK:${i}');}else{send('RENAME_BOOKMARK:${i}|'+nt.trim());}"
-              title="${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
+              title="[${escapeHtml(b.folder || 'General')}] ${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
     `).join('');
 
     const seBtn = document.getElementById('engine-logo-btn');
@@ -908,10 +970,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <div style="font-size:12px;font-weight:600;">${escapeHtml(s.name)} <span class="pill-btn pill-green" style="padding:1px 5px;font-size:10.5px;">${escapeHtml(s.size_label)}</span></div>
               <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(s.url)}</div>
             </div>
-            <div style="display:flex;gap:4px;flex-shrink:0;">
-              ${state.idm_available ? `<button class="pill-btn pill-green" onclick="send('SEND_TO_IDM:${encodeAttr(s.url)}');" title="Send to Internet Download Manager">IDM</button>` : ''}
-              <button class="pill-btn pill-blue" onclick="send('ENQUEUE_DL:16|${encodeAttr(s.url)}'); toggleDrawer('downloads');">⚡</button>
-            </div>
+            <button class="pill-btn pill-blue" onclick="send('ENQUEUE_DL:16|${encodeAttr(s.url)}'); toggleDrawer('downloads');">⚡</button>
           </div>
         `).join('');
 
@@ -924,7 +983,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const globalItems = [
       ['full_dark', '🌙 Dark Mode', state.global.full_dark_mode],
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
-      ['use_external_idm', '🚀 External IDM', state.global.use_external_idm],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
       ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
@@ -983,19 +1041,32 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    document.getElementById('bookmarks-list').innerHTML = state.bookmarks.map((b, i) => `
-      <div class="list-row">
-        <div style="overflow:hidden;">
-          <div style="font-size:12.5px;font-weight:600;">${escapeHtml(b.title)}</div>
-          <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(b.url)}</div>
-        </div>
-        <div style="display:flex;gap:5px;flex-shrink:0;">
-          <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(b.url)}'); closeDrawer();">Open</button>
-          <button class="pill-btn pill-soft" onclick="const nt=prompt('Rename bookmark:','${encodeAttr(b.title)}'); if(nt && nt.trim()) send('RENAME_BOOKMARK:${i}|'+nt.trim());" title="Rename">✎</button>
-          <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
-        </div>
-      </div>
+    const folderBar = document.getElementById('bookmark-folders-bar');
+    folderBar.innerHTML = allFolders.map(f => `
+      <button class="folder-pill ${activeBookmarkFolder === f ? 'active' : ''}"
+              onclick="activeBookmarkFolder = '${encodeAttr(f)}'; send('REFRESH_UI');">${f === 'All' ? 'All Folders' : '📁 ' + escapeHtml(f)}</button>
     `).join('');
+
+    const filteredBms = state.bookmarks
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
+
+    document.getElementById('bookmarks-list').innerHTML = filteredBms.length === 0
+      ? '<div class="meta">No bookmarks in this folder.</div>'
+      : filteredBms.map(({ b, i }) => `
+          <div class="list-row">
+            <div style="overflow:hidden;">
+              <div style="font-size:12.5px;font-weight:600;">${escapeHtml(b.title)} <span class="pill-btn pill-soft" style="padding:1px 6px;font-size:10px;">📁 ${escapeHtml(b.folder || 'General')}</span></div>
+              <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(b.url)}</div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0;">
+              <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(b.url)}'); closeDrawer();">Open</button>
+              <button class="pill-btn pill-soft" onclick="const nf=prompt('Move to folder:','${encodeAttr(b.folder || 'General')}'); if(nf && nf.trim()) send('SET_BOOKMARK_FOLDER:${i}|'+nf.trim());" title="Move Folder">📁</button>
+              <button class="pill-btn pill-soft" onclick="const nt=prompt('Rename bookmark:','${encodeAttr(b.title)}'); if(nt && nt.trim()) send('RENAME_BOOKMARK:${i}|'+nt.trim());" title="Rename">✎</button>
+              <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
+            </div>
+          </div>
+        `).join('');
 
     document.getElementById('history-list').innerHTML = state.history.length === 0
       ? '<div class="meta">No history recorded yet.</div>'
@@ -1009,9 +1080,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         `).join('');
 
-    document.getElementById('downloads-list').innerHTML = state.downloads.length === 0
+    const dlCats = ['All', 'Videos', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
+    document.getElementById('dl-category-bar').innerHTML = dlCats.map(c => `
+      <button class="folder-pill ${activeDlCategory === c ? 'active' : ''}"
+              onclick="activeDlCategory = '${c}'; send('REFRESH_UI');">${c}</button>
+    `).join('');
+
+    const visibleDownloads = state.downloads.filter(d => activeDlCategory === 'All' || d.category === activeDlCategory);
+    document.getElementById('downloads-list').innerHTML = visibleDownloads.length === 0
       ? '<div class="card"><div class="meta">No downloads yet. Hover over any video/file or click 🕸️ Grab to scan all downloadable files on the active tab.</div></div>'
-      : state.downloads.map(d => {
+      : visibleDownloads.map(d => {
           const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
           const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);
           const infoTxt = d.status === 'DOWNLOADING'

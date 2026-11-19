@@ -9,7 +9,7 @@
 
 ## Key Features
 
-### 1. Shunno Get Multi-Threaded Download Engine (`1–32 Threads`)
+### 1. Downloads Multi-Threaded Download Engine (`1–32 Threads`)
 - **32-Thread HTTP Range Acceleration:** Verifies `206 Partial Content` + `Content-Range` before splitting downloads across up to **32 concurrent async Tokio streams** with live segment progress bars (`[████▓▓▒▒]`) and graceful single-stream fallback on `200 OK` servers.
 - **Duplicate Detection & Auto-Cleanup:** Detects existing active or completed files before creating duplicate tasks (offering one-click **Open** or **Download Again**), plus **🧹 Clean** and **Auto-Clean Done** switches.
 - **Trusted-Types Safe Floating Media Pill + Picture-in-Picture (`📺 PiP`):** Hovering over YouTube videos, HTML5 `<video>`/`<audio>` players, or downloadable links floats an isolated Shadow-DOM **`0↓ Download`** pill with live HTTP `HEAD`/`Range` file-size probing (`MB`/`GB`), stream quality selector, and a one-click **`📺 PiP`** button.
@@ -32,6 +32,6 @@
 - **`Ctrl + W`** — Close Active Tab (exits cleanly when closing the final tab)
 - **`Ctrl + L`** — Focus Address Bar
 - **`Ctrl + F`** — Find in Page
-- **`Ctrl + J`** — Open Shunno Get Downloads
+- **`Ctrl + J`** — Open Downloads Downloads
 - **`Ctrl + R`** — Reload Page
 - **`Esc`** — Close Side Panel

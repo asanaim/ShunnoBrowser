@@ -200,7 +200,7 @@ fn parse_content_disposition_filename(header_val: &str) -> Option<String> {
     None
 }
 
-pub struct ShunnoGetDesktop {
+pub struct NativeDownloadEngine {
     client: Client,
     pub tasks: Arc<Mutex<Vec<DownloadTask>>>,
     active_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
@@ -208,7 +208,7 @@ pub struct ShunnoGetDesktop {
     pub auto_clean_completed: Arc<AtomicBool>,
 }
 
-impl ShunnoGetDesktop {
+impl NativeDownloadEngine {
     pub fn new(initial_speed_limit_bps: u64, initial_auto_clean: bool) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(20))
@@ -823,7 +823,7 @@ async fn download_raw_to_path(
             let seg_len = end - start + 1;
             thread_totals[i] = seg_len;
 
-            let offset_path = ShunnoGetDesktop::parts_dir().join(format!("{}_t{}.offset", task.id, i));
+            let offset_path = NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i));
             if let Ok(txt) = fs::read_to_string(&offset_path) {
                 if let Ok(saved) = txt.trim().parse::<u64>() {
                     thread_progress[i].store(saved.saturating_sub(start).min(seg_len), Ordering::SeqCst);
@@ -879,7 +879,7 @@ async fn download_raw_to_path(
             let prog = thread_progress.clone();
             let run = running.clone();
             let lim = speed_limit.clone();
-            let offset_path = ShunnoGetDesktop::parts_dir().join(format!("{}_t{}.offset", task.id, i));
+            let offset_path = NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i));
 
             workers.push(tokio::spawn(async move {
                 if offset > end {
@@ -947,7 +947,7 @@ async fn download_raw_to_path(
         }
 
         for i in 0..threads {
-            let _ = fs::remove_file(ShunnoGetDesktop::parts_dir().join(format!("{}_t{}.offset", task.id, i)));
+            let _ = fs::remove_file(NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i)));
         }
     } else {
         let mut rb = client

@@ -9,5 +9,5 @@
 - `src/state.rs`: Persistent JSON storage (`%LOCALAPPDATA%\ShunnoBrowser\`) for global settings, per-site policies, bookmarks, history, and session restore.
 - `src/sanitizer.rs`: Tracking parameter removal (`utm_*`, `fbclid`, `gclid`, `si`, `igshid`) and AMP-to-canonical URL resolution.
 - `src/userscripts.rs`: SHA-256 hash verification and `@match` domain gating for approved user-scripts.
-- `src/downloader.rs`: 32-thread HTTP range downloader (`ShunnoGetDesktop`) with `206 Partial Content` verification, duplicate detection, auto-cleanup, HLS `.m3u8` assembly, and optional FFmpeg DASH muxing.
+- `src/downloader.rs`: 32-thread HTTP range downloader (`NativeDownloaderDesktop`) with `206 Partial Content` verification, duplicate detection, auto-cleanup, HLS `.m3u8` assembly, and optional FFmpeg DASH muxing.
 - `assets/js/content_guard.js`: Trusted-Types safe Shadow-DOM floating media pill (`PiP` + stream picker), drag-and-drop download basket, debounced `MutationObserver` cleaner, and audio playback reporter.

@@ -350,7 +350,7 @@
     return origSend.apply(this, arguments);
   };
 
-  function triggerShunnoGet(targetUrl, threads) {
+  function triggerNativeDownload(targetUrl, threads) {
     if (!targetUrl) return;
     postSecure('FLOAT_DL:' + JSON.stringify({
       url: targetUrl,
@@ -591,7 +591,7 @@
       const dropped = (e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'))) || '';
       const urls = dropped.split(/\r?\n/).map(s => s.trim()).filter(s => s.startsWith('http'));
       if (urls.length > 0) {
-        urls.forEach(u => triggerShunnoGet(u, 16));
+        urls.forEach(u => triggerNativeDownload(u, 16));
         basketLabel.textContent = 'Queued (' + urls.length + ')!';
         setTimeout(() => { basketLabel.textContent = 'Drop Link'; }, 1400);
       } else {
@@ -646,7 +646,7 @@
     pillMain.addEventListener('click', (e) => {
       e.stopPropagation();
       if (activeItems.length === 1) {
-        triggerShunnoGet(activeItems[0].url, 16);
+        triggerNativeDownload(activeItems[0].url, 16);
         pillWrap.style.display = 'none';
         return;
       }
@@ -655,7 +655,7 @@
       const hdr = document.createElement('div');
       hdr.className = 'menu-hdr';
       const hdrTitle = document.createElement('span');
-      hdrTitle.textContent = '⚡ Shunno Get (' + activeItems.length + ' items)';
+      hdrTitle.textContent = '⚡ Downloads (' + activeItems.length + ' items)';
       const closeBtn = document.createElement('span');
       closeBtn.style.cssText = 'cursor:pointer;color:#aaa;padding:0 4px;';
       closeBtn.textContent = '✕';
@@ -679,7 +679,7 @@
         go.className = 'go';
         go.textContent = '16T';
         go.onclick = () => {
-          triggerShunnoGet(it.url, 16);
+          triggerNativeDownload(it.url, 16);
           menu.style.display = 'none';
           pillWrap.style.display = 'none';
         };

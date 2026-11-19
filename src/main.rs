@@ -6,7 +6,7 @@ mod state;
 mod ui_chrome;
 mod userscripts;
 
-use downloader::{DownloadTask, EnqueueOutcome, ShunnoGetDesktop, StreamProbeResult};
+use downloader::{DownloadTask, EnqueueOutcome, NativeDownloadEngine, StreamProbeResult};
 use rand::Rng;
 use regex::Regex;
 use sanitizer::{extract_host, sanitize_url};
@@ -87,7 +87,6 @@ struct ChromeSnapshot {
     active_host: String,
     active_zoom: f64,
     active_reader: bool,
-    idm_available: bool,
     site: SitePolicy,
     global: GlobalSettings,
     blocked_count: usize,
@@ -281,7 +280,7 @@ fn attach_native_webview2_hooks(
             let _ = core.add_WebResourceRequested(&handler, &mut token);
         }
 
-        // 3. Native WebView2 DownloadStarting Interceptor (routes all browser downloads to Shunno Get)
+        // 3. Native WebView2 DownloadStarting Interceptor (routes all browser downloads to Downloads)
         use webview2_com::DownloadStartingEventHandler;
         use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
         if let Ok(core4) = core.cast::<ICoreWebView2_4>() {
@@ -621,7 +620,7 @@ fn main() -> wry::Result<()> {
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
     let mut history = BrowserStorage::load_history();
-    let engine = Arc::new(ShunnoGetDesktop::new(
+    let engine = Arc::new(NativeDownloadEngine::new(
         global_settings.speed_limit_bps,
         global_settings.auto_clean_completed,
     ));
@@ -659,7 +658,7 @@ fn main() -> wry::Result<()> {
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
     let mut duplicate_alert: Option<DownloadTask> = None;
 
-    // Start local HTTP IDM/ShunnoGet listener on http://127.0.0.1:45780/add?url=...
+    // Start local HTTP IDM/NativeDownloader listener on http://127.0.0.1:45780/add?url=...
     let hook_proxy = proxy.clone();
     rt_handle.spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -752,11 +751,10 @@ fn main() -> wry::Result<()> {
                              bookmarks: &[BookmarkEntry],
                              history: &[HistoryEntry],
                              duplicate_alert: &Option<DownloadTask>,
-                             engine: &ShunnoGetDesktop| {
+                             engine: &NativeDownloadEngine| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
         let active_reader = tabs.get(active_idx).map(|t| t.reader_active).unwrap_or(false);
-        let idm_available = BrowserStorage::find_external_idm().is_some();
         let active_host = extract_host(&active_url);
         let site = site_policies.get(&active_host).cloned().unwrap_or_default();
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
@@ -780,6 +778,7 @@ fn main() -> wry::Result<()> {
             active_url,
             active_host,
             active_zoom,
+            active_reader,
             site,
             global: global_settings.clone(),
             blocked_count,
@@ -1003,12 +1002,6 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
-                if global_settings.use_external_idm {
-                    if let Some(idm_exe) = BrowserStorage::find_external_idm() {
-                        let _ = Command::new(idm_exe).args(["/d", &dl_url, "/n"]).spawn();
-                        return;
-                    }
-                }
                 let (ref_url, cookie_val) = tabs
                     .get(active_tab_idx)
                     .map(|t| (Some(t.url.clone()), t.cookie.clone()))
@@ -1431,6 +1424,25 @@ fn main() -> wry::Result<()> {
                         active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                     }
+                } else if cmd == "REFRESH_UI" {
+                    // Triggers immediate push_chrome_state at the bottom of ChromeIpc
+                } else if let Some(payload) = cmd.strip_prefix("REORDER_TAB:") {
+                    if let Some((from_s, to_s)) = payload.split_once('|') {
+                        if let (Ok(from), Ok(to)) = (from_s.parse::<usize>(), to_s.parse::<usize>()) {
+                            if from < tabs.len() && to < tabs.len() && from != to {
+                                let moved = tabs.remove(from);
+                                tabs.insert(to, moved);
+                                if active_tab_idx == from {
+                                    active_tab_idx = to;
+                                } else if from < active_tab_idx && active_tab_idx <= to {
+                                    active_tab_idx -= 1;
+                                } else if to <= active_tab_idx && active_tab_idx < from {
+                                    active_tab_idx += 1;
+                                }
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            }
+                        }
+                    }
                 } else if let Some(idx_str) = cmd.strip_prefix("SWITCH_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
@@ -1522,7 +1534,6 @@ fn main() -> wry::Result<()> {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
                             reload_active = true;
                         }
-                        "use_external_idm" => global_settings.use_external_idm = !global_settings.use_external_idm,
                         "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
                         "auto_pip" => global_settings.auto_pip_on_blur = !global_settings.auto_pip_on_blur,
                         "auto_clean" => {
@@ -1594,6 +1605,7 @@ fn main() -> wry::Result<()> {
                                 incognito: is_incog,
                                 playing_audio: false,
                                 muted: is_muted,
+                                reader_active: false,
                                 zoom: tab.zoom,
                                 webview: new_wv,
                             };
@@ -1621,16 +1633,32 @@ fn main() -> wry::Result<()> {
                         let js = format!("window.find('', false, {}, true);", backwards);
                         let _ = tab.webview.evaluate_script(&js);
                     }
-                } else if cmd == "ADD_BOOKMARK" {
+                } else if cmd == "ADD_BOOKMARK" || cmd.starts_with("ADD_BOOKMARK:") {
+                    let folder_name = cmd
+                        .strip_prefix("ADD_BOOKMARK:")
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("General")
+                        .to_string();
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        if !bookmarks.iter().any(|b| b.url == tab.url) {
+                        if tab.url != "shunno://newtab" && !bookmarks.iter().any(|b| b.url == tab.url) {
                             let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                             bookmarks.insert(0, BookmarkEntry {
                                 title: tab.title.clone(),
                                 url: tab.url.clone(),
+                                folder: folder_name,
                                 created_at: now,
                             });
                             BrowserStorage::save_bookmarks(&bookmarks);
+                        }
+                    }
+                } else if let Some(payload) = cmd.strip_prefix("SET_BOOKMARK_FOLDER:") {
+                    if let Some((idx_str, new_folder)) = payload.split_once('|') {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            if idx < bookmarks.len() && !new_folder.trim().is_empty() {
+                                bookmarks[idx].folder = new_folder.trim().to_string();
+                                BrowserStorage::save_bookmarks(&bookmarks);
+                            }
                         }
                     }
                 } else if let Some(payload) = cmd.strip_prefix("RENAME_BOOKMARK:") {
@@ -1642,10 +1670,7 @@ fn main() -> wry::Result<()> {
                             }
                         }
                     }
-                } else if let Some(idm_url) = cmd.strip_prefix("SEND_TO_IDM:") {
-                    if let Some(idm_exe) = BrowserStorage::find_external_idm() {
-                        let _ = Command::new(idm_exe).args(["/d", idm_url.trim(), "/n"]).spawn();
-                    }
+
                 } else if let Some(idx_str) = cmd.strip_prefix("DEL_BOOKMARK:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < bookmarks.len() {
