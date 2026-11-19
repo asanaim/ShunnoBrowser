@@ -1,8 +1,8 @@
 [package]
 name = "shunno-browser"
-version = "1.9.0"
+version = "2.0.0"
 edition = "2021"
-description = "Shunno Browser — Lightweight Desktop Web Browser & Multi-Threaded Download Manager"
+description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
 
 [[bin]]
@@ -23,6 +23,7 @@ url = "2.5.2"
 regex = "1.10.5"
 rand = "0.8.5"
 dirs = "5.0.1"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.30.0"

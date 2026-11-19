@@ -376,6 +376,51 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     border-bottom: 1px solid var(--border); gap: 8px;
   }
   .list-row:last-child { border-bottom: none; }
+
+  /* F11 Fullscreen hides Tab Bar + Navigation/Bookmarks Shell */
+  body.fullscreen .chrome-shell { display: none !important; }
+  .fs-exit-pill {
+    position: fixed; top: 8px; right: 14px; z-index: 95;
+    display: none; align-items: center; gap: 6px;
+    background: rgba(24, 24, 28, 0.86); color: #fff;
+    backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 10px; padding: 5px 11px; font-size: 11.5px; font-weight: 600;
+    cursor: pointer; opacity: 0.35; transition: opacity 0.2s ease;
+  }
+  .fs-exit-pill:hover { opacity: 1; }
+  body.fullscreen .fs-exit-pill { display: inline-flex; }
+
+  /* Pinned Compact Icon-Only Tabs */
+  .tab.pinned {
+    flex: 0 0 38px !important;
+    min-width: 38px !important;
+    max-width: 38px !important;
+    justify-content: center;
+    padding: 4px 6px;
+  }
+  .tab.pinned .tab-title, .tab.pinned .tab-close { display: none; }
+
+  /* Larger Top-Left Navigation Hit Areas (34x34px) */
+  .nav-icon-btn {
+    width: 34px; height: 34px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: none; border-radius: 10px; background: var(--input-bg); color: var(--text);
+    cursor: pointer; transition: background 0.2s var(--ease-fluid), transform 0.16s var(--ease-spring);
+  }
+  .nav-icon-btn:hover { filter: brightness(0.95); }
+  .nav-icon-btn:active { transform: scale(0.93); }
+
+  /* Full URL display without truncation */
+  #url-input {
+    text-overflow: clip !important;
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+
+  .find-badge {
+    font-size: 11.5px; font-weight: 700; color: var(--blue); background: var(--blue-soft);
+    padding: 5px 9px; border-radius: 8px; white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -399,8 +444,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </svg>
       </div>
       <div id="tabs-container"></div>
-      <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">+</button>
-      <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">🕵</button>
+      <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11h18"/><path d="M5 11l2-6h10l2 6"/><circle cx="8.5" cy="16" r="2.5"/><circle cx="15.5" cy="16" r="2.5"/><line x1="11" y1="16" x2="13" y2="16"/></svg>
+      </button>
+      <button class="tab-add" id="btn-reopen-tab" style="display:none;color:var(--muted)" onclick="send('REOPEN_CLOSED_TAB')" title="Reopen Closed Tab (Ctrl+Shift+T)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+      </button>
       <div class="win-drag-spacer" onmousedown="send('WIN_DRAG')" ondblclick="send('WIN_MAXIMIZE')"></div>
       <div class="win-controls">
         <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
@@ -418,15 +470,25 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <!-- 2. Firefox-Inspired Compact Centered Address + Search Bar -->
     <div class="nav-bar">
       <div class="nav-group">
-        <button class="nav-btn" onclick="send('BACK')" title="Back">‹</button>
-        <button class="nav-btn" onclick="send('FORWARD')" title="Forward">›</button>
-        <button class="nav-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">↻</button>
-        <button class="nav-btn" onclick="send('NAV:shunno://newtab')" title="Home">⌂</button>
+        <button class="nav-icon-btn" onclick="send('BACK')" title="Back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="nav-icon-btn" onclick="send('FORWARD')" title="Forward">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="nav-icon-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <button class="nav-icon-btn" onclick="send('NAV:shunno://newtab')" title="Home">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </button>
       </div>
 
       <div class="firefox-capsule">
         <button class="engine-logo-btn" id="engine-logo-btn" onclick="toggleEngineMenu(event)" title="Switch Search Engine"></button>
         <input id="url-input" placeholder="Search or enter address..."
+               onfocus="this.dataset.justFocused='1'; this.select();"
+               onmouseup="if(this.dataset.justFocused==='1'){ event.preventDefault(); this.dataset.justFocused='0'; }"
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
       </div>
@@ -442,6 +504,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <div class="bookmarks-strip" id="bookmarks-strip"></div>
   </div>
   <div class="engine-menu" id="engine-menu"></div>
+  <button class="fs-exit-pill" onclick="send('TOGGLE_FULLSCREEN')">Exit Full Screen (F11)</button>
 
   <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
   <div class="home-canvas" id="home-canvas">
@@ -528,9 +591,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <span class="card-title">🔍 Find in Page</span>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
           </div>
-          <div class="input-row" style="margin-bottom:0;">
+          <div class="input-row" style="margin-bottom:0;align-items:center;">
             <input class="text-box" id="find-input" placeholder="Search text..."
-                   oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
+                   oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send(event.shiftKey ? 'FIND_PREV' : 'FIND_NEXT')" />
+            <span class="find-badge" id="find-count-badge">0 / 0</span>
             <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑</button>
             <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓</button>
           </div>
@@ -582,31 +646,49 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title">⚡ Downloads</span>
             <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-              <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
-              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Scan all downloadable links & media on active page">🕸️ Grab</button>
-              <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items">🧹</button>
-              <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
-                <option value="0">Unlimited</option>
-                <option value="10485760">10 MB/s</option>
-                <option value="5242880">5 MB/s</option>
-                <option value="2097152">2 MB/s</option>
-                <option value="524288">512 KB/s</option>
-              </select>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂</button>
+              <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="Auto-download & extract ffmpeg.exe">🎬 FFmpeg</button>
+              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Site Grabber: Scan all links & media on active page">🕸️ Grab</button>
+              <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Clean completed, failed & missing files">🧹 Clean</button>
+              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open Downloads Folder">📂</button>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
           </div>
           <div class="input-row">
             <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
-            <select class="select-box" id="dl-threads-select">
+            <select class="select-box" id="dl-threads-select" title="Parallel Connections">
               <option value="1">1T</option>
               <option value="4">4T</option>
               <option value="8">8T</option>
               <option value="16" selected>16T</option>
               <option value="32">32T</option>
             </select>
+            <select class="select-box" id="dl-delay-select" title="Schedule Start">
+              <option value="0">Now</option>
+              <option value="60">In 1m</option>
+              <option value="300">In 5m</option>
+              <option value="900">In 15m</option>
+            </select>
             <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
+          </div>
+          <div class="input-row">
+            <select class="select-box" id="max-conc-select" onchange="send('SET_MAX_CONCURRENT:' + this.value)" title="Sequential Queue Limit">
+              <option value="1">Queue: 1 at a time</option>
+              <option value="2">Queue: Max 2</option>
+              <option value="3" selected>Queue: Max 3</option>
+              <option value="4">Queue: Max 4</option>
+            </select>
+            <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)" title="Bandwidth Limit">
+              <option value="0">Speed: Unlimited</option>
+              <option value="10485760">Speed: 10 MB/s</option>
+              <option value="5242880">Speed: 5 MB/s</option>
+              <option value="2097152">Speed: 2 MB/s</option>
+              <option value="524288">Speed: 512 KB/s</option>
+            </select>
+            <select class="select-box" id="on-complete-select" onchange="send('SET_ON_COMPLETE:' + this.value)" title="Action when queue finishes">
+              <option value="NONE">Done: Keep Open</option>
+              <option value="OPEN_FOLDER">Done: Open Folder</option>
+              <option value="EXIT_APP">Done: Exit Browser</option>
+            </select>
           </div>
           <div class="input-row" style="margin-bottom:0;">
             <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
@@ -698,8 +780,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function startManualDownload() {
     const input = document.getElementById('dl-url-input');
     const threads = document.getElementById('dl-threads-select').value;
+    const delay = document.getElementById('dl-delay-select').value;
     if (!input.value.trim()) return;
-    send('ENQUEUE_DL:' + threads + '|' + input.value.trim());
+    send('ENQUEUE_SCHED:' + threads + '|' + delay + '|' + input.value.trim());
     input.value = '';
   }
 
@@ -765,7 +848,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         knownTabIds.add(idStr);
       }
 
-      const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''}`;
+      const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''} ${t.pinned ? 'pinned' : ''}`;
       if (el.className !== wantClass && !el.classList.contains('is-new')) {
         el.className = wantClass;
       } else if (el.classList.contains('is-new')) {
@@ -806,6 +889,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       };
       el.onclick = () => send('SWITCH_TAB:' + idx);
       el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
+      el.oncontextmenu = (ev) => { ev.preventDefault(); send('TOGGLE_PIN_TAB:' + idx); };
       el.title = t.title || 'New Tab';
 
       const displayTitle = (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
@@ -817,8 +901,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
-        const tabLogoHtml = (!hasAudio && isNewTab)
-          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
+        const tabLogoHtml = (!hasAudio && (isNewTab || t.pinned))
+          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="14" height="14" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
           : '';
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
@@ -844,10 +928,38 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.9.0';
-    document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
-      ? '🎬 FFmpeg: Ready'
-      : '🎬 FFmpeg: Optional';
+    document.getElementById('version-badge').textContent = state.version || 'v2.0.0';
+    if (state.is_fullscreen) {
+      document.body.classList.add('fullscreen');
+    } else {
+      document.body.classList.remove('fullscreen');
+    }
+
+    const reopenBtn = document.getElementById('btn-reopen-tab');
+    if (reopenBtn) {
+      reopenBtn.style.display = state.has_closed_tabs ? 'inline-flex' : 'none';
+    }
+
+    const ffBtn = document.getElementById('btn-ffmpeg-setup');
+    if (ffBtn) {
+      if (state.ffmpeg_available) {
+        ffBtn.textContent = '🎬 FFmpeg: Ready';
+        ffBtn.className = 'pill-btn pill-green';
+      } else if (state.ffmpeg_status) {
+        ffBtn.textContent = '🎬 ' + state.ffmpeg_status;
+      } else {
+        ffBtn.textContent = '⬇ Install FFmpeg';
+      }
+    }
+    const maxConcEl = document.getElementById('max-conc-select');
+    if (maxConcEl) maxConcEl.value = String(state.global.max_concurrent_downloads || 3);
+    const onCompEl = document.getElementById('on-complete-select');
+    if (onCompEl) onCompEl.value = state.global.on_queue_complete || 'NONE';
+
+    const findBadge = document.getElementById('find-count-badge');
+    if (findBadge) {
+      findBadge.textContent = (state.find_current || 0) + ' / ' + (state.find_total || 0);
+    }
 
     // Static, flicker-free tab updates
     syncTabsStatic(state.tabs, state.active_tab);
@@ -948,13 +1060,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       dupBanner.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           <div>
-            <div style="font-size:12.5px;font-weight:700;color:var(--orange);">⚠️ Already Downloaded / Active</div>
+            <div style="font-size:12.5px;font-weight:700;color:var(--orange);">⚠️ Duplicate File / URL Detected</div>
             <div class="meta">${escapeHtml(state.duplicate_alert.file_name)}</div>
           </div>
           <div style="display:flex;gap:5px;">
-            ${state.duplicate_alert.saved_path ? `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(state.duplicate_alert.saved_path)}'); send('DISMISS_DUP');">Open</button>` : ''}
-            <button class="pill-btn pill-blue" onclick="send('FORCE_DL:${encodeAttr(state.duplicate_alert.url)}');">Again</button>
-            <button class="pill-btn pill-red" onclick="send('DISMISS_DUP');">✕</button>
+            <button class="pill-btn pill-soft" onclick="send('DISMISS_DUP');">Skip</button>
+            <button class="pill-btn pill-blue" onclick="send('DUP_RENAME:${encodeAttr(state.duplicate_alert.url)}');">Rename</button>
+            <button class="pill-btn pill-orange" onclick="send('DUP_OVERWRITE:${encodeAttr(state.duplicate_alert.url)}');">Overwrite</button>
           </div>
         </div>
       `;
@@ -1156,11 +1268,25 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function toggleEngineMenu(e) {
     e.stopPropagation();
     const menu = document.getElementById('engine-menu');
-    menu.classList.toggle('open');
+    const btn = document.getElementById('engine-logo-btn');
+    const willOpen = !menu.classList.contains('open');
+    if (willOpen && btn) {
+      const r = btn.getBoundingClientRect();
+      menu.style.left = Math.max(8, r.left) + 'px';
+      menu.style.transform = 'none';
+      menu.classList.add('open');
+      send('ENGINE_MENU:1');
+    } else {
+      menu.classList.remove('open');
+      send('ENGINE_MENU:0');
+    }
   }
   document.addEventListener('click', () => {
     const menu = document.getElementById('engine-menu');
-    if (menu) menu.classList.remove('open');
+    if (menu && menu.classList.contains('open')) {
+      menu.classList.remove('open');
+      send('ENGINE_MENU:0');
+    }
   });
 
   function escapeHtml(str) {
@@ -1177,6 +1303,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     } else if (e.ctrlKey && e.key === 'Tab') {
       e.preventDefault();
       send(e.shiftKey ? 'PREV_TAB' : 'NEXT_TAB');
+    } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+      e.preventDefault();
+      send('REOPEN_CLOSED_TAB');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 't') { e.preventDefault(); send('NEW_TAB'); }

@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,8 @@ pub struct DownloadTask {
     pub saved_path: Option<String>,
     pub error_message: Option<String>,
     pub segment_map: String,
+    #[serde(default)]
+    pub scheduled_start_epoch: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -206,10 +208,12 @@ pub struct NativeDownloadEngine {
     active_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     pub speed_limit_bps: Arc<AtomicU64>,
     pub auto_clean_completed: Arc<AtomicBool>,
+    pub max_concurrent: Arc<AtomicUsize>,
+    pub ffmpeg_install_status: Arc<Mutex<String>>,
 }
 
 impl NativeDownloadEngine {
-    pub fn new(initial_speed_limit_bps: u64, initial_auto_clean: bool) -> Self {
+    pub fn new(initial_speed_limit_bps: u64, initial_auto_clean: bool, initial_max_concurrent: usize) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(20))
             .pool_max_idle_per_host(64)
@@ -223,6 +227,134 @@ impl NativeDownloadEngine {
             active_flags: Arc::new(Mutex::new(HashMap::new())),
             speed_limit_bps: Arc::new(AtomicU64::new(initial_speed_limit_bps)),
             auto_clean_completed: Arc::new(AtomicBool::new(initial_auto_clean)),
+            max_concurrent: Arc::new(AtomicUsize::new(initial_max_concurrent.clamp(1, 8))),
+            ffmpeg_install_status: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    pub fn install_ffmpeg_bundle(&self, rt: &tokio::runtime::Handle) {
+        if BrowserStorage::find_ffmpeg().is_some() {
+            if let Ok(mut st) = self.ffmpeg_install_status.lock() {
+                *st = "Ready".to_string();
+            }
+            return;
+        }
+        if let Ok(mut st) = self.ffmpeg_install_status.lock() {
+            if st.starts_with("Downloading") || st.starts_with("Extracting") {
+                return;
+            }
+            *st = "Downloading FFmpeg...".to_string();
+        }
+        let client = self.client.clone();
+        let status_arc = self.ffmpeg_install_status.clone();
+        rt.spawn(async move {
+            let zip_url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+            let res = async {
+                let resp = client
+                    .get(zip_url)
+                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/2.0")
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(format!("HTTP {}", resp.status()));
+                }
+                let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+                if let Ok(mut st) = status_arc.lock() {
+                    *st = "Extracting ffmpeg.exe...".to_string();
+                }
+                let cursor = std::io::Cursor::new(bytes);
+                let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+                let out_exe = BrowserStorage::ffmpeg_bin_dir().join("ffmpeg.exe");
+                for i in 0..archive.len() {
+                    let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+                    if entry.name().ends_with("/bin/ffmpeg.exe") || entry.name().eq_ignore_ascii_case("ffmpeg.exe") {
+                        let mut out_f = File::create(&out_exe).map_err(|e| e.to_string())?;
+                        std::io::copy(&mut entry, &mut out_f).map_err(|e| e.to_string())?;
+                        return Ok::<(), String>(());
+                    }
+                }
+                Err("ffmpeg.exe not found in archive".to_string())
+            }
+            .await;
+
+            if let Ok(mut st) = status_arc.lock() {
+                match res {
+                    Ok(()) => *st = "Installed!".to_string(),
+                    Err(e) => *st = format!("Failed: {}", e),
+                }
+            }
+        });
+    }
+
+    pub fn clean_stale_and_completed(&self) -> usize {
+        let removed = if let Ok(mut list) = self.tasks.lock() {
+            let before = list.len();
+            list.retain(|t| {
+                if t.status == "FAILED" {
+                    return false;
+                }
+                if t.status == "COMPLETED" {
+                    let exists = t
+                        .saved_path
+                        .as_ref()
+                        .map(|p| Path::new(p).exists())
+                        .unwrap_or(false);
+                    return exists && !self.auto_clean_completed.load(Ordering::Relaxed);
+                }
+                true
+            });
+            before.saturating_sub(list.len())
+        } else {
+            0
+        };
+        if removed > 0 {
+            self.save_queue();
+        }
+        removed
+    }
+
+    pub fn pump_scheduler(&self, rt: &tokio::runtime::Handle) {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let max_conc = self.max_concurrent.load(Ordering::Relaxed).max(1);
+
+        let to_start: Vec<DownloadTask> = if let Ok(mut list) = self.tasks.lock() {
+            let active_count = list
+                .iter()
+                .filter(|t| t.status == "DOWNLOADING" || t.status == "MUXING")
+                .count();
+            if active_count >= max_conc {
+                Vec::new()
+            } else {
+                let slots = max_conc - active_count;
+                let mut picked = Vec::new();
+                for t in list.iter_mut().rev() {
+                    if picked.len() >= slots {
+                        break;
+                    }
+                    if t.status == "QUEUED" {
+                        let due = t.scheduled_start_epoch.map(|ep| now_secs >= ep).unwrap_or(true);
+                        if due {
+                            t.status = "DOWNLOADING".to_string();
+                            t.scheduled_start_epoch = None;
+                            picked.push(t.clone());
+                        }
+                    }
+                }
+                picked
+            }
+        } else {
+            Vec::new()
+        };
+
+        if !to_start.is_empty() {
+            self.save_queue();
+            for task in to_start {
+                self.spawn_worker(rt, task);
+            }
         }
     }
 
@@ -417,29 +549,12 @@ impl NativeDownloadEngine {
         threads: usize,
         referer: Option<String>,
         cookie: Option<String>,
-        force_duplicate: bool,
+        dup_mode: &str, // "CHECK", "RENAME", "OVERWRITE"
+        delay_secs: Option<u64>,
     ) -> EnqueueOutcome {
         let normalized_url = url.trim().to_string();
 
-        // Duplicate detection: check active downloads or completed files still existing on disk
-        if !force_duplicate {
-            if let Ok(list) = self.tasks.lock() {
-                if let Some(existing) = list.iter().find(|t| {
-                    t.url == normalized_url
-                        && (t.status == "DOWNLOADING"
-                            || t.status == "MUXING"
-                            || (t.status == "COMPLETED"
-                                && t.saved_path
-                                    .as_ref()
-                                    .map(|p| Path::new(p).exists())
-                                    .unwrap_or(false)))
-                }) {
-                    return EnqueueOutcome::DuplicateDetected(existing.clone());
-                }
-            }
-        }
-
-        let raw_name = normalized_url
+        let mut raw_name = normalized_url
             .split('?')
             .next()
             .and_then(|p| p.rsplit('/').next())
@@ -455,36 +570,119 @@ impl NativeDownloadEngine {
                 )
             });
 
+        let category = detect_download_category(&raw_name);
+        let dest_candidate = BrowserStorage::downloads_root_dir().join(&category).join(&raw_name);
+
+        if dup_mode == "CHECK" {
+            if let Ok(list) = self.tasks.lock() {
+                if let Some(existing) = list.iter().find(|t| {
+                    (t.url == normalized_url || t.file_name.eq_ignore_ascii_case(&raw_name))
+                        && (t.status == "DOWNLOADING"
+                            || t.status == "QUEUED"
+                            || t.status == "MUXING"
+                            || (t.status == "COMPLETED"
+                                && t.saved_path
+                                    .as_ref()
+                                    .map(|p| Path::new(p).exists())
+                                    .unwrap_or(false)))
+                }) {
+                    return EnqueueOutcome::DuplicateDetected(existing.clone());
+                }
+            }
+            if dest_candidate.exists() {
+                return EnqueueOutcome::DuplicateDetected(DownloadTask {
+                    id: 0,
+                    url: normalized_url,
+                    file_name: raw_name,
+                    total_bytes: fs::metadata(&dest_candidate).map(|m| m.len() as i64).unwrap_or(-1),
+                    downloaded_bytes: 0,
+                    status: "COMPLETED".to_string(),
+                    speed_bps: 0,
+                    threads: threads.clamp(1, 32),
+                    category,
+                    supports_ranges: true,
+                    referer,
+                    cookie,
+                    sha256: None,
+                    saved_path: Some(dest_candidate.to_string_lossy().to_string()),
+                    error_message: None,
+                    segment_map: String::new(),
+                    scheduled_start_epoch: None,
+                });
+            }
+        } else if dup_mode == "OVERWRITE" {
+            if dest_candidate.exists() {
+                let _ = fs::remove_file(&dest_candidate);
+            }
+            if let Ok(mut list) = self.tasks.lock() {
+                list.retain(|t| !(t.url == normalized_url && t.status == "COMPLETED"));
+            }
+        } else if dup_mode == "RENAME" {
+            let stem = Path::new(&raw_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let ext = Path::new(&raw_name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("bin")
+                .to_string();
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() % 100_000)
+                .unwrap_or(1);
+            raw_name = format!("{}_{}.{}", stem, stamp, ext);
+        }
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let sched_epoch = delay_secs.filter(|&d| d > 0).map(|d| now_secs + d);
+
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(1)
             + rand::random::<u16>() as u64;
 
+        let max_conc = self.max_concurrent.load(Ordering::Relaxed).max(1);
+        let active_now = self
+            .tasks
+            .lock()
+            .map(|l| l.iter().filter(|t| t.status == "DOWNLOADING" || t.status == "MUXING").count())
+            .unwrap_or(0);
+
+        let should_queue = sched_epoch.is_some() || active_now >= max_conc;
+
         let task = DownloadTask {
             id,
             url: normalized_url,
-            file_name: raw_name.clone(),
+            file_name: raw_name,
             total_bytes: -1,
             downloaded_bytes: 0,
-            status: "DOWNLOADING".to_string(),
+            status: if should_queue { "QUEUED".to_string() } else { "DOWNLOADING".to_string() },
             speed_bps: 0,
             threads: threads.clamp(1, 32),
-            category: detect_download_category(&raw_name),
+            category,
             supports_ranges: true,
             referer,
             cookie,
             sha256: None,
             saved_path: None,
             error_message: None,
-            segment_map: String::new(),
+            segment_map: if sched_epoch.is_some() { "[Scheduled]".to_string() } else { String::new() },
+            scheduled_start_epoch: sched_epoch,
         };
 
         if let Ok(mut list) = self.tasks.lock() {
             list.insert(0, task.clone());
         }
         self.save_queue();
-        self.spawn_worker(rt, task.clone());
+        if !should_queue {
+            self.spawn_worker(rt, task.clone());
+        }
         EnqueueOutcome::Started(task)
     }
 
@@ -534,6 +732,7 @@ impl NativeDownloadEngine {
             saved_path: None,
             error_message: None,
             segment_map: "[DASH Video+Audio]".to_string(),
+            scheduled_start_epoch: None,
         };
 
         if let Ok(mut list) = self.tasks.lock() {

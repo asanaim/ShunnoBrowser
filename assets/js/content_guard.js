@@ -598,7 +598,56 @@
         basketLabel.textContent = 'Drop Link';
       }
     });
-    basket.addEventListener('click', () => postSecure('KEY:j'));
+    try {
+      const savedPos = JSON.parse(localStorage.getItem('shunno_basket_pos') || 'null');
+      if (savedPos && typeof savedPos.left === 'number' && typeof savedPos.top === 'number') {
+        basket.style.right = 'auto';
+        basket.style.bottom = 'auto';
+        basket.style.left = Math.min(window.innerWidth - 110, Math.max(8, savedPos.left)) + 'px';
+        basket.style.top = Math.min(window.innerHeight - 44, Math.max(8, savedPos.top)) + 'px';
+      }
+    } catch (e) {}
+
+    let basketDragging = false;
+    let basketMoved = false;
+    let dragOffX = 0;
+    let dragOffY = 0;
+
+    basket.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      basketDragging = true;
+      basketMoved = false;
+      const r = basket.getBoundingClientRect();
+      dragOffX = e.clientX - r.left;
+      dragOffY = e.clientY - r.top;
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!basketDragging) return;
+      basketMoved = true;
+      const nx = Math.min(window.innerWidth - 110, Math.max(8, e.clientX - dragOffX));
+      const ny = Math.min(window.innerHeight - 44, Math.max(8, e.clientY - dragOffY));
+      basket.style.right = 'auto';
+      basket.style.bottom = 'auto';
+      basket.style.left = nx + 'px';
+      basket.style.top = ny + 'px';
+    }, { passive: true });
+
+    window.addEventListener('mouseup', () => {
+      if (!basketDragging) return;
+      basketDragging = false;
+      if (basketMoved) {
+        const r = basket.getBoundingClientRect();
+        try {
+          localStorage.setItem('shunno_basket_pos', JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) }));
+        } catch (e) {}
+      }
+    });
+
+    basket.addEventListener('click', () => {
+      if (!basketMoved) postSecure('KEY:j');
+    });
 
     window.__shunnoRefreshFloatingPill = function(url, sizeLabel) {
       if (activeItems.length === 1 && activeItems[0].url === url && pillWrap.style.display !== 'none') {
@@ -894,6 +943,80 @@
     });
 
     postSecure('GRAB_RESULTS:' + JSON.stringify(found.slice(0, 60)));
+  };
+
+  // 10. Non-Destructive Find-in-Page Range Walker & Match Counter (1 / N)
+  window.__shunnoFindMatches = [];
+  window.__shunnoFindIdx = -1;
+  window.__shunnoFindLastQuery = '';
+
+  window.__shunnoFindOnPage = function(query, direction) {
+    const q = String(query || '').trim();
+    if (!q) {
+      window.__shunnoFindMatches = [];
+      window.__shunnoFindIdx = -1;
+      window.__shunnoFindLastQuery = '';
+      if (window.getSelection) window.getSelection().removeAllRanges();
+      postSecure('FIND_COUNT:0|0');
+      return;
+    }
+
+    if (q !== window.__shunnoFindLastQuery || window.__shunnoFindMatches.length === 0) {
+      window.__shunnoFindLastQuery = q;
+      window.__shunnoFindMatches = [];
+      window.__shunnoFindIdx = -1;
+      const lowerQ = q.toLowerCase();
+      const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.parentElement) return NodeFilter.FILTER_REJECT;
+          const tag = node.parentElement.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+          return node.nodeValue && node.nodeValue.toLowerCase().includes(lowerQ)
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_SKIP;
+        }
+      });
+      let n;
+      while ((n = walker.nextNode())) {
+        const txt = n.nodeValue;
+        const lowerTxt = txt.toLowerCase();
+        let pos = 0;
+        while ((pos = lowerTxt.indexOf(lowerQ, pos)) !== -1) {
+          const range = document.createRange();
+          range.setStart(n, pos);
+          range.setEnd(n, pos + q.length);
+          window.__shunnoFindMatches.push(range);
+          pos += q.length;
+          if (window.__shunnoFindMatches.length >= 500) break;
+        }
+        if (window.__shunnoFindMatches.length >= 500) break;
+      }
+    }
+
+    const total = window.__shunnoFindMatches.length;
+    if (total === 0) {
+      postSecure('FIND_COUNT:0|0');
+      return;
+    }
+
+    if (direction === 'prev') {
+      window.__shunnoFindIdx = window.__shunnoFindIdx <= 0 ? total - 1 : window.__shunnoFindIdx - 1;
+    } else {
+      window.__shunnoFindIdx = (window.__shunnoFindIdx + 1) % total;
+    }
+
+    const activeRange = window.__shunnoFindMatches[window.__shunnoFindIdx];
+    try {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(activeRange);
+      const rect = activeRange.getBoundingClientRect();
+      if (rect.top < 0 || rect.bottom > window.innerHeight) {
+        activeRange.startContainer.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    } catch (e) {}
+
+    postSecure('FIND_COUNT:' + (window.__shunnoFindIdx + 1) + '|' + total);
   };
 
   function sendPageMeta() {

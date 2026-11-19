@@ -53,6 +53,7 @@ struct BrowserTab {
     url: String,
     cookie: Option<String>,
     incognito: bool,
+    pinned: bool,
     playing_audio: bool,
     muted: bool,
     reader_active: bool,
@@ -73,6 +74,7 @@ struct TabSummary {
     title: String,
     url: String,
     incognito: bool,
+    pinned: bool,
     playing_audio: bool,
     muted: bool,
 }
@@ -81,6 +83,11 @@ struct TabSummary {
 struct ChromeSnapshot {
     version: &'static str,
     ffmpeg_available: bool,
+    ffmpeg_status: String,
+    is_fullscreen: bool,
+    has_closed_tabs: bool,
+    find_current: usize,
+    find_total: usize,
     tabs: Vec<TabSummary>,
     active_tab: usize,
     active_url: String,
@@ -444,7 +451,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use windows::core::{Interface, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetCurrentProcessExplicitAppUserModelID, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetClientRect, GetWindowLongW, GetWindowRect, LoadImageW, SendMessageW, SetClassLongPtrW,
         SetWindowLongW, SetWindowPos, GCLP_HICON, GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE,
@@ -456,6 +463,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use wry::WebViewExtWindows;
 
     let hwnd = HWND(window.hwnd() as isize);
+    unsafe { let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop")); }
 
     unsafe {
         // 1. Enable WS_THICKFRAME + WS_EX_APPWINDOW so borderless window supports mouse resizing & Windows Snap!
@@ -576,34 +584,55 @@ fn bring_chrome_above_tabs(chrome_wv: &WebView) {
 #[cfg(not(windows))]
 fn bring_chrome_above_tabs(_chrome_wv: &WebView) {}
 
-fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], active_idx: usize, drawer_open: bool) {
+fn layout_webviews(
+    window: &Window,
+    chrome_wv: &WebView,
+    tabs: &[BrowserTab],
+    active_idx: usize,
+    drawer_open: bool,
+    engine_menu_open: bool,
+) {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let w = size.width.max(400.0);
     let h = size.height.max(300.0);
-    let content_h = (h - CHROME_BAR_HEIGHT).max(100.0);
+    let is_fs = window.fullscreen().is_some();
+    let is_max = window.is_maximized() || is_fs;
+    let grip = if is_max { 0.0 } else { 3.0 };
+
+    let top_bar_h = if is_fs { 0.0 } else { CHROME_BAR_HEIGHT };
+    let inner_w = (w - grip * 2.0).max(200.0);
+    let inner_h = (h - grip).max(200.0);
+    let content_h = (inner_h - top_bar_h).max(80.0);
 
     let is_home = tabs
         .get(active_idx)
         .map(|t| t.url == "shunno://newtab")
         .unwrap_or(true);
 
-    let chrome_h = if drawer_open || is_home { h } else { CHROME_BAR_HEIGHT };
+    let chrome_h = if is_fs {
+        0.0
+    } else if drawer_open || engine_menu_open || is_home {
+        inner_h
+    } else {
+        top_bar_h
+    };
+
+    let _ = chrome_wv.set_visible(!is_fs);
     let _ = chrome_wv.set_bounds(Rect {
-        position: LogicalPosition::new(0.0, 0.0).into(),
-        size: LogicalSize::new(w, chrome_h).into(),
+        position: LogicalPosition::new(grip, 0.0).into(),
+        size: LogicalSize::new(inner_w, chrome_h).into(),
     });
 
     for (idx, tab) in tabs.iter().enumerate() {
         let _ = tab.webview.set_bounds(Rect {
-            position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
-            size: LogicalSize::new(w, content_h).into(),
+            position: LogicalPosition::new(grip, top_bar_h).into(),
+            size: LogicalSize::new(inner_w, content_h).into(),
         });
-        // Keep active webpage ALWAYS visible (never hide or flash it when opening Menu/Downloads!)
         let show_web = idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
     }
 
-    if drawer_open {
+    if !is_fs && (drawer_open || engine_menu_open) {
         bring_chrome_above_tabs(chrome_wv);
     }
 }
@@ -623,6 +652,7 @@ fn main() -> wry::Result<()> {
     let engine = Arc::new(NativeDownloadEngine::new(
         global_settings.speed_limit_bps,
         global_settings.auto_clean_completed,
+        global_settings.max_concurrent_downloads,
     ));
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
@@ -654,41 +684,14 @@ fn main() -> wry::Result<()> {
     let mut tabs: Vec<BrowserTab> = Vec::new();
     let mut active_tab_idx: usize = 0;
     let mut drawer_open = false;
+    let mut engine_menu_open = false;
     let mut blocked_count: usize = 0;
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
     let mut duplicate_alert: Option<DownloadTask> = None;
-
-    // Start local HTTP IDM/NativeDownloader listener on http://127.0.0.1:45780/add?url=...
-    let hook_proxy = proxy.clone();
-    rt_handle.spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
-        if let Ok(listener) = TcpListener::bind("127.0.0.1:45780").await {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let px = hook_proxy.clone();
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 4096];
-                    if let Ok(n) = stream.read(&mut buf).await {
-                        let req_str = String::from_utf8_lossy(&buf[..n]);
-                        if let Some(first_line) = req_str.lines().next() {
-                            if let Some(path) = first_line.split_whitespace().nth(1) {
-                                if let Ok(parsed) = url::Url::parse(&format!("http://127.0.0.1{}", path)) {
-                                    if let Some((_, dl_url)) = parsed.query_pairs().find(|(k, _)| k == "url") {
-                                        let u = dl_url.into_owned();
-                                        if u.starts_with("http") {
-                                            let _ = px.send_event(AppEvent::DownloadIntercepted(u));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nOK";
-                    let _ = stream.write_all(resp.as_bytes()).await;
-                });
-            }
-        }
-    });
+    let mut closed_tabs: Vec<SavedTab> = Vec::new();
+    let mut find_current: usize = 0;
+    let mut find_total: usize = 0;
+    let mut had_active_downloads = false;
 
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
@@ -715,6 +718,7 @@ fn main() -> wry::Result<()> {
                 url: u,
                 cookie: None,
                 incognito: false,
+                pinned: false,
                 playing_audio: false,
                 muted: false,
                 reader_active: false,
@@ -724,24 +728,36 @@ fn main() -> wry::Result<()> {
         }
     }
 
-    // Lightweight periodic refresh ONLY when a download is actively running
+    // Periodic queue scheduler pump & UI progress refresh
     let ticker_proxy = proxy.clone();
     let ticker_engine = engine.clone();
+    let ticker_rt = rt_handle.clone();
     rt_handle.spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(750)).await;
-            let has_active = ticker_engine
+            ticker_engine.pump_scheduler(&ticker_rt);
+            let has_active_or_queued = ticker_engine
                 .tasks
                 .lock()
-                .map(|l| l.iter().any(|t| t.status == "DOWNLOADING" || t.status == "MUXING"))
+                .map(|l| {
+                    l.iter().any(|t| {
+                        t.status == "DOWNLOADING" || t.status == "MUXING" || t.status == "QUEUED"
+                    })
+                })
                 .unwrap_or(false);
-            if has_active {
+            let ff_busy = ticker_engine
+                .ffmpeg_install_status
+                .lock()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if has_active_or_queued || ff_busy {
                 let _ = ticker_proxy.send_event(AppEvent::RefreshChrome);
             }
         }
     });
 
-    let push_chrome_state = |chrome_wv: &WebView,
+    let push_chrome_state = |window: &Window,
+                             chrome_wv: &WebView,
                              tabs: &[BrowserTab],
                              active_idx: usize,
                              site_policies: &HashMap<String, SitePolicy>,
@@ -751,6 +767,9 @@ fn main() -> wry::Result<()> {
                              bookmarks: &[BookmarkEntry],
                              history: &[HistoryEntry],
                              duplicate_alert: &Option<DownloadTask>,
+                             has_closed_tabs: bool,
+                             find_current: usize,
+                             find_total: usize,
                              engine: &NativeDownloadEngine| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
@@ -760,9 +779,15 @@ fn main() -> wry::Result<()> {
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
         let scripts = list_user_scripts(&global_settings.approved_script_hashes);
 
+        let ff_status = engine.ffmpeg_install_status.lock().map(|s| s.clone()).unwrap_or_default();
         let snap = ChromeSnapshot {
             version: APP_VERSION,
             ffmpeg_available: BrowserStorage::find_ffmpeg().is_some(),
+            ffmpeg_status: ff_status,
+            is_fullscreen: window.fullscreen().is_some(),
+            has_closed_tabs,
+            find_current,
+            find_total,
             tabs: tabs
                 .iter()
                 .map(|t| TabSummary {
@@ -770,6 +795,7 @@ fn main() -> wry::Result<()> {
                     title: t.title.clone(),
                     url: t.url.clone(),
                     incognito: t.incognito,
+                    pinned: t.pinned,
                     playing_audio: t.playing_audio,
                     muted: t.muted,
                 })
@@ -796,7 +822,7 @@ fn main() -> wry::Result<()> {
         }
     };
 
-    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -806,7 +832,7 @@ fn main() -> wry::Result<()> {
                 event: WindowEvent::Resized(_),
                 ..
             } => {
-                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
             }
 
             Event::WindowEvent {
@@ -827,7 +853,7 @@ fn main() -> wry::Result<()> {
                 if key_ev.physical_key == KeyCode::F11 && key_ev.state == ElementState::Pressed {
                     let is_fs = window.fullscreen().is_some();
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 }
             }
 
@@ -848,7 +874,29 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::RefreshChrome) => {
+                let active_now = engine
+                    .tasks
+                    .lock()
+                    .map(|l| l.iter().any(|t| t.status == "DOWNLOADING" || t.status == "MUXING" || t.status == "QUEUED"))
+                    .unwrap_or(false);
+                if active_now {
+                    had_active_downloads = true;
+                } else if had_active_downloads {
+                    had_active_downloads = false;
+                    match global_settings.on_queue_complete.as_str() {
+                        "OPEN_FOLDER" => {
+                            let dir = BrowserStorage::downloads_root_dir();
+                            let _ = Command::new("explorer.exe").arg(dir).spawn();
+                        }
+                        "EXIT_APP" => {
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -859,6 +907,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -895,6 +946,7 @@ fn main() -> wry::Result<()> {
                     }
                 }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -905,6 +957,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -914,6 +969,7 @@ fn main() -> wry::Result<()> {
                     tab.zoom = new_zoom;
                 }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -924,6 +980,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -933,6 +992,7 @@ fn main() -> wry::Result<()> {
                     tab.playing_audio = playing;
                 }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -943,6 +1003,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -1006,14 +1069,15 @@ fn main() -> wry::Result<()> {
                     .get(active_tab_idx)
                     .map(|t| (Some(t.url.clone()), t.cookie.clone()))
                     .unwrap_or((None, None));
-                match engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, cookie_val, false) {
+                match engine.enqueue(&rt_handle, dl_url, global_settings.default_threads, ref_url, cookie_val, "CHECK", None) {
                     EnqueueOutcome::Started(_) => { duplicate_alert = None; }
                     EnqueueOutcome::DuplicateDetected(existing) => { duplicate_alert = Some(existing); }
                 }
                 drawer_open = true;
-                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -1024,6 +1088,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -1048,6 +1115,7 @@ fn main() -> wry::Result<()> {
                             url: clean,
                             cookie: None,
                             incognito: false,
+                            pinned: false,
                             playing_audio: false,
                             muted: false,
                             reader_active: false,
@@ -1055,10 +1123,11 @@ fn main() -> wry::Result<()> {
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     }
                 }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -1069,6 +1138,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -1088,6 +1160,11 @@ fn main() -> wry::Result<()> {
 
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
+                } else if let Some(fc) = msg.strip_prefix("FIND_COUNT:") {
+                    if let Some((cur_s, tot_s)) = fc.split_once('|') {
+                        find_current = cur_s.parse().unwrap_or(0);
+                        find_total = tot_s.parse().unwrap_or(0);
+                    }
                 } else if let Some(r_flag) = msg.strip_prefix("READER_STATE:") {
                     if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.reader_active = r_flag == "1";
@@ -1117,12 +1194,12 @@ fn main() -> wry::Result<()> {
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if dl_url.starts_with("http") {
-                            match engine.enqueue(&rt_handle, dl_url, threads, referer, cookie, false) {
+                            match engine.enqueue(&rt_handle, dl_url, threads, referer, cookie, "CHECK", None) {
                                 EnqueueOutcome::Started(_) => { duplicate_alert = None; }
                                 EnqueueOutcome::DuplicateDetected(existing) => { duplicate_alert = Some(existing); }
                             }
                             drawer_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
                         }
                     }
@@ -1149,18 +1226,18 @@ fn main() -> wry::Result<()> {
                         "f11" => {
                             let is_fs = window.fullscreen().is_some();
                             window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                         }
                         "next_tab" => {
                             if !tabs.is_empty() {
                                 active_tab_idx = (active_tab_idx + 1) % tabs.len();
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                         "prev_tab" => {
                             if !tabs.is_empty() {
                                 active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                         "t" => {
@@ -1168,9 +1245,9 @@ fn main() -> wry::Result<()> {
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                             if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, reader_active: false, zoom: 1.0, webview: wv });
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, pinned: false, playing_audio: false, muted: false, reader_active: false, zoom: 1.0, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                         "w" => {
@@ -1181,12 +1258,12 @@ fn main() -> wry::Result<()> {
                             } else if active_tab_idx < tabs.len() {
                                 tabs.remove(active_tab_idx);
                                 if active_tab_idx >= tabs.len() { active_tab_idx = tabs.len() - 1; }
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                         "j" => {
                             drawer_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
                         }
                         _ => {}
@@ -1231,7 +1308,7 @@ fn main() -> wry::Result<()> {
                         }
                     }
                     drawer_open = true;
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     let _ = chrome_wv.evaluate_script("toggleDrawer('streams');");
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
                     if !sniffed_streams.iter().any(|s| s.url == stream_url) {
@@ -1287,6 +1364,7 @@ fn main() -> wry::Result<()> {
                     }
                 }
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -1297,6 +1375,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }
@@ -1352,13 +1433,13 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "TOGGLE_FULLSCREEN" {
                     let is_fs = window.fullscreen().is_some();
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
                     drawer_open = true;
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd == "DRAWER_CLOSE" {
                     drawer_open = false;
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd == "TRIGGER_PIP" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoTogglePiP) window.__shunnoTogglePiP();");
@@ -1392,7 +1473,7 @@ fn main() -> wry::Result<()> {
                             let _ = tab.webview.load_url(&clean);
                         }
                     }
-                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
                     let start = "shunno://newtab".to_string();
@@ -1405,6 +1486,7 @@ fn main() -> wry::Result<()> {
                             url: start,
                             cookie: None,
                             incognito: is_incog,
+                            pinned: false,
                             playing_audio: false,
                             muted: false,
                             reader_active: false,
@@ -1412,17 +1494,17 @@ fn main() -> wry::Result<()> {
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     }
                 } else if cmd == "NEXT_TAB" {
                     if !tabs.is_empty() {
                         active_tab_idx = (active_tab_idx + 1) % tabs.len();
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     }
                 } else if cmd == "PREV_TAB" {
                     if !tabs.is_empty() {
                         active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     }
                 } else if cmd == "REFRESH_UI" {
                     // Triggers immediate push_chrome_state at the bottom of ChromeIpc
@@ -1439,7 +1521,7 @@ fn main() -> wry::Result<()> {
                                 } else if to <= active_tab_idx && active_tab_idx < from {
                                     active_tab_idx += 1;
                                 }
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                     }
@@ -1447,7 +1529,7 @@ fn main() -> wry::Result<()> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
                             active_tab_idx = idx;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                         }
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("TOGGLE_MUTE_TAB:") {
@@ -1463,11 +1545,14 @@ fn main() -> wry::Result<()> {
                         *control_flow = ControlFlow::Exit;
                         return;
                     } else if active_tab_idx < tabs.len() {
-                        tabs.remove(active_tab_idx);
+                        let removed = tabs.remove(active_tab_idx);
+                        if !removed.incognito && removed.url != "shunno://newtab" {
+                            closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
+                        }
                         if active_tab_idx >= tabs.len() {
                             active_tab_idx = tabs.len() - 1;
                         }
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
@@ -1476,11 +1561,52 @@ fn main() -> wry::Result<()> {
                             *control_flow = ControlFlow::Exit;
                             return;
                         } else if idx < tabs.len() {
-                            tabs.remove(idx);
+                            let removed = tabs.remove(idx);
+                            if !removed.incognito && removed.url != "shunno://newtab" {
+                                closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
+                            }
                             if active_tab_idx >= tabs.len() {
                                 active_tab_idx = tabs.len() - 1;
                             }
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
+                        }
+                    }
+                } else if cmd == "REOPEN_CLOSED_TAB" {
+                    if let Some(saved) = closed_tabs.pop() {
+                        let host = extract_host(&saved.url);
+                        let pol = site_policies.get(&host).cloned().unwrap_or_default();
+                        let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(wv) = create_tab_webview(&window, tid, &saved.url, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                            tabs.push(BrowserTab {
+                                id: tid,
+                                title: saved.title,
+                                url: saved.url,
+                                cookie: None,
+                                incognito: false,
+                                pinned: false,
+                                playing_audio: false,
+                                muted: false,
+                                reader_active: false,
+                                zoom: 1.0,
+                                webview: wv,
+                            });
+                            active_tab_idx = tabs.len() - 1;
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
+                        }
+                    }
+                } else if let Some(idx_str) = cmd.strip_prefix("TOGGLE_PIN_TAB:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < tabs.len() {
+                            tabs[idx].pinned = !tabs[idx].pinned;
+                            let tab_item = tabs.remove(idx);
+                            let target_idx = if tab_item.pinned {
+                                tabs.iter().take_while(|t| t.pinned).count()
+                            } else {
+                                tabs.len()
+                            };
+                            tabs.insert(target_idx, tab_item);
+                            active_tab_idx = target_idx;
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                         }
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("SET_SEARCH_ENGINE:") {
@@ -1563,13 +1689,14 @@ fn main() -> wry::Result<()> {
                                     url: current_url,
                                     cookie: prev_cookie,
                                     incognito: is_incog,
+                                    pinned: tab.pinned,
                                     playing_audio: false,
                                     muted: is_muted,
                                     reader_active: false,
                                     zoom: tab.zoom,
                                     webview: new_wv,
                                 };
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                             }
                         }
                     }
@@ -1603,13 +1730,14 @@ fn main() -> wry::Result<()> {
                                 url: current_url,
                                 cookie: prev_cookie,
                                 incognito: is_incog,
+                                pinned: tab.pinned,
                                 playing_audio: false,
                                 muted: is_muted,
                                 reader_active: false,
                                 zoom: tab.zoom,
                                 webview: new_wv,
                             };
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                         }
                     }
                 } else if let Some(spd) = cmd.strip_prefix("SET_PLAYBACK_SPEED:") {
@@ -1621,16 +1749,31 @@ fn main() -> wry::Result<()> {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoToggleReader) window.__shunnoToggleReader();");
                     }
+                } else if let Some(em_flag) = cmd.strip_prefix("ENGINE_MENU:") {
+                    engine_menu_open = em_flag == "1";
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
+                } else if cmd == "INSTALL_FFMPEG" {
+                    engine.install_ffmpeg_bundle(&rt_handle);
+                } else if let Some(mc_str) = cmd.strip_prefix("SET_MAX_CONCURRENT:") {
+                    if let Ok(mc) = mc_str.parse::<usize>() {
+                        global_settings.max_concurrent_downloads = mc.clamp(1, 8);
+                        engine.max_concurrent.store(global_settings.max_concurrent_downloads, Ordering::SeqCst);
+                        BrowserStorage::save_global_settings(&global_settings);
+                        engine.pump_scheduler(&rt_handle);
+                    }
+                } else if let Some(oc_str) = cmd.strip_prefix("SET_ON_COMPLETE:") {
+                    global_settings.on_queue_complete = oc_str.trim().to_string();
+                    BrowserStorage::save_global_settings(&global_settings);
                 } else if let Some(query) = cmd.strip_prefix("FIND:") {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let escaped = query.replace('\\', "\\\\").replace('\'', "\\'");
-                        let js = format!("if ('{}') window.find('{}', false, false, true);", escaped, escaped);
+                        let js = format!("if (window.__shunnoFindOnPage) window.__shunnoFindOnPage('{}', 'next');", escaped);
                         let _ = tab.webview.evaluate_script(&js);
                     }
                 } else if cmd == "FIND_NEXT" || cmd == "FIND_PREV" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let backwards = if cmd == "FIND_PREV" { "true" } else { "false" };
-                        let js = format!("window.find('', false, {}, true);", backwards);
+                        let dir = if cmd == "FIND_PREV" { "prev" } else { "next" };
+                        let js = format!("if (window.__shunnoFindOnPage) window.__shunnoFindOnPage(window.__shunnoFindLastQuery || '', '{}');", dir);
                         let _ = tab.webview.evaluate_script(&js);
                     }
                 } else if cmd == "ADD_BOOKMARK" || cmd.starts_with("ADD_BOOKMARK:") {
@@ -1707,16 +1850,40 @@ fn main() -> wry::Result<()> {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoGrabAllPageLinks) window.__shunnoGrabAllPageLinks();");
                     }
                 } else if cmd == "CLEAR_COMPLETED_DL" {
-                    engine.clear_completed();
+                    engine.clean_stale_and_completed();
                 } else if cmd == "DISMISS_DUP" {
                     duplicate_alert = None;
-                } else if let Some(force_url) = cmd.strip_prefix("FORCE_DL:") {
+                } else if let Some(ren_url) = cmd.strip_prefix("DUP_RENAME:") {
                     duplicate_alert = None;
                     let (ref_url, cookie_val) = tabs
                         .get(active_tab_idx)
                         .map(|t| (Some(t.url.clone()), t.cookie.clone()))
                         .unwrap_or((None, None));
-                    let _ = engine.enqueue(&rt_handle, force_url.to_string(), global_settings.default_threads, ref_url, cookie_val, true);
+                    let _ = engine.enqueue(&rt_handle, ren_url.to_string(), global_settings.default_threads, ref_url, cookie_val, "RENAME", None);
+                } else if let Some(ov_url) = cmd.strip_prefix("DUP_OVERWRITE:") {
+                    duplicate_alert = None;
+                    let (ref_url, cookie_val) = tabs
+                        .get(active_tab_idx)
+                        .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                        .unwrap_or((None, None));
+                    let _ = engine.enqueue(&rt_handle, ov_url.to_string(), global_settings.default_threads, ref_url, cookie_val, "OVERWRITE", None);
+                } else if let Some(payload) = cmd.strip_prefix("ENQUEUE_SCHED:") {
+                    let parts: Vec<&str> = payload.splitn(3, '|').collect();
+                    if parts.len() == 3 {
+                        let threads = parts[0].parse::<usize>().unwrap_or(16);
+                        let delay_s = parts[1].parse::<u64>().ok().filter(|&d| d > 0);
+                        let raw_urls = parts[2];
+                        let (ref_url, cookie_val) = tabs
+                            .get(active_tab_idx)
+                            .map(|t| (Some(t.url.clone()), t.cookie.clone()))
+                            .unwrap_or((None, None));
+                        for line in raw_urls.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                            match engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone(), "CHECK", delay_s) {
+                                EnqueueOutcome::Started(_) => {}
+                                EnqueueOutcome::DuplicateDetected(ex) => { duplicate_alert = Some(ex); }
+                            }
+                        }
+                    }
                 } else if let Some(limit_str) = cmd.strip_prefix("SET_SPEED_LIMIT:") {
                     if let Ok(bps) = limit_str.parse::<u64>() {
                         global_settings.speed_limit_bps = bps;
@@ -1756,7 +1923,7 @@ fn main() -> wry::Result<()> {
                                     for i in start..=end.min(start + 100) {
                                         let num = format!("{:0width$}", i, width = width);
                                         let expanded = line.replace(full_m, &num);
-                                        match engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), cookie_val.clone(), false) {
+                                        match engine.enqueue(&rt_handle, expanded, threads, ref_url.clone(), cookie_val.clone(), "CHECK", None) {
                                             EnqueueOutcome::Started(_) => {}
                                             EnqueueOutcome::DuplicateDetected(ex) => { duplicate_alert = Some(ex); }
                                         }
@@ -1764,7 +1931,7 @@ fn main() -> wry::Result<()> {
                                     continue;
                                 }
                             }
-                            match engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone(), false) {
+                            match engine.enqueue(&rt_handle, line.to_string(), threads, ref_url.clone(), cookie_val.clone(), "CHECK", None) {
                                 EnqueueOutcome::Started(_) => {}
                                 EnqueueOutcome::DuplicateDetected(ex) => { duplicate_alert = Some(ex); }
                             }
@@ -1795,6 +1962,7 @@ fn main() -> wry::Result<()> {
                 }
 
                 push_chrome_state(
+                    &window,
                     &chrome_wv,
                     &tabs,
                     active_tab_idx,
@@ -1805,6 +1973,9 @@ fn main() -> wry::Result<()> {
                     &bookmarks,
                     &history,
                     &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
                     &engine,
                 );
             }

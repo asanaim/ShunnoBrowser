@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const APP_VERSION: &str = "v1.9.0";
+pub const APP_VERSION: &str = "v2.0.0";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
@@ -67,6 +67,9 @@ pub struct QuickShortcut {
     pub url: String,
 }
 
+fn default_max_concurrent() -> usize { 3 }
+fn default_on_complete() -> String { "NONE".to_string() }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GlobalSettings {
     pub full_dark_mode: bool,
@@ -78,6 +81,10 @@ pub struct GlobalSettings {
     pub auto_pip_on_blur: bool,
     #[serde(default)]
     pub auto_clean_completed: bool,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_downloads: usize,
+    #[serde(default = "default_on_complete")]
+    pub on_queue_complete: String,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -98,6 +105,8 @@ impl Default for GlobalSettings {
             drop_basket_enabled: true,
             auto_pip_on_blur: false,
             auto_clean_completed: false,
+            max_concurrent_downloads: 3,
+            on_queue_complete: "NONE".to_string(),
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
