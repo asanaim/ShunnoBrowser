@@ -272,15 +272,24 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
     display: none; justify-content: flex-end; align-items: flex-start;
     padding: 12px 14px;
-    background: rgba(0, 0, 0, 0.16);
-    backdrop-filter: blur(4px);
+    background-color: rgba(15, 15, 20, 0.24);
+    background-size: cover;
+    background-position: top left;
     z-index: 50;
-    opacity: 0;
-    transition: opacity 0.28s var(--ease-fluid);
+  }
+  .overlay-backdrop::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: rgba(18, 18, 22, 0.18);
+    backdrop-filter: blur(8px) saturate(140%);
+    pointer-events: none;
   }
   .overlay-backdrop.open {
     display: flex;
-    opacity: 1;
+  }
+  .floating-sheet {
+    position: relative;
+    z-index: 2;
   }
 
   @keyframes glassFloatIn {
@@ -747,6 +756,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     });
   }
 
+  window.setOverlayBackdropImage = function(dataUrl) {
+    const el = document.getElementById('drawer');
+    if (dataUrl) {
+      el.style.backgroundImage = 'url(' + dataUrl + ')';
+    } else {
+      el.style.backgroundImage = 'none';
+    }
+  };
+
   window.renderChromeState = function(state) {
     if (state.global.full_dark_mode) {
       document.body.classList.add('dark');
@@ -754,7 +772,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.5.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.6.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
@@ -799,7 +817,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const bmStrip = document.getElementById('bookmarks-strip');
     bmStrip.innerHTML = `
       <button class="bm-chip action" onclick="toggleDrawer('bookmarks')" title="Open Library">📚 Library</button>
-      <button class="bm-chip action" onclick="send('ADD_BOOKMARK')" title="Bookmark Current Page">+ Bookmark</button>
+      <button class="bm-chip action" onclick="send('ADD_BOOKMARK')" title="Bookmark Current Page" style="padding:3px 7px;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+        </svg>
+      </button>
     ` + state.bookmarks.slice(0, 14).map(b => `
       <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">⭐ ${escapeHtml(b.title)}</button>
     `).join('');

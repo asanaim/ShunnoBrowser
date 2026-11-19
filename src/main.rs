@@ -21,7 +21,7 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{ElementState, Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::KeyCode;
-use tao::window::{Fullscreen, Window, WindowBuilder};
+use tao::window::{Fullscreen, Icon, Window, WindowBuilder};
 use userscripts::{list_user_scripts, load_approved_user_scripts, user_scripts_dir, UserScriptInfo};
 use wry::{Rect, WebView, WebViewBuilder};
 
@@ -244,6 +244,31 @@ fn attach_native_webview2_hooks(
 
             let _ = core.add_WebResourceRequested(&handler, &mut token);
         }
+
+        // 3. Native WebView2 DownloadStarting Interceptor (routes all browser downloads to Shunno Get)
+        use webview2_com::DownloadStartingEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+        if let Ok(core4) = core.cast::<ICoreWebView2_4>() {
+            let mut dl_token = Default::default();
+            let dl_proxy = proxy.clone();
+            let dl_handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+                if let Some(args) = args {
+                    if let Ok(op) = args.DownloadOperation() {
+                        let mut uri_ptr = windows::core::PWSTR::null();
+                        if op.Uri(&mut uri_ptr).is_ok() {
+                            let uri = webview2_com::take_pwstr(uri_ptr);
+                            if uri.starts_with("http") {
+                                let _ = args.SetCancel(true);
+                                let _ = args.SetHandled(true);
+                                let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(uri));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }));
+            let _ = core4.add_DownloadStarting(&dl_handler, &mut dl_token);
+        }
     }
 }
 
@@ -316,6 +341,129 @@ fn create_tab_webview(
 /// When a drawer/popover is open, `chrome_wv` occupies the top bar + right docked panel `(w - panel_w, CHROME_BAR_HEIGHT, panel_w, content_h)`
 /// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
+fn load_embedded_window_icon() -> Option<Icon> {
+    // Decode the 32x32 uncompressed BGRA entry from assets/app.ico for native taskbar & Alt+Tab icon
+    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+    if ICO_BYTES.len() < 22 {
+        return None;
+    }
+    let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
+    for i in 0..count {
+        let off = 6 + i * 16;
+        if off + 16 > ICO_BYTES.len() {
+            break;
+        }
+        let w = ICO_BYTES[off] as u32;
+        let h = ICO_BYTES[off + 1] as u32;
+        let bytes_in_res = u32::from_le_bytes([
+            ICO_BYTES[off + 8],
+            ICO_BYTES[off + 9],
+            ICO_BYTES[off + 10],
+            ICO_BYTES[off + 11],
+        ]) as usize;
+        let img_offset = u32::from_le_bytes([
+            ICO_BYTES[off + 12],
+            ICO_BYTES[off + 13],
+            ICO_BYTES[off + 14],
+            ICO_BYTES[off + 15],
+        ]) as usize;
+
+        if (w == 32 || w == 48) && img_offset + 40 + (w * h * 4) as usize <= ICO_BYTES.len() && bytes_in_res >= 40 {
+            let pixel_start = img_offset + 40;
+            let row_bytes = (w * 4) as usize;
+            let mut rgba = vec![0u8; (w * h * 4) as usize];
+            // BMP inside ICO is stored bottom-up in BGRA order; convert to top-down RGBA
+            for y in 0..(h as usize) {
+                let src_row = pixel_start + ((h as usize - 1 - y) * row_bytes);
+                let dst_row = y * row_bytes;
+                for x in 0..(w as usize) {
+                    let s = src_row + x * 4;
+                    let d = dst_row + x * 4;
+                    rgba[d] = ICO_BYTES[s + 2];     // R
+                    rgba[d + 1] = ICO_BYTES[s + 1]; // G
+                    rgba[d + 2] = ICO_BYTES[s];     // B
+                    rgba[d + 3] = ICO_BYTES[s + 3]; // A
+                }
+            }
+            if let Ok(icon) = Icon::from_rgba(rgba, w, h) {
+                return Some(icon);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn capture_tab_preview_to_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+    use windows::Win32::System::Com::CreateStreamOnHGlobal;
+    use windows::Win32::System::Com::StructuredStorage::GetHGlobalFromStream;
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use wry::WebViewExtWindows;
+
+    let controller = tab_wv.controller();
+    unsafe {
+        let Ok(core) = controller.CoreWebView2() else { return; };
+        let Ok(stream) = CreateStreamOnHGlobal(None, true) else { return; };
+        let stream_clone = stream.clone();
+        // Evaluate via raw pointer sendable wrapper on UI thread
+        let chrome_ptr = chrome_wv as *const WebView as usize;
+        let handler = CapturePreviewCompletedHandler::create(Box::new(move |res| {
+            if res.is_ok() {
+                if let Ok(hglobal) = GetHGlobalFromStream(&stream_clone) {
+                    let size = GlobalSize(hglobal);
+                    let ptr = GlobalLock(hglobal);
+                    if !ptr.is_null() && size > 0 {
+                        let slice = std::slice::from_raw_parts(ptr as *const u8, size);
+                        let b64 = base64_encode(slice);
+                        let _ = GlobalUnlock(hglobal);
+                        let wv_ref = &*(chrome_ptr as *const WebView);
+                        let js = format!(
+                            "if (window.setOverlayBackdropImage) window.setOverlayBackdropImage('data:image/png;base64,{}');",
+                            b64
+                        );
+                        let _ = wv_ref.evaluate_script(&js);
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.CapturePreview(
+            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+            &stream,
+            &handler,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn capture_tab_preview_to_chrome(_tab_wv: &WebView, _chrome_wv: &WebView) {}
+
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((data.len() + 2) / 3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(n & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], active_idx: usize, drawer_open: bool) {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let w = size.width.max(400.0);
@@ -338,7 +486,7 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
             size: LogicalSize::new(w, content_h).into(),
         });
-        let show_web = idx == active_idx && tab.url != "shunno://newtab";
+        let show_web = !drawer_open && idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
     }
 }
@@ -366,7 +514,7 @@ fn main() -> wry::Result<()> {
     let window = WindowBuilder::new()
         .with_title("Shunno Browser")
         .with_decorations(false)
-        .with_transparent(true)
+        .with_window_icon(load_embedded_window_icon())
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
@@ -377,7 +525,6 @@ fn main() -> wry::Result<()> {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: LogicalSize::new(1240.0, CHROME_BAR_HEIGHT).into(),
         })
-        .with_transparent(true)
         .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
             let _ = chrome_proxy.send_event(AppEvent::ChromeIpc(req.body().clone()));
@@ -1049,6 +1196,13 @@ fn main() -> wry::Result<()> {
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        if tab.url != "shunno://newtab" {
+                            capture_tab_preview_to_chrome(&tab.webview, &chrome_wv);
+                        } else {
+                            let _ = chrome_wv.evaluate_script("if (window.setOverlayBackdropImage) window.setOverlayBackdropImage('');");
+                        }
+                    }
                     drawer_open = true;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd == "DRAWER_CLOSE" {
