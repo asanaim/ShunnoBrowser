@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const APP_VERSION: &str = "v1.4.0";
+pub const APP_VERSION: &str = "v1.5.0";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
@@ -56,6 +56,12 @@ pub struct SavedTab {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QuickShortcut {
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GlobalSettings {
     pub full_dark_mode: bool,
     pub background_media_play: bool,
@@ -68,6 +74,8 @@ pub struct GlobalSettings {
     pub auto_clean_completed: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
+    #[serde(default)]
+    pub quick_shortcuts: Vec<QuickShortcut>,
     pub default_threads: usize,
     pub speed_limit_bps: u64,
     pub active_search_engine: usize,
@@ -85,6 +93,14 @@ impl Default for GlobalSettings {
             auto_pip_on_blur: false,
             auto_clean_completed: false,
             approved_script_hashes: Vec::new(),
+            quick_shortcuts: vec![
+                QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
+                QuickShortcut { title: "YouTube".to_string(), url: "https://www.youtube.com".to_string() },
+                QuickShortcut { title: "GitHub".to_string(), url: "https://github.com".to_string() },
+                QuickShortcut { title: "Wikipedia".to_string(), url: "https://www.wikipedia.org".to_string() },
+                QuickShortcut { title: "Internet Archive".to_string(), url: "https://archive.org".to_string() },
+                QuickShortcut { title: "Krishi Bank".to_string(), url: "https://krishibank.org.bd".to_string() },
+            ],
             default_threads: 16,
             speed_limit_bps: 0,
             active_search_engine: 0,
@@ -163,6 +179,9 @@ impl BrowserStorage {
         }
         if cfg.active_search_engine >= cfg.search_engines.len() {
             cfg.active_search_engine = 0;
+        }
+        if cfg.quick_shortcuts.is_empty() {
+            cfg.quick_shortcuts = GlobalSettings::default().quick_shortcuts;
         }
         cfg
     }

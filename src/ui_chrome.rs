@@ -4,183 +4,309 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 <meta charset="UTF-8">
 <style>
   :root {
-    --bg: #F2F2F7;
-    --tab-bg: #E5E5EA;
-    --surface: #FFFFFF;
-    --border: #D8D8DF;
+    --bg: #F5F5F7;
+    --tab-bg: #E8E8ED;
+    --surface: rgba(255, 255, 255, 0.88);
+    --surface-solid: #FFFFFF;
+    --glass: rgba(255, 255, 255, 0.78);
+    --border: rgba(0, 0, 0, 0.09);
     --blue: #0A84FF;
-    --blue-soft: #EBF4FF;
+    --blue-soft: rgba(10, 132, 255, 0.12);
     --green: #30D158;
-    --green-soft: #E8F8EE;
+    --green-soft: rgba(48, 209, 88, 0.14);
     --orange: #FF9F0A;
     --red: #FF3B30;
-    --text: #1C1C1E;
+    --text: #1D1D1F;
     --muted: #6E6E73;
-    --input-bg: #F2F2F7;
-    --spring-fluid: cubic-bezier(0.32, 0.72, 0, 1);
-    --spring-bounce: cubic-bezier(0.2, 0.9, 0.3, 1.04);
+    --input-bg: rgba(118, 118, 128, 0.11);
+    --ease-fluid: cubic-bezier(0.25, 1, 0.5, 1);
+    --ease-spring: cubic-bezier(0.22, 1.15, 0.36, 1);
   }
   body.dark {
-    --bg: #0B0B0D;
-    --tab-bg: #141416;
-    --surface: #1C1C1E;
-    --border: #2C2C2E;
+    --bg: #0D0D10;
+    --tab-bg: #161619;
+    --surface: rgba(28, 28, 32, 0.88);
+    --surface-solid: #1C1C1E;
+    --glass: rgba(30, 30, 34, 0.80);
+    --border: rgba(255, 255, 255, 0.11);
     --blue: #0A84FF;
-    --blue-soft: #162942;
+    --blue-soft: rgba(10, 132, 255, 0.22);
     --green: #30D158;
-    --green-soft: #132E1C;
+    --green-soft: rgba(48, 209, 88, 0.20);
     --orange: #FF9F0A;
     --red: #FF453A;
     --text: #F5F5F7;
     --muted: #98989D;
-    --input-bg: #2C2C2E;
+    --input-bg: rgba(255, 255, 255, 0.09);
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif; user-select: none; }
+  * {
+    box-sizing: border-box; margin: 0; padding: 0;
+    font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    user-select: none;
+  }
   html, body {
-    background: var(--bg); color: var(--text); overflow: hidden;
-    display: flex; flex-direction: column; height: 100vh;
-    transition: background 0.32s var(--spring-fluid), color 0.32s var(--spring-fluid);
+    background: transparent;
+    color: var(--text);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    border-radius: 12px;
   }
 
-  .chrome-top {
+  /* Unified Top Chrome Shell (112px total: 36px Tab Strip + 46px Firefox-Style Address Bar + 30px Bookmarks Bar) */
+  .chrome-shell {
     background: var(--surface);
-    z-index: 10;
+    backdrop-filter: blur(24px) saturate(180%);
+    border-bottom: 1px solid var(--border);
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    z-index: 20;
+    transition: background 0.3s var(--ease-fluid);
   }
 
-  /* Tab Strip */
+  /* 1. Borderless Tab Strip (No redundant "Shunno Browser" title bar!) */
   .tab-bar {
-    display: flex; align-items: center; gap: 6px; padding: 5px 10px 4px 10px;
-    background: var(--tab-bg); border-bottom: 1px solid var(--border); height: 38px; overflow: hidden;
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px 4px 10px;
+    background: var(--tab-bg); height: 36px; overflow: hidden;
+    border-top-left-radius: 12px; border-top-right-radius: 12px;
   }
-  .logo-badge {
-    width: 26px; height: 26px; border-radius: 8px;
-    background: linear-gradient(135deg, #0D47A1, #0A84FF);
+
+  /* Chrome/Safari-inspired Compass-Ring Logo */
+  .brand-emblem {
+    width: 24px; height: 24px; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
-    flex-shrink: 0; box-shadow: 0 2px 6px rgba(10,132,255,0.32);
-    transition: transform 0.28s var(--spring-bounce), box-shadow 0.28s var(--spring-fluid);
+    flex-shrink: 0; cursor: pointer;
+    box-shadow: 0 2px 6px rgba(10, 132, 255, 0.28);
+    transition: transform 0.28s var(--ease-spring);
   }
-  .logo-badge:hover {
-    transform: scale(1.07);
-    box-shadow: 0 4px 12px rgba(10,132,255,0.46);
-  }
+  .brand-emblem:hover { transform: scale(1.08) rotate(12deg); }
 
   #tabs-container {
     display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
   }
 
-  @keyframes tabSpringIn {
-    0%   { opacity: 0; transform: translateY(6px) scale(0.92); }
-    100% { opacity: 1; transform: translateY(0) scale(1); }
+  /* Static, flicker-free tabs (only newly added tab animates in; switching tabs never re-creates DOM nodes!) */
+  @keyframes tabEnter {
+    from { opacity: 0; transform: scale(0.92); }
+    to   { opacity: 1; transform: scale(1); }
   }
-
   .tab {
-    display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 9px;
-    background: rgba(128,128,128,0.13); color: var(--text); font-size: 12px; cursor: pointer;
-    flex: 1 1 175px; min-width: 40px; max-width: 210px; overflow: hidden;
-    animation: tabSpringIn 0.28s var(--spring-bounce);
-    transition: background 0.24s var(--spring-fluid), transform 0.22s var(--spring-bounce), box-shadow 0.26s var(--spring-fluid);
+    display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 10px;
+    background: rgba(128, 128, 128, 0.11); color: var(--text); font-size: 12px; cursor: pointer;
+    flex: 1 1 165px; min-width: 42px; max-width: 200px; overflow: hidden;
+    transition: background 0.22s var(--ease-fluid), box-shadow 0.22s var(--ease-fluid), color 0.18s ease;
   }
-  .tab:hover { background: rgba(128,128,128,0.22); }
-  .tab:active { transform: scale(0.96); }
+  .tab.is-new { animation: tabEnter 0.24s var(--ease-fluid); }
+  .tab:hover { background: rgba(128, 128, 128, 0.20); }
   .tab.active {
-    background: var(--surface); color: var(--text); font-weight: 600;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.13);
+    background: var(--surface-solid); color: var(--text); font-weight: 600;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
   }
-  .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; border: 1px solid #48484A; }
+  .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
 
   .tab-audio {
-    font-size: 11px; padding: 0 4px; border-radius: 4px; flex-shrink: 0;
-    background: rgba(10,132,255,0.14); color: var(--blue);
-    transition: background 0.2s var(--spring-fluid), transform 0.2s var(--spring-bounce);
-  }
-  .tab-audio:hover { background: var(--blue); color: #fff; transform: scale(1.1); }
-  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-  .tab-close {
-    font-size: 10.5px; color: var(--muted); padding: 1px 4px; border-radius: 4px; flex-shrink: 0;
+    font-size: 11px; padding: 0 4px; border-radius: 5px; flex-shrink: 0;
+    background: var(--blue-soft); color: var(--blue);
     transition: background 0.18s ease, color 0.18s ease;
   }
-  .tab-close:hover { background: rgba(255,59,48,0.2); color: var(--red); }
+  .tab-audio:hover { background: var(--blue); color: #fff; }
+  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tab-close {
+    font-size: 10px; color: var(--muted); padding: 2px 5px; border-radius: 5px; flex-shrink: 0;
+    transition: background 0.16s ease, color 0.16s ease;
+  }
+  .tab-close:hover { background: rgba(255, 59, 48, 0.18); color: var(--red); }
 
   .tab-add {
-    border: none; background: rgba(128,128,128,0.15); color: var(--blue); font-weight: 700;
-    font-size: 12px; padding: 4px 9px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
-    transition: background 0.22s var(--spring-fluid), transform 0.2s var(--spring-bounce);
+    border: none; background: rgba(128, 128, 128, 0.14); color: var(--blue); font-weight: 700;
+    font-size: 12px; padding: 4px 9px; border-radius: 9px; cursor: pointer; flex-shrink: 0;
+    transition: background 0.2s var(--ease-fluid), transform 0.18s var(--ease-spring);
   }
-  .tab-add:hover { background: var(--surface); transform: translateY(-0.5px); }
-  .tab-add:active { transform: scale(0.93); }
+  .tab-add:hover { background: var(--surface-solid); }
+  .tab-add:active { transform: scale(0.92); }
 
-  /* Minimalist Navigation Toolbar */
+  /* Drag spacer + Native Window Controls (replaces wasted top title bar!) */
+  .win-drag-spacer {
+    flex: 1; height: 100%; min-width: 24px; cursor: default;
+  }
+  .win-controls {
+    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+  }
+  .win-btn {
+    width: 28px; height: 24px; border: none; border-radius: 7px;
+    background: transparent; color: var(--text); font-size: 12px; font-weight: 600;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.18s var(--ease-fluid), color 0.18s ease;
+  }
+  .win-btn:hover { background: rgba(128, 128, 128, 0.18); }
+  .win-btn.close:hover { background: #FF3B30; color: #FFFFFF; }
+
+  /* 2. Firefox-Inspired Centered Compact Address + Search Capsule */
   .nav-bar {
-    display: flex; align-items: center; gap: 7px; padding: 6px 12px;
-    background: var(--surface); border-bottom: 1px solid var(--border); height: 48px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 12px;
+    height: 46px;
   }
+  .nav-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
   .nav-btn {
-    border: none; background: var(--input-bg); color: var(--text); font-size: 13.5px; font-weight: 600;
-    padding: 6px 11px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+    border: none; background: var(--input-bg); color: var(--text); font-size: 13px; font-weight: 600;
+    padding: 6px 10px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
     white-space: nowrap;
-    transition: background 0.24s var(--spring-fluid), transform 0.2s var(--spring-bounce), color 0.24s ease, box-shadow 0.24s ease;
+    transition: background 0.22s var(--ease-fluid), transform 0.18s var(--ease-spring), color 0.2s ease;
   }
-  .nav-btn:hover { filter: brightness(0.96); transform: translateY(-0.5px); }
+  .nav-btn:hover { filter: brightness(0.95); }
   .nav-btn:active { transform: scale(0.94); }
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
   .nav-btn.green { background: var(--green-soft); color: #24B44B; }
 
-  .search-picker {
-    border: none; background: var(--input-bg); color: var(--text); font-size: 12px; font-weight: 600;
-    padding: 6px 8px; border-radius: 10px; outline: none; cursor: pointer; max-width: 120px;
-    transition: background 0.22s var(--spring-fluid);
+  /* Firefox-style Unified Search + URL Capsule (compact centered width) */
+  .firefox-capsule {
+    flex: 1; max-width: 660px; min-width: 200px; height: 34px;
+    display: flex; align-items: center; gap: 6px;
+    background: var(--input-bg); border-radius: 12px; padding: 3px 8px 3px 4px;
+    border: 1.5px solid transparent;
+    transition: background 0.25s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
   }
-  .url-wrap {
-    flex: 1; display: flex; align-items: center; background: var(--input-bg);
-    border-radius: 11px; padding: 0 12px; height: 35px; border: 1px solid transparent; min-width: 120px;
-    transition: background 0.26s var(--spring-fluid), border-color 0.26s var(--spring-fluid), box-shadow 0.28s var(--spring-fluid);
+  .firefox-capsule:focus-within {
+    background: var(--surface-solid);
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3.5px rgba(10, 132, 255, 0.18);
+    max-width: 740px;
   }
-  .url-wrap:focus-within { background: var(--surface); border-color: var(--blue); box-shadow: 0 0 0 3.5px rgba(10,132,255,0.2); }
+  .engine-chip {
+    border: none; background: var(--surface-solid); color: var(--text);
+    font-size: 11.5px; font-weight: 700; padding: 4px 8px; border-radius: 8px;
+    outline: none; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    transition: background 0.2s ease;
+  }
   #url-input {
-    border: none; background: transparent; outline: none; width: 100%;
+    border: none; background: transparent; outline: none; flex: 1; min-width: 60px;
     font-size: 13px; color: var(--text); user-select: text;
   }
-
-  /* Fluid Spring-Physics Docked Side Panel */
-  @keyframes sheetSpringEnter {
-    0%   { opacity: 0; transform: translateX(28px) scale(0.975); }
-    100% { opacity: 1; transform: translateX(0) scale(1); }
+  .zoom-pill {
+    font-size: 11px; font-weight: 700; color: var(--blue); background: var(--blue-soft);
+    padding: 2px 7px; border-radius: 7px; cursor: pointer; flex-shrink: 0;
+    transition: transform 0.16s var(--ease-spring);
   }
-  @keyframes cardSpringStep {
-    0%   { opacity: 0; transform: translateY(10px) scale(0.985); }
+  .zoom-pill:hover { transform: scale(1.06); }
+
+  /* 3. Chrome-Inspired Bookmarks & Library Strip Beneath Address Bar */
+  .bookmarks-strip {
+    display: flex; align-items: center; gap: 6px; padding: 0 12px;
+    height: 30px; border-top: 1px solid var(--border); overflow-x: auto;
+  }
+  .bookmarks-strip::-webkit-scrollbar { display: none; }
+  .bm-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 8px; font-size: 11.5px; font-weight: 500;
+    color: var(--text); background: transparent; border: none; cursor: pointer;
+    max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
+    transition: background 0.2s var(--ease-fluid), transform 0.16s var(--ease-spring);
+  }
+  .bm-chip:hover { background: var(--input-bg); }
+  .bm-chip:active { transform: scale(0.95); }
+  .bm-chip.action { color: var(--blue); font-weight: 600; background: var(--blue-soft); }
+
+  /* Clean Home Page Canvas (shown when active tab URL is shunno://newtab) */
+  .home-canvas {
+    flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; background: var(--bg); overflow-y: auto;
+    border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;
+  }
+  .home-canvas.active { display: flex; }
+  .home-hero {
+    display: flex; flex-direction: column; align-items: center; gap: 18px;
+    width: 100%; max-width: 640px;
+  }
+  .home-search-box {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    background: var(--surface-solid); border: 1px solid var(--border);
+    border-radius: 16px; padding: 10px 16px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.07);
+    transition: box-shadow 0.28s var(--ease-fluid), border-color 0.25s ease;
+  }
+  .home-search-box:focus-within {
+    border-color: var(--blue);
+    box-shadow: 0 10px 34px rgba(10, 132, 255, 0.18);
+  }
+  .home-search-input {
+    border: none; background: transparent; outline: none; flex: 1;
+    font-size: 15px; color: var(--text); user-select: text;
+  }
+  .shortcuts-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    gap: 12px; width: 100%; margin-top: 8px;
+  }
+  .shortcut-tile {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 14px 10px; border-radius: 16px; background: var(--surface-solid);
+    border: 1px solid var(--border); cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
+    transition: transform 0.24s var(--ease-spring), box-shadow 0.24s var(--ease-fluid);
+  }
+  .shortcut-tile:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.10);
+  }
+  .shortcut-icon {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: var(--blue-soft); color: var(--blue);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 800;
+  }
+  .shortcut-label {
+    font-size: 12px; font-weight: 600; color: var(--text);
+    max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .shortcut-del {
+    position: absolute; top: 6px; right: 6px; width: 18px; height: 18px;
+    border-radius: 50%; border: none; background: rgba(128,128,128,0.18);
+    color: var(--muted); font-size: 10px; cursor: pointer; opacity: 0;
+    transition: opacity 0.18s ease, background 0.18s ease;
+  }
+  .shortcut-tile:hover .shortcut-del { opacity: 1; }
+  .shortcut-del:hover { background: var(--red); color: #fff; }
+
+  /* Translucent Frosted-Glass Floating Overlays (Menu & Downloads float over webpage!) */
+  .overlay-backdrop {
+    position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
+    display: none; justify-content: flex-end; align-items: flex-start;
+    padding: 12px 14px;
+    background: rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(4px);
+    z-index: 50;
+    opacity: 0;
+    transition: opacity 0.28s var(--ease-fluid);
+  }
+  .overlay-backdrop.open {
+    display: flex;
+    opacity: 1;
+  }
+
+  @keyframes glassFloatIn {
+    0%   { opacity: 0; transform: translateY(-12px) scale(0.95); }
     100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
-  .dock-panel {
-    width: 440px;
-    max-width: 65vw;
-    height: calc(100vh - 86px);
-    margin-left: auto;
-    display: none;
-    flex-direction: column;
-    background: var(--bg);
-    border-left: 1px solid var(--border);
-    padding: 12px;
+  .floating-sheet {
+    width: 430px; max-width: calc(100vw - 28px); max-height: calc(100vh - 136px);
+    background: var(--glass);
+    backdrop-filter: blur(32px) saturate(190%);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 14px;
     overflow-y: auto;
-    overflow-x: hidden;
-    will-change: transform, opacity;
+    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.26);
     transform-origin: top right;
-    box-shadow: -10px 0 30px rgba(0, 0, 0, 0.08);
+    animation: glassFloatIn 0.32s var(--ease-spring) forwards;
   }
-  .dock-panel.open {
-    display: flex;
-    animation: sheetSpringEnter 0.36s var(--spring-fluid) forwards;
-  }
+  .floating-sheet.wide { width: 520px; }
 
   .card {
     background: var(--surface); border-radius: 14px; padding: 12px 13px; margin-bottom: 10px;
-    border: 1px solid var(--border); min-width: 0;
-    animation: cardSpringStep 0.34s var(--spring-fluid) backwards;
-    transition: background 0.24s var(--spring-fluid), border-color 0.24s var(--spring-fluid), transform 0.22s var(--spring-fluid);
+    border: 1px solid var(--border);
+    transition: background 0.24s var(--ease-fluid);
   }
-  .card:nth-child(2) { animation-delay: 0.03s; }
-  .card:nth-child(3) { animation-delay: 0.06s; }
-  .card:nth-child(4) { animation-delay: 0.09s; }
   .card:last-child { margin-bottom: 0; }
   .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 6px; flex-wrap: wrap; }
   .card-title { font-size: 13px; font-weight: 700; }
@@ -189,14 +315,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: center; gap: 4px;
     padding: 7px 9px; border-radius: 10px; background: var(--input-bg); font-size: 11.5px; font-weight: 600;
     min-width: 0;
-    transition: background 0.22s var(--spring-fluid);
   }
-  .toggle-tile span {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
+  .toggle-tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pill-btn {
-    border: none; border-radius: 8px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
-    transition: background 0.22s var(--spring-fluid), transform 0.18s var(--spring-bounce), color 0.2s ease;
+    border: none; border-radius: 9px; padding: 5px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+    transition: background 0.2s var(--ease-fluid), transform 0.16s var(--ease-spring);
   }
   .pill-btn:hover { filter: brightness(0.95); }
   .pill-btn:active { transform: scale(0.93); }
@@ -208,18 +331,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   .input-row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
   .text-box {
-    flex: 1; min-width: 110px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border);
+    flex: 1; min-width: 110px; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; user-select: text;
-    transition: border-color 0.22s var(--spring-fluid), background 0.22s var(--spring-fluid), box-shadow 0.22s ease;
   }
-  .text-box:focus { border-color: var(--blue); background: var(--surface); box-shadow: 0 0 0 2.5px rgba(10,132,255,0.16); }
+  .text-box:focus { border-color: var(--blue); background: var(--surface-solid); }
   .select-box {
-    padding: 7px 9px; border-radius: 9px; border: 1px solid var(--border);
+    padding: 7px 9px; border-radius: 10px; border: 1px solid var(--border);
     font-size: 12px; background: var(--input-bg); color: var(--text);
   }
 
   .prog-track { width: 100%; height: 6px; background: var(--input-bg); border-radius: 4px; overflow: hidden; margin: 6px 0; }
-  .prog-fill { height: 100%; background: var(--blue); transition: width 0.32s var(--spring-fluid), background 0.24s ease; }
+  .prog-fill { height: 100%; background: var(--blue); transition: width 0.3s var(--ease-fluid); }
   .prog-fill.done { background: var(--green); }
   .meta { font-size: 11px; color: var(--muted); }
   .list-row {
@@ -231,197 +353,245 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 </head>
 <body>
 
-  <div class="chrome-top">
-    <!-- 1. Tab Strip -->
+  <div class="chrome-shell">
+    <!-- 1. Borderless Tab Strip (No redundant top title bar!) -->
     <div class="tab-bar" id="tab-bar">
-      <div class="logo-badge" title="Shunno Browser">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-          <ellipse cx="12" cy="12" rx="6.6" ry="8.8" stroke="white" stroke-width="3"/>
-          <line x1="7.2" y1="16.8" x2="16.8" y2="7.2" stroke="#30D158" stroke-width="2.8" stroke-linecap="round"/>
+      <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
+        <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
+          <defs>
+            <radialGradient id="shunnoCompass" cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stop-color="#38BDF8"/>
+              <stop offset="100%" stop-color="#0055D4"/>
+            </radialGradient>
+          </defs>
+          <circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)" stroke="#E2E8F0" stroke-width="1.5"/>
+          <circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.1" stroke-opacity="0.92"/>
+          <polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/>
+          <polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/>
+          <circle cx="14" cy="14" r="1.3" fill="#1C1C1E"/>
         </svg>
       </div>
       <div id="tabs-container"></div>
       <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">+</button>
       <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">🕵</button>
+      <div class="win-drag-spacer" onmousedown="send('WIN_DRAG')" ondblclick="send('WIN_MAXIMIZE')"></div>
+      <div class="win-controls">
+        <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">—</button>
+        <button class="win-btn" onclick="send('WIN_MAXIMIZE')" title="Maximize / Restore">□</button>
+        <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">✕</button>
+      </div>
     </div>
 
-    <!-- 2. Minimalist Navigation Toolbar -->
+    <!-- 2. Firefox-Inspired Compact Centered Address + Search Bar -->
     <div class="nav-bar">
-      <button class="nav-btn" onclick="send('BACK')" title="Back">‹</button>
-      <button class="nav-btn" onclick="send('FORWARD')" title="Forward">›</button>
-      <button class="nav-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">↻</button>
-
-      <select class="search-picker" id="engine-select" onchange="send('SET_SEARCH_ENGINE:' + this.value)" title="Select Search Engine"></select>
-
-      <div class="url-wrap">
-        <input id="url-input" placeholder="Search or enter website URL..."
-               onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
+      <div class="nav-group">
+        <button class="nav-btn" onclick="send('BACK')" title="Back">‹</button>
+        <button class="nav-btn" onclick="send('FORWARD')" title="Forward">›</button>
+        <button class="nav-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">↻</button>
+        <button class="nav-btn" onclick="send('NAV:shunno://newtab')" title="Home">⌂</button>
       </div>
 
-      <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')" title="Detected Media Streams">🎯 0</button>
-      <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Shunno Get Downloads (Ctrl+J)">⚡ 0</button>
-      <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
+      <div class="firefox-capsule">
+        <select class="engine-chip" id="engine-select" onchange="send('SET_SEARCH_ENGINE:' + this.value)" title="Search Engine"></select>
+        <input id="url-input" placeholder="Search with engine or enter address..."
+               onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
+        <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
+      </div>
+
+      <div class="nav-group">
+        <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')" title="Detected Media">🎯 0</button>
+        <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Shunno Get Downloads (Ctrl+J)">⚡ 0</button>
+        <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
+      </div>
+    </div>
+
+    <!-- 3. Chrome-Style Bookmarks & Library Strip Under Address Bar -->
+    <div class="bookmarks-strip" id="bookmarks-strip"></div>
+  </div>
+
+  <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
+  <div class="home-canvas" id="home-canvas">
+    <div class="home-hero">
+      <svg width="58" height="58" viewBox="0 0 28 28" fill="none">
+        <circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)" stroke="#CBD5E1" stroke-width="1.2"/>
+        <circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.1"/>
+        <polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/>
+        <polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/>
+        <circle cx="14" cy="14" r="1.3" fill="#1C1C1E"/>
+      </svg>
+      <div class="home-search-box">
+        <span style="font-size:16px;opacity:0.65;">🔎</span>
+        <input class="home-search-input" id="home-search-input" placeholder="Search the web or enter website address..."
+               onkeydown="if(event.key==='Enter'){ event.preventDefault(); if(this.value.trim()) send('NAV:' + this.value.trim()); }" />
+      </div>
+      <div class="shortcuts-grid" id="home-shortcuts-grid"></div>
     </div>
   </div>
 
-  <!-- 3. Docked Right Side Panel -->
-  <div class="dock-panel" id="drawer">
+  <!-- 5. Translucent Frosted-Glass Floating Overlay (Floats over live webpage!) -->
+  <div class="overlay-backdrop" id="drawer" onclick="if(event.target===this) closeDrawer()">
+    <div class="floating-sheet" id="floating-sheet">
 
-    <!-- Panel A: Controls & Settings -->
-    <div id="panel-controls" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Controls</span>
-          <div style="display:flex;gap:6px;align-items:center;">
-            <span class="meta" id="version-badge" style="font-weight:700;">v1.4.0</span>
-            <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Toggle Full Screen (F11)">⛶ F11</button>
+      <!-- Panel A: Controls & Settings -->
+      <div id="panel-controls" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Controls</span>
+            <div style="display:flex;gap:5px;align-items:center;">
+              <span class="meta" id="version-badge" style="font-weight:700;">v1.5.0</span>
+              <button class="pill-btn pill-soft" onclick="send('ZOOM_OUT')" title="Zoom Out (Ctrl+-)">A−</button>
+              <button class="pill-btn pill-soft" onclick="send('ZOOM_RESET')" title="Reset Zoom (Ctrl+0)">100%</button>
+              <button class="pill-btn pill-soft" onclick="send('ZOOM_IN')" title="Zoom In (Ctrl++)">A+</button>
+              <button class="pill-btn pill-soft" onclick="send('TOGGLE_FULLSCREEN')" title="Full Screen (F11)">⛶</button>
+              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
+            <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader</button>
+            <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
+            <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
+            <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
+          </div>
+
+          <div class="grid-toggles" id="global-toggles-grid"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
+          </div>
+          <div class="grid-toggles" id="site-toggles-grid"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">📜 UserScripts (Explicit Approval)</span>
+            <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📂 Folder</button>
+          </div>
+          <div id="userscripts-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🔎 Search Engines</span>
+          </div>
+          <div class="input-row">
+            <input class="text-box" id="new-se-name" placeholder="Name" style="max-width:110px;" />
+            <input class="text-box" id="new-se-url" placeholder="https://example.com/?q=%s" />
+            <button class="pill-btn pill-blue" onclick="addSearchEngine()">Add</button>
+          </div>
+          <div id="search-engines-list"></div>
+        </div>
+      </div>
+
+      <!-- Panel B: Find in Page -->
+      <div id="panel-find" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🔍 Find in Page</span>
             <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
           </div>
-        </div>
-
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
-          <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
-          <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
-          <button class="pill-btn pill-soft" onclick="send('READER_MODE'); closeDrawer();">📖 Reader</button>
-          <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
-          <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
-          <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
-        </div>
-
-        <div class="grid-toggles" id="global-toggles-grid"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
-        </div>
-        <div class="grid-toggles" id="site-toggles-grid"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">📜 UserScripts (Explicit Approval)</span>
-          <button class="pill-btn pill-soft" onclick="send('OPEN_SCRIPTS_FOLDER')">📂 Folder</button>
-        </div>
-        <div id="userscripts-list"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">🔎 Search Engines</span>
-        </div>
-        <div class="input-row">
-          <input class="text-box" id="new-se-name" placeholder="Name (e.g. Qwant)" style="max-width:120px;" />
-          <input class="text-box" id="new-se-url" placeholder="https://example.com/?q=%s" />
-          <button class="pill-btn pill-blue" onclick="addSearchEngine()">Add</button>
-        </div>
-        <div id="search-engines-list"></div>
-      </div>
-    </div>
-
-    <!-- Panel B: Find in Page -->
-    <div id="panel-find" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">🔍 Find in Page</span>
-          <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-        </div>
-        <div class="input-row" style="margin-bottom:0;">
-          <input class="text-box" id="find-input" placeholder="Search text..."
-                 oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
-          <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑</button>
-          <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Panel C: Detected Media & Grabbed Page Links -->
-    <div id="panel-streams" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">🎯 Detected Media &amp; Page Links</span>
-          <div style="display:flex;gap:5px;">
-            <button class="pill-btn pill-soft" onclick="send('GRAB_PAGE_LINKS')">↻ Rescan</button>
-            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+          <div class="input-row" style="margin-bottom:0;">
+            <input class="text-box" id="find-input" placeholder="Search text..."
+                   oninput="send('FIND:' + this.value)" onkeydown="if(event.key==='Enter') send('FIND:' + this.value)" />
+            <button class="pill-btn pill-soft" onclick="send('FIND_PREV')">↑</button>
+            <button class="pill-btn pill-blue" onclick="send('FIND_NEXT')">↓</button>
           </div>
         </div>
-        <div id="streams-list"></div>
       </div>
-    </div>
 
-    <!-- Panel D: Bookmarks & History -->
-    <div id="panel-bookmarks" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">⭐ Bookmarks</span>
-          <div style="display:flex;gap:5px;">
-            <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Save</button>
-            <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
-            <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
-            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+      <!-- Panel C: Detected Media & Grabbed Page Links -->
+      <div id="panel-streams" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🎯 Detected Media &amp; Page Links</span>
+            <div style="display:flex;gap:5px;">
+              <button class="pill-btn pill-soft" onclick="send('GRAB_PAGE_LINKS')">↻ Rescan</button>
+              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+            </div>
           </div>
+          <div id="streams-list"></div>
         </div>
-        <div id="bookmarks-list"></div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">🕒 History</span>
-          <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear</button>
+      <!-- Panel D: Bookmarks & History -->
+      <div id="panel-bookmarks" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">⭐ Bookmarks</span>
+            <div style="display:flex;gap:5px;">
+              <button class="pill-btn pill-blue" onclick="send('ADD_BOOKMARK')">+ Save</button>
+              <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
+              <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
+              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+            </div>
+          </div>
+          <div id="bookmarks-list"></div>
         </div>
-        <div id="history-list"></div>
-      </div>
-    </div>
 
-    <!-- Panel E: Shunno Get Downloads -->
-    <div id="panel-downloads" style="display:none">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">⚡ Shunno Get</span>
-          <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-            <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
-            <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
-            <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Scan all downloadable links & media on active page">🕸️ Grab Page</button>
-            <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items from list">🧹 Clean</button>
-            <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
-              <option value="0">Unlimited</option>
-              <option value="10485760">10 MB/s</option>
-              <option value="5242880">5 MB/s</option>
-              <option value="2097152">2 MB/s</option>
-              <option value="524288">512 KB/s</option>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🕒 History</span>
+            <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear</button>
+          </div>
+          <div id="history-list"></div>
+        </div>
+      </div>
+
+      <!-- Panel E: Shunno Get Downloads -->
+      <div id="panel-downloads" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">⚡ Shunno Get</span>
+            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
+              <span class="meta" id="ffmpeg-status-badge" style="font-weight:700;">🎬 FFmpeg</span>
+              <button class="pill-btn pill-soft" onclick="send('OPEN_BIN_FOLDER')" title="Place ffmpeg.exe here">bin/</button>
+              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Scan all downloadable links & media on active page">🕸️ Grab</button>
+              <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Remove finished items">🧹</button>
+              <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)">
+                <option value="0">Unlimited</option>
+                <option value="10485760">10 MB/s</option>
+                <option value="5242880">5 MB/s</option>
+                <option value="2097152">2 MB/s</option>
+                <option value="524288">512 KB/s</option>
+              </select>
+              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂</button>
+              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+            </div>
+          </div>
+          <div class="input-row">
+            <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
+            <select class="select-box" id="dl-threads-select">
+              <option value="1">1T</option>
+              <option value="4">4T</option>
+              <option value="8">8T</option>
+              <option value="16" selected>16T</option>
+              <option value="32">32T</option>
             </select>
-            <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')">📂</button>
-            <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+            <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
+          </div>
+          <div class="input-row" style="margin-bottom:0;">
+            <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
+            <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
+            <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
           </div>
         </div>
-        <div class="input-row">
-          <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
-          <select class="select-box" id="dl-threads-select">
-            <option value="1">1T</option>
-            <option value="4">4T</option>
-            <option value="8">8T</option>
-            <option value="16" selected>16T</option>
-            <option value="32">32T</option>
-          </select>
-          <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
-        </div>
-        <div class="input-row" style="margin-bottom:0;">
-          <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
-          <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
-          <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
-        </div>
+
+        <div id="duplicate-banner" class="card" style="display:none;border-color:var(--orange);"></div>
+        <div id="downloads-list"></div>
       </div>
 
-      <div id="duplicate-banner" class="card" style="display:none;border-color:var(--orange);"></div>
-      <div id="downloads-list"></div>
     </div>
-
   </div>
 
 <script>
   let activeDrawer = null;
   let currentSpeed = 1.0;
   const speeds = [1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 0.75];
+  let knownTabIds = new Set();
 
   function send(msg) {
     if (window.ipc) window.ipc.postMessage(msg);
@@ -432,6 +602,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const val = input.value.trim();
     if (!val) return;
     input.blur();
+    if (activeDrawer) closeDrawer();
     send('NAV:' + val);
   }
 
@@ -446,20 +617,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       return;
     }
     const drawer = document.getElementById('drawer');
-    const wasClosed = !activeDrawer;
+    const sheet = document.getElementById('floating-sheet');
     activeDrawer = name;
+
+    if (name === 'downloads' || name === 'bookmarks') {
+      sheet.classList.add('wide');
+    } else {
+      sheet.classList.remove('wide');
+    }
 
     ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
-    if (wasClosed) {
-      drawer.classList.remove('open');
-      void drawer.offsetWidth;
-      drawer.classList.add('open');
-    } else {
-      drawer.classList.add('open');
-    }
+    sheet.style.animation = 'none';
+    void sheet.offsetWidth;
+    sheet.style.animation = '';
+    drawer.classList.add('open');
     send('DRAWER_OPEN:' + name);
   }
 
@@ -504,6 +678,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     urlEl.value = '';
   }
 
+  function promptAddShortcut() {
+    const title = prompt('Shortcut Name (e.g. Gmail):');
+    if (!title || !title.trim()) return;
+    const url = prompt('Website URL (e.g. https://mail.google.com):');
+    if (!url || !url.trim()) return;
+    send('ADD_SHORTCUT:' + title.trim() + '|' + url.trim());
+  }
+
   function fmtBytes(b) {
     if (!b || b <= 0) return '0 B';
     const k = b / 1024, m = k / 1024, g = m / 1024;
@@ -513,6 +695,58 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     return b + ' B';
   }
 
+  // Flicker-free incremental tab reconciliation (never blinks or re-animates existing tabs!)
+  function syncTabsStatic(tabs, activeIdx) {
+    const tc = document.getElementById('tabs-container');
+    const currentIds = new Set(tabs.map(t => String(t.id)));
+
+    // Remove closed tabs
+    Array.from(tc.children).forEach(el => {
+      if (!currentIds.has(el.dataset.tabId)) {
+        tc.removeChild(el);
+        knownTabIds.delete(el.dataset.tabId);
+      }
+    });
+
+    tabs.forEach((t, idx) => {
+      const idStr = String(t.id);
+      let el = tc.querySelector(`.tab[data-tab-id="${idStr}"]`);
+      if (!el) {
+        el = document.createElement('div');
+        el.dataset.tabId = idStr;
+        el.className = 'tab is-new';
+        setTimeout(() => el.classList.remove('is-new'), 260);
+        tc.appendChild(el);
+        knownTabIds.add(idStr);
+      }
+
+      const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''}`;
+      if (el.className !== wantClass && !el.classList.contains('is-new')) {
+        el.className = wantClass;
+      } else if (el.classList.contains('is-new')) {
+        el.classList.toggle('active', idx === activeIdx);
+        el.classList.toggle('incognito', !!t.incognito);
+      }
+
+      el.onclick = () => send('SWITCH_TAB:' + idx);
+      el.title = t.title || 'New Tab';
+
+      const displayTitle = (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
+      const hasAudio = !!(t.playing_audio || t.muted);
+      const audioKey = hasAudio ? (t.muted ? 'M' : 'P') : 'N';
+
+      if (el.dataset.renderedTitle !== displayTitle || el.dataset.audioKey !== audioKey || el.dataset.tabIdx !== String(idx)) {
+        el.dataset.renderedTitle = displayTitle;
+        el.dataset.audioKey = audioKey;
+        el.dataset.tabIdx = String(idx);
+        const audioHtml = hasAudio
+          ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
+          : '';
+        el.innerHTML = `${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>`;
+      }
+    });
+  }
+
   window.renderChromeState = function(state) {
     if (state.global.full_dark_mode) {
       document.body.classList.add('dark');
@@ -520,25 +754,55 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v1.4.0';
+    document.getElementById('version-badge').textContent = state.version || 'v1.5.0';
     document.getElementById('ffmpeg-status-badge').textContent = state.ffmpeg_available
       ? '🎬 FFmpeg: Ready'
       : '🎬 FFmpeg: Optional';
 
-    const tc = document.getElementById('tabs-container');
-    tc.innerHTML = state.tabs.map((t, idx) => {
-      const audioHtml = (t.playing_audio || t.muted)
-        ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute Tab' : 'Mute Tab'}">${t.muted ? '🔇' : '🔊'}</span>`
-        : '';
-      return `
-        <div class="tab ${idx === state.active_tab ? 'active' : ''} ${t.incognito ? 'incognito' : ''}"
-             onclick="send('SWITCH_TAB:${idx}')" title="${escapeHtml(t.title || 'New Tab')}">
-          ${audioHtml}
-          <span class="tab-title">${t.incognito ? '🕵 ' : ''}${escapeHtml(t.title || 'New Tab')}</span>
-          <span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>
+    // Static, flicker-free tab updates
+    syncTabsStatic(state.tabs, state.active_tab);
+
+    // Zoom pill indicator
+    const zoomBadge = document.getElementById('zoom-badge');
+    const zPct = Math.round((state.active_zoom || 1.0) * 100);
+    if (zPct !== 100) {
+      zoomBadge.style.display = 'inline-block';
+      zoomBadge.textContent = zPct + '%';
+    } else {
+      zoomBadge.style.display = 'none';
+    }
+
+    // Home page canvas visibility when on shunno://newtab
+    const isHome = state.active_url === 'shunno://newtab';
+    const homeCanvas = document.getElementById('home-canvas');
+    if (isHome) {
+      homeCanvas.classList.add('active');
+      const grid = document.getElementById('home-shortcuts-grid');
+      const shortcuts = state.global.quick_shortcuts || [];
+      grid.innerHTML = shortcuts.map((sc, i) => `
+        <div class="shortcut-tile" onclick="send('NAV:${encodeAttr(sc.url)}')">
+          <button class="shortcut-del" onclick="event.stopPropagation(); send('DEL_SHORTCUT:${i}')" title="Remove">✕</button>
+          <div class="shortcut-icon">${escapeHtml((sc.title || 'W').charAt(0).toUpperCase())}</div>
+          <div class="shortcut-label">${escapeHtml(sc.title)}</div>
+        </div>
+      `).join('') + `
+        <div class="shortcut-tile" onclick="promptAddShortcut()" style="border-style:dashed;">
+          <div class="shortcut-icon" style="background:rgba(128,128,128,0.14);color:var(--text);">+</div>
+          <div class="shortcut-label">Add Shortcut</div>
         </div>
       `;
-    }).join('');
+    } else {
+      homeCanvas.classList.remove('active');
+    }
+
+    // Chrome-style Bookmarks & Library Bar under address bar
+    const bmStrip = document.getElementById('bookmarks-strip');
+    bmStrip.innerHTML = `
+      <button class="bm-chip action" onclick="toggleDrawer('bookmarks')" title="Open Library">📚 Library</button>
+      <button class="bm-chip action" onclick="send('ADD_BOOKMARK')" title="Bookmark Current Page">+ Bookmark</button>
+    ` + state.bookmarks.slice(0, 14).map(b => `
+      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">⭐ ${escapeHtml(b.title)}</button>
+    `).join('');
 
     const seSelect = document.getElementById('engine-select');
     if (state.global.search_engines && state.global.search_engines.length > 0) {
@@ -549,7 +813,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     const urlBox = document.getElementById('url-input');
     if (document.activeElement !== urlBox) {
-      urlBox.value = state.active_url || '';
+      urlBox.value = isHome ? '' : (state.active_url || '');
     }
 
     const sBtn = document.getElementById('btn-streams');
@@ -574,7 +838,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
           <div style="display:flex;gap:5px;">
             ${state.duplicate_alert.saved_path ? `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(state.duplicate_alert.saved_path)}'); send('DISMISS_DUP');">Open</button>` : ''}
-            <button class="pill-btn pill-blue" onclick="send('FORCE_DL:${encodeAttr(state.duplicate_alert.url)}');">Download Again</button>
+            <button class="pill-btn pill-blue" onclick="send('FORCE_DL:${encodeAttr(state.duplicate_alert.url)}');">Again</button>
             <button class="pill-btn pill-red" onclick="send('DISMISS_DUP');">✕</button>
           </div>
         </div>
@@ -584,7 +848,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
-      ? '<div class="meta">Scanning page for videos, audio, and downloadable files... If none appear, the page has no direct file links.</div>'
+      ? '<div class="meta">No direct media or file links detected on this page yet.</div>'
       : state.streams.map(s => `
           <div class="list-row">
             <div style="overflow:hidden;">
@@ -682,7 +946,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         `).join('');
 
     document.getElementById('downloads-list').innerHTML = state.downloads.length === 0
-      ? '<div class="card"><div class="meta">No downloads yet. Hover over any video/file or click 🕸️ Grab Page to scan all downloadable files on the active tab.</div></div>'
+      ? '<div class="card"><div class="meta">No downloads yet. Hover over any video/file or click 🕸️ Grab to scan all downloadable files on the active tab.</div></div>'
       : state.downloads.map(d => {
           const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
           const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);
@@ -745,6 +1009,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       else if (k === 'f') { e.preventDefault(); toggleDrawer('find'); setTimeout(() => document.getElementById('find-input').focus(), 50); }
       else if (k === 'j') { e.preventDefault(); toggleDrawer('downloads'); }
       else if (k === 'r') { e.preventDefault(); send('RELOAD'); }
+      else if (k === '=' || k === '+') { e.preventDefault(); send('ZOOM_IN'); }
+      else if (k === '-') { e.preventDefault(); send('ZOOM_OUT'); }
+      else if (k === '0') { e.preventDefault(); send('ZOOM_RESET'); }
     } else if (e.key === 'Escape' && activeDrawer) {
       closeDrawer();
     }

@@ -860,7 +860,23 @@
       if (k === 't' || k === 'w' || k === 'j') {
         e.preventDefault();
         postSecure('KEY:' + k);
+      } else if (k === '=' || k === '+') {
+        e.preventDefault();
+        postSecure('KEY:zoom_in');
+      } else if (k === '-') {
+        e.preventDefault();
+        postSecure('KEY:zoom_out');
+      } else if (k === '0') {
+        e.preventDefault();
+        postSecure('KEY:zoom_reset');
       }
     }
   });
+
+  document.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      postSecure(e.deltaY < 0 ? 'KEY:zoom_in' : 'KEY:zoom_out');
+    }
+  }, { passive: false });
 })();

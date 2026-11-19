@@ -32,8 +32,8 @@ pub fn resolve_amp_url(parsed: &Url) -> Option<String> {
 
 pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "https://duckduckgo.com".to_string();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("shunno://newtab") || trimmed.eq_ignore_ascii_case("about:newtab") {
+        return "shunno://newtab".to_string();
     }
     let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()

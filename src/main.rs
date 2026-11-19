@@ -30,8 +30,7 @@ use state::{
     SitePolicy, APP_VERSION,
 };
 
-const CHROME_BAR_HEIGHT: f64 = 86.0;
-const DOCK_PANEL_WIDTH: f64 = 440.0;
+const CHROME_BAR_HEIGHT: f64 = 112.0;
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
@@ -55,6 +54,7 @@ struct BrowserTab {
     incognito: bool,
     playing_audio: bool,
     muted: bool,
+    zoom: f64,
     webview: WebView,
 }
 
@@ -83,6 +83,7 @@ struct ChromeSnapshot {
     active_tab: usize,
     active_url: String,
     active_host: String,
+    active_zoom: f64,
     site: SitePolicy,
     global: GlobalSettings,
     blocked_count: usize,
@@ -281,7 +282,7 @@ fn create_tab_webview(
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
             size: LogicalSize::new(size.width.max(400.0), content_h).into(),
         })
-        .with_url(url)
+        .with_url(if url == "shunno://newtab" { "about:blank" } else { url })
         .with_initialization_script(&init_script)
         .with_document_title_changed_handler(move |new_title| {
             let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
@@ -321,10 +322,12 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
     let h = size.height.max(300.0);
     let content_h = (h - CHROME_BAR_HEIGHT).max(100.0);
 
-    let panel_w = if drawer_open { DOCK_PANEL_WIDTH.min(w * 0.65) } else { 0.0 };
-    let left_w = (w - panel_w).max(240.0);
+    let is_home = tabs
+        .get(active_idx)
+        .map(|t| t.url == "shunno://newtab")
+        .unwrap_or(true);
 
-    let chrome_h = if drawer_open { h } else { CHROME_BAR_HEIGHT };
+    let chrome_h = if drawer_open || is_home { h } else { CHROME_BAR_HEIGHT };
     let _ = chrome_wv.set_bounds(Rect {
         position: LogicalPosition::new(0.0, 0.0).into(),
         size: LogicalSize::new(w, chrome_h).into(),
@@ -333,9 +336,10 @@ fn layout_webviews(window: &Window, chrome_wv: &WebView, tabs: &[BrowserTab], ac
     for (idx, tab) in tabs.iter().enumerate() {
         let _ = tab.webview.set_bounds(Rect {
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
-            size: LogicalSize::new(left_w, content_h).into(),
+            size: LogicalSize::new(w, content_h).into(),
         });
-        let _ = tab.webview.set_visible(idx == active_idx);
+        let show_web = idx == active_idx && tab.url != "shunno://newtab";
+        let _ = tab.webview.set_visible(show_web);
     }
 }
 
@@ -361,6 +365,8 @@ fn main() -> wry::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Shunno Browser")
+        .with_decorations(false)
+        .with_transparent(true)
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
@@ -371,6 +377,7 @@ fn main() -> wry::Result<()> {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: LogicalSize::new(1240.0, CHROME_BAR_HEIGHT).into(),
         })
+        .with_transparent(true)
         .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
             let _ = chrome_proxy.send_event(AppEvent::ChromeIpc(req.body().clone()));
@@ -385,9 +392,41 @@ fn main() -> wry::Result<()> {
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
     let mut duplicate_alert: Option<DownloadTask> = None;
 
+    // Start local HTTP IDM/ShunnoGet listener on http://127.0.0.1:45780/add?url=...
+    let hook_proxy = proxy.clone();
+    rt_handle.spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        if let Ok(listener) = TcpListener::bind("127.0.0.1:45780").await {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let px = hook_proxy.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    if let Ok(n) = stream.read(&mut buf).await {
+                        let req_str = String::from_utf8_lossy(&buf[..n]);
+                        if let Some(first_line) = req_str.lines().next() {
+                            if let Some(path) = first_line.split_whitespace().nth(1) {
+                                if let Ok(parsed) = url::Url::parse(&format!("http://127.0.0.1{}", path)) {
+                                    if let Some((_, dl_url)) = parsed.query_pairs().find(|(k, _)| k == "url") {
+                                        let u = dl_url.into_owned();
+                                        if u.starts_with("http") {
+                                            let _ = px.send_event(AppEvent::DownloadIntercepted(u));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nOK";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                });
+            }
+        }
+    });
+
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
-        vec!["https://duckduckgo.com".to_string()]
+        vec!["shunno://newtab".to_string()]
     } else {
         saved_session.into_iter().map(|t| t.url).collect()
     };
@@ -397,7 +436,13 @@ fn main() -> wry::Result<()> {
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
         if let Ok(wv) = create_tab_webview(&window, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone()) {
-            let init_title = if host.is_empty() { u.clone() } else { host };
+            let init_title = if u == "shunno://newtab" {
+                "New Tab".to_string()
+            } else if host.is_empty() {
+                u.clone()
+            } else {
+                host
+            };
             tabs.push(BrowserTab {
                 id: tid,
                 title: init_title,
@@ -406,6 +451,7 @@ fn main() -> wry::Result<()> {
                 incognito: false,
                 playing_audio: false,
                 muted: false,
+                zoom: 1.0,
                 webview: wv,
             });
         }
@@ -440,6 +486,7 @@ fn main() -> wry::Result<()> {
                              duplicate_alert: &Option<DownloadTask>,
                              engine: &ShunnoGetDesktop| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
+        let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
         let active_host = extract_host(&active_url);
         let site = site_policies.get(&active_host).cloned().unwrap_or_default();
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
@@ -462,6 +509,7 @@ fn main() -> wry::Result<()> {
             active_tab: active_idx,
             active_url,
             active_host,
+            active_zoom,
             site,
             global: global_settings.clone(),
             blocked_count,
@@ -714,6 +762,7 @@ fn main() -> wry::Result<()> {
                             incognito: false,
                             playing_audio: false,
                             muted: false,
+                            zoom: 1.0,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -786,17 +835,35 @@ fn main() -> wry::Result<()> {
                     }
                 } else if let Some(key_cmd) = msg.strip_prefix("KEY:") {
                     match key_cmd {
+                        "zoom_in" => {
+                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                                tab.zoom = (tab.zoom + 0.1).min(3.0);
+                                let _ = tab.webview.zoom(tab.zoom);
+                            }
+                        }
+                        "zoom_out" => {
+                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                                tab.zoom = (tab.zoom - 0.1).max(0.4);
+                                let _ = tab.webview.zoom(tab.zoom);
+                            }
+                        }
+                        "zoom_reset" => {
+                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                                tab.zoom = 1.0;
+                                let _ = tab.webview.zoom(tab.zoom);
+                            }
+                        }
                         "f11" => {
                             let is_fs = window.fullscreen().is_some();
                             window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                         }
                         "t" => {
-                            let start = "https://duckduckgo.com".to_string();
+                            let start = "shunno://newtab".to_string();
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                             if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, webview: wv });
+                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, playing_audio: false, muted: false, zoom: 1.0, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                             }
@@ -930,7 +997,54 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ChromeIpc(cmd)) => {
-                if cmd == "TOGGLE_FULLSCREEN" {
+                if cmd == "WIN_DRAG" {
+                    let _ = window.drag_window();
+                } else if cmd == "WIN_MINIMIZE" {
+                    window.set_minimized(true);
+                } else if cmd == "WIN_MAXIMIZE" {
+                    window.set_maximized(!window.is_maximized());
+                } else if cmd == "WIN_CLOSE" {
+                    let to_save: Vec<SavedTab> = tabs
+                        .iter()
+                        .filter(|t| !t.incognito)
+                        .map(|t| SavedTab {
+                            title: t.title.clone(),
+                            url: t.url.clone(),
+                        })
+                        .collect();
+                    BrowserStorage::save_session(&to_save);
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                } else if cmd == "ZOOM_IN" || cmd == "ZOOM_OUT" || cmd == "ZOOM_RESET" {
+                    if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                        if cmd == "ZOOM_IN" {
+                            tab.zoom = (tab.zoom + 0.1).min(3.0);
+                        } else if cmd == "ZOOM_OUT" {
+                            tab.zoom = (tab.zoom - 0.1).max(0.4);
+                        } else {
+                            tab.zoom = 1.0;
+                        }
+                        let _ = tab.webview.zoom(tab.zoom);
+                    }
+                } else if let Some(payload) = cmd.strip_prefix("ADD_SHORTCUT:") {
+                    if let Some((t, u)) = payload.split_once('|') {
+                        let clean_u = sanitize_url(u, &global_settings);
+                        if !t.trim().is_empty() && clean_u.starts_with("http") {
+                            global_settings.quick_shortcuts.push(state::QuickShortcut {
+                                title: t.trim().to_string(),
+                                url: clean_u,
+                            });
+                            BrowserStorage::save_global_settings(&global_settings);
+                        }
+                    }
+                } else if let Some(idx_str) = cmd.strip_prefix("DEL_SHORTCUT:") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < global_settings.quick_shortcuts.len() {
+                            global_settings.quick_shortcuts.remove(idx);
+                            BrowserStorage::save_global_settings(&global_settings);
+                        }
+                    }
+                } else if cmd == "TOGGLE_FULLSCREEN" {
                     let is_fs = window.fullscreen().is_some();
                     window.set_fullscreen(if is_fs { None } else { Some(Fullscreen::Borderless(None)) });
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
@@ -961,16 +1075,22 @@ fn main() -> wry::Result<()> {
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
                         tab.url = clean.clone();
-                        let h = extract_host(&clean);
-                        if !h.is_empty() {
-                            tab.title = h;
+                        if clean == "shunno://newtab" {
+                            tab.title = "New Tab".to_string();
+                            let _ = tab.webview.load_url("about:blank");
+                        } else {
+                            let h = extract_host(&clean);
+                            if !h.is_empty() {
+                                tab.title = h;
+                            }
+                            tab.playing_audio = false;
+                            let _ = tab.webview.load_url(&clean);
                         }
-                        tab.playing_audio = false;
-                        let _ = tab.webview.load_url(&clean);
                     }
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
-                    let start = "https://duckduckgo.com".to_string();
+                    let start = "shunno://newtab".to_string();
                     let pol = SitePolicy::default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                     if let Ok(wv) = create_tab_webview(&window, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
@@ -982,6 +1102,7 @@ fn main() -> wry::Result<()> {
                             incognito: is_incog,
                             playing_audio: false,
                             muted: false,
+                            zoom: 1.0,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -1109,6 +1230,7 @@ fn main() -> wry::Result<()> {
                                     incognito: is_incog,
                                     playing_audio: false,
                                     muted: is_muted,
+                                    zoom: tab.zoom,
                                     webview: new_wv,
                                 };
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
