@@ -451,7 +451,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use tao::platform::windows::WindowExtWindows;
     use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
     use windows::core::{Interface, PCWSTR};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -466,7 +466,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use wry::WebViewExtWindows;
 
     static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
-    let hwnd = HWND(window.hwnd() as isize);
+    let hwnd = HWND(window.hwnd() as *mut std::ffi::c_void);
 
     unsafe {
         let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop"));
@@ -481,7 +481,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
 
         let _ = SetWindowPos(
             hwnd,
-            HWND(0),
+            HWND(std::ptr::null_mut()),
             0,
             0,
             0,
@@ -490,8 +490,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
         );
 
         // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class
-        if let Ok(hmod) = GetModuleHandleW(None) {
-            let hinst = HINSTANCE(hmod.0);
+        if let Ok(hinst) = GetModuleHandleW(None) {
             if let Ok(hicon_big) = LoadImageW(
                 hinst,
                 PCWSTR(1 as *const u16),
@@ -500,8 +499,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 48,
                 LR_SHARED,
             ) {
-                SetClassLongPtrW(hwnd, GCLP_HICON, hicon_big.0);
-                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon_big.0));
+                SetClassLongPtrW(hwnd, GCLP_HICON, hicon_big.0 as isize);
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon_big.0 as isize));
             }
             if let Ok(hicon_sm) = LoadImageW(
                 hinst,
@@ -511,8 +510,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 16,
                 LR_DEFAULTSIZE | LR_SHARED,
             ) {
-                SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon_sm.0);
-                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon_sm.0));
+                SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon_sm.0 as isize);
+                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon_sm.0 as isize));
             }
         }
 
@@ -588,7 +587,7 @@ fn bring_chrome_above_tabs(chrome_wv: &WebView) {
     let ctrl = chrome_wv.controller();
     unsafe {
         let mut parent = HWND::default();
-        if ctrl.ParentWindow(&mut parent).is_ok() && parent.0 != 0 {
+        if ctrl.ParentWindow(&mut parent).is_ok() && !parent.0.is_null() {
             let _ = SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
