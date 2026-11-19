@@ -1260,6 +1260,7 @@ fn main() -> wry::Result<()> {
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
                         if let Ok(new_wv) = create_tab_webview(&window, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone()) {
                             if is_muted { set_webview_muted(&new_wv, true); }
+                            if (tab.zoom - 1.0).abs() > f64::EPSILON { let _ = new_wv.zoom(tab.zoom); }
                             tabs[active_tab_idx] = BrowserTab {
                                 id: tid,
                                 title: tab.title.clone(),
@@ -1268,6 +1269,7 @@ fn main() -> wry::Result<()> {
                                 incognito: is_incog,
                                 playing_audio: false,
                                 muted: is_muted,
+                                zoom: tab.zoom,
                                 webview: new_wv,
                             };
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open);
