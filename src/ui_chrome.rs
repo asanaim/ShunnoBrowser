@@ -367,6 +367,22 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 12px; background: var(--input-bg); color: var(--text);
   }
 
+  .speed-graph-box {
+    background: var(--input-bg);
+    border-radius: 11px;
+    padding: 8px 10px 6px 10px;
+    margin-bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .speed-graph-hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
   .prog-track { width: 100%; height: 6px; background: var(--input-bg); border-radius: 4px; overflow: hidden; margin: 6px 0; }
   .prog-fill { height: 100%; background: var(--blue); transition: width 0.3s var(--ease-fluid); }
   .prog-fill.done { background: var(--green); }
@@ -559,6 +575,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="card">
           <div class="card-header">
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
+            <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
         </div>
@@ -653,6 +670,22 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
           </div>
+          <div class="speed-graph-box">
+            <div class="speed-graph-hdr">
+              <span style="color:var(--blue);" id="dl-live-speed">⚡ 0 B/s</span>
+              <span class="meta" id="dl-peak-speed">Peak: 0 B/s</span>
+            </div>
+            <svg id="dl-speed-svg" width="100%" height="36" viewBox="0 0 360 36" preserveAspectRatio="none" style="display:block;overflow:visible;">
+              <defs>
+                <linearGradient id="dlSpeedGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#0A84FF" stop-opacity="0.34"/>
+                  <stop offset="100%" stop-color="#0A84FF" stop-opacity="0.02"/>
+                </linearGradient>
+              </defs>
+              <polygon id="dl-speed-area" fill="url(#dlSpeedGrad)" points="0,36 360,36"/>
+              <polyline id="dl-speed-line" fill="none" stroke="#0A84FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="0,35 360,35"/>
+            </svg>
+          </div>
           <div class="input-row">
             <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
             <select class="select-box" id="dl-threads-select" title="Parallel Connections">
@@ -713,6 +746,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   let draggedTabIdx = null;
   let activeBookmarkFolder = 'All';
   let activeDlCategory = 'All';
+  const speedHistory = new Array(36).fill(0);
+  let peakSpeedBps = 0;
 
   function promptSaveBookmarkWithFolder() {
     const folder = prompt('Save bookmark to folder:', activeBookmarkFolder === 'All' ? 'General' : activeBookmarkFolder);
@@ -928,7 +963,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.0.0';
+    document.getElementById('version-badge').textContent = state.version || 'v2.1.0';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
@@ -1191,6 +1226,43 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(h.url)}'); closeDrawer();">Visit</button>
           </div>
         `).join('');
+
+    // Update live download speed sparkline
+    const totalSpeed = state.downloads
+      .filter(d => d.status === 'DOWNLOADING')
+      .reduce((acc, d) => acc + (d.speed_bps || 0), 0);
+    if (totalSpeed > peakSpeedBps) peakSpeedBps = totalSpeed;
+    speedHistory.push(totalSpeed);
+    if (speedHistory.length > 36) speedHistory.shift();
+
+    const liveSpdEl = document.getElementById('dl-live-speed');
+    const peakSpdEl = document.getElementById('dl-peak-speed');
+    if (liveSpdEl) liveSpdEl.textContent = '⚡ ' + fmtBytes(totalSpeed) + '/s';
+    if (peakSpdEl) peakSpdEl.textContent = 'Peak: ' + fmtBytes(peakSpeedBps) + '/s';
+
+    const polyLine = document.getElementById('dl-speed-line');
+    const polyArea = document.getElementById('dl-speed-area');
+    if (polyLine && polyArea) {
+      const maxVal = Math.max(10240, ...speedHistory);
+      const pts = speedHistory.map((v, i) => {
+        const x = (i / (speedHistory.length - 1)) * 360;
+        const y = 34 - ((v / maxVal) * 30);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      polyLine.setAttribute('points', pts);
+      polyArea.setAttribute('points', '0,36 ' + pts + ' 360,36');
+    }
+
+    const clearSiteBtn = document.getElementById('btn-clear-site-data');
+    if (clearSiteBtn) {
+      if (state.site_data_cleared) {
+        clearSiteBtn.textContent = '✓ Cleared';
+        clearSiteBtn.className = 'pill-btn pill-green';
+      } else {
+        clearSiteBtn.textContent = '🧹 Clear Site Data';
+        clearSiteBtn.className = 'pill-btn pill-orange';
+      }
+    }
 
     const dlCats = ['All', 'Videos', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
     document.getElementById('dl-category-bar').innerHTML = dlCats.map(c => `

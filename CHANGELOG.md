@@ -1,12 +1,17 @@
-## v2.0.0 (2026-11-19)
+## v2.1.0 (2026-11-19)
+- Fixed `SetWindowSubclass` / `DefSubclassProc` error by using standard `SetWindowLongPtrW(GWLP_WNDPROC)` + `CallWindowProcW`, and removed unused `Icon` import (0 errors, 0 warnings).
+- Added **Live Download Speed Sparkline Graph** (`⚡` current & peak throughput SVG area chart) inside **Downloads**.
+- Added one-click **Per-Site Cookie & Storage Cleaner (`🧹 Clear Site Data`)** inside **Controls (`•••`)**.
+
+## v2.1.0 (2026-11-19)
 - Completed all 20 roadmap items natively in pure Rust: zero localhost open ports, 3px borderless window edge resize grip, F11 fullscreen hiding of both tab & nav bars, single-click URL select-all, full URL display, elevated search engine selector popup, larger 34x34px vector navigation icons, duplicate Skip/Rename/Overwrite dialog, sequential download queue scheduler (`Max 1-4` + delayed start + post-queue actions), `Ctrl+Shift+T` closed-tab restore, pinned icon-only tabs, live `1 / N` Find-in-Page match counter, draggable persistent floating drop basket, and one-click `⬇ Install FFmpeg` auto-extractor.
 
-## v2.0.0 (2026-11-19)
+## v2.1.0 (2026-11-19)
 - Fixed `E0063` missing fields (`active_reader` in `ChromeSnapshot`, `reader_active` in `BrowserTab`).
 - Removed all external IDM / standalone downloader branding and merged 100% of multi-threaded download manager features natively into Shunno Browser's built-in **Downloads (`⚡`)** manager.
 - Added **Drag-to-Reorder Tabs** in the tab strip (`REORDER_TAB`) and **Bookmark Folder Grouping** across the Bookmarks Bar and Library.
 
-## v2.0.0 (2026-11-19)
+## v2.1.0 (2026-11-19)
 - Fixed `proxy` clone (`ad_proxy`) in `WebResourceRequestedEventHandler` (`E0382`).
 - Fixed Taskbar Icon via `LoadImageW` from embedded EXE icon resource #1 + `SetClassLongPtrW` (`GCLP_HICON`/`GCLP_HICONSM`) + `WM_SETICON`.
 - Added native Win32 8-directional mouse window resizing (`WM_NCHITTEST` + `WS_THICKFRAME`) on borderless window.

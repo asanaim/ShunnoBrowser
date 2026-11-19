@@ -21,7 +21,7 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{ElementState, Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::KeyCode;
-use tao::window::{Fullscreen, Icon, Window, WindowBuilder};
+use tao::window::{Fullscreen, Window, WindowBuilder};
 use userscripts::{list_user_scripts, load_approved_user_scripts, user_scripts_dir, UserScriptInfo};
 use wry::{Rect, WebView, WebViewBuilder};
 
@@ -94,6 +94,7 @@ struct ChromeSnapshot {
     active_host: String,
     active_zoom: f64,
     active_reader: bool,
+    site_data_cleared: bool,
     site: SitePolicy,
     global: GlobalSettings,
     blocked_count: usize,
@@ -446,27 +447,31 @@ fn create_tab_webview(
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
 #[cfg(windows)]
 fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
+    use std::sync::atomic::{AtomicIsize, Ordering};
     use tao::platform::windows::WindowExtWindows;
     use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
     use windows::core::{Interface, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Shell::{DefSubclassProc, SetCurrentProcessExplicitAppUserModelID, SetWindowSubclass};
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, GetWindowLongW, GetWindowRect, LoadImageW, SendMessageW, SetClassLongPtrW,
-        SetWindowLongW, SetWindowPos, GCLP_HICON, GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE,
-        HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
-        HTTOPRIGHT, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, SWP_FRAMECHANGED,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON,
+        CallWindowProcW, GetClientRect, GetWindowLongW, GetWindowRect, LoadImageW, SendMessageW,
+        SetClassLongPtrW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON,
+        GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, HTBOTTOM, HTBOTTOMLEFT,
+        HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG,
+        ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, SWP_FRAMECHANGED, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON, WNDPROC,
         WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
     use wry::WebViewExtWindows;
 
+    static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
     let hwnd = HWND(window.hwnd() as isize);
-    unsafe { let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop")); }
 
     unsafe {
-        // 1. Enable WS_THICKFRAME + WS_EX_APPWINDOW so borderless window supports mouse resizing & Windows Snap!
+        let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop"));
+
+        // 1. Enable WS_THICKFRAME + WS_EX_APPWINDOW so borderless window supports mouse resizing & Windows Snap
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         let new_style = style | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_SYSMENU.0;
         SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
@@ -484,7 +489,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
 
-        // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class so Taskbar never shows a black circle!
+        // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class
         if let Ok(hinst) = GetModuleHandleW(None) {
             if let Ok(hicon_big) = LoadImageW(
                 hinst,
@@ -510,20 +515,18 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             }
         }
 
-        // 3. Make chrome_wv WebView2 background transparent (A=0) so overlays float cleanly over the live webpage without flicker!
+        // 3. Make chrome_wv WebView2 background transparent (A=0) so overlays float cleanly over the live webpage
         let chrome_ctrl = chrome_wv.controller();
         if let Ok(ctrl2) = chrome_ctrl.cast::<ICoreWebView2Controller2>() {
             let _ = ctrl2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 0, R: 0, G: 0, B: 0 });
         }
 
-        // 4. Subclass window procedure for 8-directional mouse resize on borderless frame
-        unsafe extern "system" fn borderless_resize_proc(
+        // 4. Chain custom WndProc for 8-directional borderless mouse resizing
+        unsafe extern "system" fn borderless_resize_wndproc(
             hwnd: HWND,
             msg: u32,
             wparam: WPARAM,
             lparam: LPARAM,
-            _uid: usize,
-            _ref_data: usize,
         ) -> LRESULT {
             match msg {
                 WM_NCCALCSIZE => {
@@ -556,10 +559,19 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 }
                 _ => {}
             }
-            DefSubclassProc(hwnd, msg, wparam, lparam)
+            let prev_ptr = ORIG_WNDPROC.load(Ordering::Relaxed);
+            if prev_ptr != 0 {
+                let prev_fn: WNDPROC = std::mem::transmute(prev_ptr);
+                CallWindowProcW(prev_fn, hwnd, msg, wparam, lparam)
+            } else {
+                LRESULT(0)
+            }
         }
 
-        let _ = SetWindowSubclass(hwnd, Some(borderless_resize_proc), 1, 0);
+        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, borderless_resize_wndproc as usize as isize);
+        if prev != 0 {
+            ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+        }
     }
 }
 
@@ -692,6 +704,7 @@ fn main() -> wry::Result<()> {
     let mut find_current: usize = 0;
     let mut find_total: usize = 0;
     let mut had_active_downloads = false;
+    let mut site_data_cleared = false;
 
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
@@ -770,6 +783,7 @@ fn main() -> wry::Result<()> {
                              has_closed_tabs: bool,
                              find_current: usize,
                              find_total: usize,
+                             site_data_cleared: bool,
                              engine: &NativeDownloadEngine| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
@@ -805,6 +819,7 @@ fn main() -> wry::Result<()> {
             active_host,
             active_zoom,
             active_reader,
+            site_data_cleared,
             site,
             global: global_settings.clone(),
             blocked_count,
@@ -910,6 +925,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -960,6 +976,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -983,6 +1000,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -1006,6 +1024,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -1091,6 +1110,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -1141,6 +1161,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -1165,6 +1186,8 @@ fn main() -> wry::Result<()> {
                         find_current = cur_s.parse().unwrap_or(0);
                         find_total = tot_s.parse().unwrap_or(0);
                     }
+                } else if msg.starts_with("SITE_DATA_CLEARED:") {
+                    site_data_cleared = true;
                 } else if let Some(r_flag) = msg.strip_prefix("READER_STATE:") {
                     if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.reader_active = r_flag == "1";
@@ -1378,6 +1401,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }
@@ -1439,6 +1463,7 @@ fn main() -> wry::Result<()> {
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd == "DRAWER_CLOSE" {
                     drawer_open = false;
+                    site_data_cleared = false;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, drawer_open, engine_menu_open);
                 } else if cmd == "TRIGGER_PIP" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
@@ -1457,6 +1482,7 @@ fn main() -> wry::Result<()> {
                         let _ = tab.webview.evaluate_script("location.reload();");
                     }
                 } else if let Some(raw_nav) = cmd.strip_prefix("NAV:") {
+                    site_data_cleared = false;
                     let clean = sanitize_url(raw_nav, &global_settings);
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
@@ -1745,6 +1771,11 @@ fn main() -> wry::Result<()> {
                         let js = format!("document.querySelectorAll('video,audio').forEach(m => m.playbackRate = {});", spd);
                         let _ = tab.webview.evaluate_script(&js);
                     }
+                } else if cmd == "CLEAR_SITE_DATA" {
+                    if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                        tab.cookie = None;
+                        let _ = tab.webview.evaluate_script("if (window.__shunnoClearSiteStorage) window.__shunnoClearSiteStorage();");
+                    }
                 } else if cmd == "READER_MODE" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoToggleReader) window.__shunnoToggleReader();");
@@ -1976,6 +2007,7 @@ fn main() -> wry::Result<()> {
                     !closed_tabs.is_empty(),
                     find_current,
                     find_total,
+                    site_data_cleared,
                     &engine,
                 );
             }

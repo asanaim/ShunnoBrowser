@@ -1019,6 +1019,39 @@
     postSecure('FIND_COUNT:' + (window.__shunnoFindIdx + 1) + '|' + total);
   };
 
+  // 11. Per-Site Cookie & Storage Cleaner
+  window.__shunnoClearSiteStorage = async function() {
+    try { localStorage.clear(); } catch (e) {}
+    try { sessionStorage.clear(); } catch (e) {}
+    try {
+      const cookies = document.cookie ? document.cookie.split(';') : [];
+      const hostParts = location.hostname.split('.');
+      for (const c of cookies) {
+        const eq = c.indexOf('=');
+        const name = (eq > -1 ? c.slice(0, eq) : c).trim();
+        if (!name) continue;
+        document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        for (let i = 0; i < hostParts.length - 1; i++) {
+          const dom = hostParts.slice(i).join('.');
+          document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=.' + dom;
+        }
+      }
+    } catch (e) {}
+    try {
+      if (window.caches && caches.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+    } catch (e) {}
+    try {
+      if (window.indexedDB && indexedDB.databases) {
+        const dbs = await indexedDB.databases();
+        dbs.forEach(db => { if (db && db.name) indexedDB.deleteDatabase(db.name); });
+      }
+    } catch (e) {}
+    postSecure('SITE_DATA_CLEARED:' + (location.hostname || 'site'));
+  };
+
   function sendPageMeta() {
     postSecure('META:' + JSON.stringify({
       title: document.title || location.hostname || location.href,
