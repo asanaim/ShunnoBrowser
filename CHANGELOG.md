@@ -1,3 +1,9 @@
+## v2.13.0 (2026-11-20)
+- **Auto-update with signed manifests:** CI publishes `latest.json` (version, URL, SHA-256, Ed25519 signature) beside the EXE. The browser checks 20 s after start and daily, verifies the signature against the compiled-in public key and the EXE hash, swaps the EXE (old one kept until next start) and offers **Restart to update**. Tampered manifests, files or links are rejected; downloads are only accepted from this repository's releases.
+- **Notify-only until configured:** with no signing key set, it only shows "Update available" linking to the release page. Setup in `docs/RELEASING.md` (free, one time).
+- **Code signing in CI:** optional Authenticode step (runs when certificate secrets exist), ordered before the manifest so the signed hash matches.
+- Controls: update button (Check / Update available / Restart to update) and Auto Update toggle.
+
 ## v2.12.0 (2026-11-20)
 - **Fingerprint Shield (per site, on by default):** canvas exports and pixel reads, WebGL readPixels, audio samples and `hardwareConcurrency` get small changes that are stable per site within a session and different across sites and launches (Brave-style farbling). WebGL GPU vendor/renderer strings are generalised when a page asks for them. Trackers can no longer match one canvas/audio fingerprint across sites.
 - Changes are invisible in practice: at most 48 pixels flip one colour bit; audio varies by under one part in ten million.
