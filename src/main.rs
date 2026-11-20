@@ -20,7 +20,9 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{ElementState, Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::KeyCode;
-use tao::window::{Fullscreen, Icon, Window, WindowBuilder};
+#[cfg(not(windows))]
+use tao::window::Fullscreen;
+use tao::window::{Icon, Window, WindowBuilder};
 use userscripts::{list_user_scripts, load_approved_user_scripts, user_scripts_dir, UserScriptInfo};
 use wry::{Rect, WebContext, WebView, WebViewBuilder};
 
@@ -284,38 +286,123 @@ fn resume_tab_webview(webview: &WebView) {
 fn resume_tab_webview(_webview: &WebView) {}
 
 #[cfg(windows)]
-fn trigger_win11_snap_layouts() {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-        VK_LWIN, VK_Z,
-    };
+fn snap_window_to_fraction(window: &Window, x_f: i32, y_f: i32, w_f: i32, h_f: i32) {
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, ShowWindow, SWP_NOZORDER, SW_RESTORE};
 
-    let make_key = |vk: VIRTUAL_KEY, up: bool| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: vk,
-                wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-
-    let inputs = [
-        make_key(VK_LWIN, false),
-        make_key(VK_Z, false),
-        make_key(VK_Z, true),
-        make_key(VK_LWIN, true),
-    ];
+    let hwnd = HWND(window.hwnd() as isize);
     unsafe {
-        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+            let work = mi.rcWork;
+            let total_w = work.right - work.left;
+            let total_h = work.bottom - work.top;
+            let nx = work.left + (total_w * x_f) / 1000;
+            let ny = work.top + (total_h * y_f) / 1000;
+            let nw = (total_w * w_f) / 1000;
+            let nh = (total_h * h_f) / 1000;
+            let _ = SetWindowPos(hwnd, HWND(0), nx, ny, nw, nh, SWP_NOZORDER);
+        }
     }
 }
 
 #[cfg(not(windows))]
-fn trigger_win11_snap_layouts() {}
+fn snap_window_to_fraction(_window: &Window, _x_f: i32, _y_f: i32, _w_f: i32, _h_f: i32) {}
+
+#[cfg(windows)]
+fn apply_native_fullscreen(window: &Window, enable: bool) {
+    use std::sync::{Mutex, OnceLock};
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, SetWindowPlacement, SetWindowPos, HWND_TOP, SWP_FRAMECHANGED,
+        SWP_NOOWNERZORDER, WINDOWPLACEMENT,
+    };
+
+    static SAVED_WP: OnceLock<Mutex<Option<WINDOWPLACEMENT>>> = OnceLock::new();
+    let wp_lock = SAVED_WP.get_or_init(|| Mutex::new(None));
+    let hwnd = HWND(window.hwnd() as isize);
+
+    unsafe {
+        if enable {
+            let mut wp = WINDOWPLACEMENT {
+                length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                ..Default::default()
+            };
+            if GetWindowPlacement(hwnd, &mut wp).is_ok() {
+                if let Ok(mut g) = wp_lock.lock() {
+                    *g = Some(wp);
+                }
+            }
+            let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+                let m = mi.rcMonitor;
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    m.left,
+                    m.top,
+                    m.right - m.left,
+                    m.bottom - m.top,
+                    SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+                );
+            }
+        } else {
+            let saved = wp_lock.lock().ok().and_then(|mut g| g.take());
+            if let Some(wp) = saved {
+                let _ = SetWindowPlacement(hwnd, &wp);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND(0),
+                    0,
+                    0,
+                    0,
+                    0,
+                    windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                        | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                        | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                        | SWP_FRAMECHANGED,
+                );
+            } else {
+                window.set_fullscreen(None);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_native_fullscreen(window: &Window, enable: bool) {
+    window.set_fullscreen(if enable {
+        Some(Fullscreen::Borderless(None))
+    } else {
+        None
+    });
+}
+
+#[cfg(windows)]
+fn focus_webview_programmatically(webview: &WebView) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
+    use wry::WebViewExtWindows;
+    let ctrl = webview.controller();
+    unsafe {
+        let _ = ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    }
+}
+
+#[cfg(not(windows))]
+fn focus_webview_programmatically(_webview: &WebView) {}
 
 #[cfg(windows)]
 fn print_tab_to_pdf(webview: &WebView, page_title: &str) {
@@ -1448,14 +1535,14 @@ fn layout_webviews(
 
     let overlay_active = drawer_open || engine_menu_open || palette_open;
     let chrome_h = if is_fs {
-        0.0
+        if is_home { inner_h } else { 0.0 }
     } else if overlay_active || is_home {
         inner_h
     } else {
         top_bar_h
     };
 
-    let _ = chrome_wv.set_visible(!is_fs);
+    let _ = chrome_wv.set_visible(!is_fs || is_home);
     let _ = chrome_wv.set_bounds(Rect {
         position: LogicalPosition::new(grip, 0.0).into(),
         size: LogicalSize::new(inner_w, chrome_h).into(),
@@ -1839,12 +1926,19 @@ fn main() -> wry::Result<()> {
                 }
                 last_fs_toggle = std::time::Instant::now();
                 is_fullscreen = !is_fullscreen;
-                window.set_fullscreen(if is_fullscreen {
-                    Some(Fullscreen::Borderless(None))
-                } else {
-                    None
-                });
+                apply_native_fullscreen(&window, is_fullscreen);
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                if is_fullscreen {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        if tab.url != "shunno://newtab" {
+                            focus_webview_programmatically(&tab.webview);
+                        } else {
+                            focus_webview_programmatically(&chrome_wv);
+                        }
+                    }
+                } else {
+                    focus_webview_programmatically(&chrome_wv);
+                }
                 push_chrome_state(
                     &window,
                     &chrome_wv,
@@ -3085,8 +3179,13 @@ fn main() -> wry::Result<()> {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoGrabAllPageLinks) window.__shunnoGrabAllPageLinks();");
                     }
-                } else if cmd == "OPEN_SNAP_LAYOUTS" {
-                    trigger_win11_snap_layouts();
+                } else if let Some(snap_payload) = cmd.strip_prefix("SNAP_WIN:") {
+                    let parts: Vec<i32> = snap_payload.split('|').filter_map(|s| s.parse().ok()).collect();
+                    if parts.len() == 4 {
+                        engine_menu_open = false;
+                        snap_window_to_fraction(&window, parts[0], parts[1], parts[2], parts[3]);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
                 } else if cmd == "PRINT_TO_PDF" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         if tab.url != "shunno://newtab" {

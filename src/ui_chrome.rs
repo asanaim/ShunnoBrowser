@@ -481,6 +481,26 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     font-size: 11.5px; font-weight: 700; color: var(--blue); background: var(--blue-soft);
     padding: 5px 9px; border-radius: 8px; white-space: nowrap;
   }
+
+  /* Clean Windows 11 Snap Layout Hover Flyout (Zero 1-9 numbers) */
+  .snap-flyout {
+    position: fixed; top: 36px; right: 10px; z-index: 96;
+    display: none; grid-template-columns: repeat(3, 76px); gap: 10px;
+    padding: 12px; border-radius: 14px;
+    background: var(--surface-solid); border: 1px solid var(--border);
+    box-shadow: 0 18px 46px rgba(0, 0, 0, 0.24);
+  }
+  .snap-flyout.open { display: grid; }
+  .snap-grid {
+    display: grid; gap: 3px; width: 76px; height: 48px;
+  }
+  .snap-zone {
+    border-radius: 5px; background: var(--input-bg); border: 1px solid var(--border);
+    cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, transform 0.12s ease;
+  }
+  .snap-zone:hover {
+    background: var(--blue); border-color: var(--blue); transform: scale(1.03);
+  }
 </style>
 </head>
 <body>
@@ -512,7 +532,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3C7.5 3 4.5 6.2 4.5 10.5c0 4.8 3.2 9.5 7.5 10.5 4.3-1 7.5-5.7 7.5-10.5C19.5 6.2 16.5 3 12 3z"/><path d="M8.5 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M12.9 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M9.5 15.2c1.4.9 3.6.9 5 0"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg>
       </button>
       <button class="tab-add" id="btn-reopen-tab" style="display:none;color:var(--muted)" onclick="send('REOPEN_CLOSED_TAB')" title="Reopen Closed Tab (Ctrl+Shift+T)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
@@ -522,7 +542,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
           <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
-        <button class="win-btn" onclick="cancelSnapHover(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize / Snap Layouts (Hover)">
+        <button class="win-btn" onclick="closeSnapFlyout(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize / Snap Layouts (Hover)">
           <svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
         </button>
         <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">
@@ -567,6 +587,43 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <div class="bookmarks-strip" id="bookmarks-strip"></div>
   </div>
   <div class="engine-menu" id="engine-menu"></div>
+  <div class="snap-flyout" id="snap-flyout" onmouseenter="keepSnapOpen()" onmouseleave="scheduleSnapClose()">
+    <!-- 1. 50 / 50 -->
+    <div class="snap-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="snap-zone" onclick="applySnap(0,0,500,1000)" title="Left Half"></div>
+      <div class="snap-zone" onclick="applySnap(500,0,500,1000)" title="Right Half"></div>
+    </div>
+    <!-- 2. 66 / 34 -->
+    <div class="snap-grid" style="grid-template-columns:2fr 1fr;">
+      <div class="snap-zone" onclick="applySnap(0,0,666,1000)" title="Left Two-Thirds"></div>
+      <div class="snap-zone" onclick="applySnap(666,0,334,1000)" title="Right Third"></div>
+    </div>
+    <!-- 3. 33 / 33 / 34 -->
+    <div class="snap-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="snap-zone" onclick="applySnap(0,0,333,1000)" title="Left Third"></div>
+      <div class="snap-zone" onclick="applySnap(333,0,334,1000)" title="Center Third"></div>
+      <div class="snap-zone" onclick="applySnap(667,0,333,1000)" title="Right Third"></div>
+    </div>
+    <!-- 4. 50 + Top/Bottom Right -->
+    <div class="snap-grid" style="grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;">
+      <div class="snap-zone" style="grid-row:1/3;" onclick="applySnap(0,0,500,1000)" title="Left Half"></div>
+      <div class="snap-zone" onclick="applySnap(500,0,500,500)" title="Top Right"></div>
+      <div class="snap-zone" onclick="applySnap(500,500,500,500)" title="Bottom Right"></div>
+    </div>
+    <!-- 5. 4-Quadrant Grid -->
+    <div class="snap-grid" style="grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;">
+      <div class="snap-zone" onclick="applySnap(0,0,500,500)" title="Top Left"></div>
+      <div class="snap-zone" onclick="applySnap(500,0,500,500)" title="Top Right"></div>
+      <div class="snap-zone" onclick="applySnap(0,500,500,500)" title="Bottom Left"></div>
+      <div class="snap-zone" onclick="applySnap(500,500,500,500)" title="Bottom Right"></div>
+    </div>
+    <!-- 6. 25 / 50 / 25 -->
+    <div class="snap-grid" style="grid-template-columns:1fr 2fr 1fr;">
+      <div class="snap-zone" onclick="applySnap(0,0,250,1000)" title="Left Quarter"></div>
+      <div class="snap-zone" onclick="applySnap(250,0,500,1000)" title="Center Half"></div>
+      <div class="snap-zone" onclick="applySnap(750,0,250,1000)" title="Right Quarter"></div>
+    </div>
+  </div>
   <button class="fs-exit-pill" onclick="send('TOGGLE_FULLSCREEN')">Exit Full Screen (F11)</button>
   <div class="palette-backdrop" id="cmd-palette" onclick="if(event.target===this) closePalette()">
     <div class="palette-box">
@@ -820,17 +877,40 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   let snapHoverTimer = null;
+  let snapCloseTimer = null;
   function startSnapHover() {
-    cancelSnapHover();
+    keepSnapOpen();
+    if (snapHoverTimer) clearTimeout(snapHoverTimer);
     snapHoverTimer = setTimeout(() => {
-      send('OPEN_SNAP_LAYOUTS');
-    }, 380);
+      const el = document.getElementById('snap-flyout');
+      if (el && !el.classList.contains('open')) {
+        el.classList.add('open');
+        send('ENGINE_MENU:1');
+      }
+    }, 260);
+  }
+  function keepSnapOpen() {
+    if (snapCloseTimer) { clearTimeout(snapCloseTimer); snapCloseTimer = null; }
+  }
+  function scheduleSnapClose() {
+    if (snapHoverTimer) { clearTimeout(snapHoverTimer); snapHoverTimer = null; }
+    snapCloseTimer = setTimeout(closeSnapFlyout, 180);
+  }
+  function closeSnapFlyout() {
+    if (snapHoverTimer) { clearTimeout(snapHoverTimer); snapHoverTimer = null; }
+    if (snapCloseTimer) { clearTimeout(snapCloseTimer); snapCloseTimer = null; }
+    const el = document.getElementById('snap-flyout');
+    if (el && el.classList.contains('open')) {
+      el.classList.remove('open');
+      send('ENGINE_MENU:0');
+    }
   }
   function cancelSnapHover() {
-    if (snapHoverTimer) {
-      clearTimeout(snapHoverTimer);
-      snapHoverTimer = null;
-    }
+    scheduleSnapClose();
+  }
+  function applySnap(x, y, w, h) {
+    closeSnapFlyout();
+    send(`SNAP_WIN:${x}|${y}|${w}|${h}`);
   }
 
   function send(msg) {
@@ -1025,7 +1105,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
-        const anonSvg = `<span style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3C7.5 3 4.5 6.2 4.5 10.5c0 4.8 3.2 9.5 7.5 10.5 4.3-1 7.5-5.7 7.5-10.5C19.5 6.2 16.5 3 12 3z"/><path d="M8.5 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M12.9 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M9.5 15.2c1.4.9 3.6.9 5 0"/></svg></span>`;
+        const anonSvg = `<span style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
         const tabLogoHtml = t.incognito
           ? anonSvg
           : ((!hasAudio && (isNewTab || t.pinned))
@@ -1176,7 +1256,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       setTimeout(() => document.body.classList.toggle('dark', wantDark), 120);
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.9.5';
+    document.getElementById('version-badge').textContent = state.version || 'v2.9.6';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
@@ -1580,6 +1660,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'F11') {
+      e.preventDefault();
+      send('TOGGLE_FULLSCREEN');
+      return;
+    }
     if (e.key === 'F11') {
       e.preventDefault();
       send('TOGGLE_FULLSCREEN');

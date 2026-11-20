@@ -1,3 +1,8 @@
+## v2.9.6 (2026-11-20)
+- **Clean Windows 11 Snap Layout Flyout (Zero `1`–`9` Numbers):** Replaced synthetic `Win + Z` with a native-styled 6-grid hover flyout under the Maximize button (`□`) backed by `MonitorFromWindow` + `GetMonitorInfoW` (`rcWork`) + `SetWindowPos`.
+- **Classic Incognito Icon:** Updated the New Private Tab button and all Private Tab pills to the clean flat-top hat + round glasses Incognito SVG icon.
+- **Fixed `F11` Fullscreen Exit (`src/main.rs`):** Implemented native Win32 `GetWindowPlacement` / `SetWindowPlacement` fullscreen toggling with programmatic WebView2 focus transfer (`MoveFocus`) so pressing `F11` reliably toggles fullscreen both ON and OFF from any webpage, toolbar, or Start Page.
+
 ## v2.9.5 (2026-11-20)
 - Restored the **`⚡` Downloads** button back onto the right side of the Address Bar next to **`•••` Controls**.
 - Kept **Playback Speed (`⏩ 1.0×`)** cleanly inside **Controls (`•••`)**.
