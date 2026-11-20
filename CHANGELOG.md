@@ -1,3 +1,43 @@
+## v2.14.2
+
+### Downloads
+* Audio-only downloads from YouTube and other yt-dlp sites: the floating bar lists **Audio, original quality** (best stream, original codec, no re-encode) and **Audio as FLAC** (lossless re-encode of that stream). Requires FFmpeg, installed automatically.
+* Audio categories split: **Audio** (MP3, M4A, AAC, Opus, Ogg) and **Lossless Audio** (FLAC, ALAC, WAV, AIFF, APE). Previously all audio was labelled lossless.
+* Video and audio of the same page no longer count as duplicates of each other.
+
+### UI
+* Switches are blue when on.
+
+## v2.14.1
+
+### Fixes
+* Dark lines along the window's left, right and bottom edges: the resize grip strips are now painted in the theme colour, and the toolbar no longer draws its own rounded corners (Windows 11 rounds the window).
+
+### Bookmarks
+* Bookmarks open in a new tab (bar, Library and command palette). An empty New Tab page is reused instead of left behind.
+
+### Downloads (Safari-style)
+* Status filter as a segmented control with counts: All, Downloading, Downloaded, Paused, Failed.
+* Compact rows: file-type badge, thin progress bar, size, speed and time left; round icon buttons for Pause, Resume/Retry, New link, Show in folder, Remove.
+* Header reduced to Clear plus three icons (find on page, folder, settings).
+
+### UI
+* Popovers resized: Menu 360 px, Downloads 400 px, Library 420 px. No close buttons inside popovers; click outside or press Esc.
+* Settings are single-column rows with iOS-style switches instead of ON/OFF buttons.
+* Grouped-inset card style inside popovers; font stack prefers Segoe UI Variable Text.
+
+## v2.14.0
+
+### Import
+* Bookmarks and history import from Chrome, Edge, Brave, Vivaldi, Opera and Opera GX, per profile (Bookmarks → Import…).
+* History is read with a built-in read-only SQLite reader (no SQLite library linked; binary size unchanged in practice). Inputs are bounds-checked; corrupt files fail cleanly.
+* Imported folders are flattened to `<Browser>/<top folder>` so the folder bar stays short. Duplicate URLs are skipped; re-importing is idempotent.
+* Import runs on a worker thread; the UI stays responsive on large profiles.
+* Passwords are not read from browser profiles (Chromium 127+ app-bound encryption); CSV import comes with the password manager.
+
+### Performance
+* Bookmark library renders at most 300 rows; pick a folder to narrow.
+
 ## v2.13.1
 
 ### UI

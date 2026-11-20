@@ -26,10 +26,30 @@ pub const KIND_HTTP: &str = "";
 pub const KIND_HLS: &str = "HLS";
 pub const KIND_DASH: &str = "DASH";
 pub const KIND_YTDLP: &str = "YTDLP";
+/// yt-dlp, audio only, original codec (Opus or AAC; YouTube has no lossless audio).
+pub const KIND_YTDLP_AUDIO: &str = "YTDLP_AUDIO";
+/// yt-dlp, audio only, re-encoded to FLAC.
+pub const KIND_YTDLP_FLAC: &str = "YTDLP_FLAC";
 pub const KIND_NATIVE: &str = "NATIVE";
 
 /// URL prefix that forces yt-dlp resolution of a web page (used by the floating bar for blob:/MSE players).
 pub const YTDLP_PREFIX: &str = "ytdlp:";
+pub const YTDLP_AUDIO_PREFIX: &str = "ytdlp-audio:";
+pub const YTDLP_FLAC_PREFIX: &str = "ytdlp-flac:";
+
+fn is_ytdlp_kind(kind: &str) -> bool {
+    kind == KIND_YTDLP || kind == KIND_YTDLP_AUDIO || kind == KIND_YTDLP_FLAC
+}
+
+/// Split a routing prefix off a queued URL: (kind forced by the prefix, bare URL).
+pub fn split_route_prefix(raw: &str) -> (Option<&'static str>, &str) {
+    for (prefix, kind) in [(YTDLP_AUDIO_PREFIX, KIND_YTDLP_AUDIO), (YTDLP_FLAC_PREFIX, KIND_YTDLP_FLAC), (YTDLP_PREFIX, KIND_YTDLP)] {
+        if let Some(rest) = raw.strip_prefix(prefix) {
+            return (Some(kind), rest);
+        }
+    }
+    (None, raw)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DownloadTask {
@@ -156,7 +176,8 @@ pub fn detect_download_category(file_name: &str) -> String {
         .to_ascii_lowercase();
     match ext.as_str() {
         "mp4" | "mkv" | "webm" | "mov" | "avi" | "ts" | "m3u8" | "m4s" | "mpd" => "Videos".to_string(),
-        "flac" | "alac" | "m4a" | "wav" | "mp3" | "ogg" | "opus" => "Lossless Audio".to_string(),
+        "flac" | "alac" | "wav" | "aiff" | "aif" | "ape" | "wv" => "Lossless Audio".to_string(),
+        "mp3" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "wma" => "Audio".to_string(),
         "zip" | "rar" | "7z" | "tar" | "gz" | "iso" => "Archives".to_string(),
         "exe" | "msi" => "Programs".to_string(),
         _ => "Documents".to_string(),
@@ -861,15 +882,17 @@ impl NativeDownloadEngine {
         delay_secs: Option<u64>,
     ) -> EnqueueOutcome {
         let raw = url.trim();
-        let force_ytdlp = raw.starts_with(YTDLP_PREFIX);
-        let trimmed_u = raw.strip_prefix(YTDLP_PREFIX).unwrap_or(raw).trim();
+        let (forced_kind, trimmed_u) = split_route_prefix(raw);
+        let trimmed_u = trimmed_u.trim();
         let normalized_url = if trimmed_u.starts_with("http://") || trimmed_u.starts_with("https://") {
             trimmed_u.to_string()
         } else {
             format!("https://{}", trimmed_u)
         };
 
-        let kind = if force_ytdlp || is_ytdlp_url(&normalized_url) {
+        let kind = if let Some(k) = forced_kind {
+            k
+        } else if is_ytdlp_url(&normalized_url) {
             KIND_YTDLP
         } else if is_hls_url(&normalized_url) {
             KIND_HLS
@@ -879,6 +902,10 @@ impl NativeDownloadEngine {
 
         let mut raw_name = if kind == KIND_YTDLP {
             "Video (resolving title).mp4".to_string()
+        } else if kind == KIND_YTDLP_AUDIO {
+            "Audio (resolving title).m4a".to_string()
+        } else if kind == KIND_YTDLP_FLAC {
+            "Audio (resolving title).flac".to_string()
         } else {
             normalized_url
                 .split(['?', '#'])
@@ -900,7 +927,9 @@ impl NativeDownloadEngine {
         if dup_mode == "CHECK" {
             if let Ok(list) = self.tasks.lock() {
                 if let Some(existing) = list.iter().find(|t| {
-                    let same = t.url == normalized_url || (kind != KIND_YTDLP && t.kind != KIND_YTDLP && t.file_name.eq_ignore_ascii_case(&raw_name));
+                    // Video and audio of the same page are different downloads.
+                    let same = (t.url == normalized_url && t.kind == kind)
+                        || (!is_ytdlp_kind(kind) && !is_ytdlp_kind(&t.kind) && t.file_name.eq_ignore_ascii_case(&raw_name));
                     same && (t.status == "DOWNLOADING"
                         || t.status == "QUEUED"
                         || t.status == "MUXING"
@@ -911,7 +940,7 @@ impl NativeDownloadEngine {
                     return EnqueueOutcome::DuplicateDetected(existing.clone());
                 }
             }
-            if kind != KIND_YTDLP && dest_candidate.exists() {
+            if !is_ytdlp_kind(kind) && dest_candidate.exists() {
                 return EnqueueOutcome::DuplicateDetected(DownloadTask {
                     id: 0,
                     url: normalized_url,
@@ -946,7 +975,7 @@ impl NativeDownloadEngine {
             for id in stale {
                 self.delete(id);
             }
-        } else if dup_mode == "RENAME" && kind != KIND_YTDLP {
+        } else if dup_mode == "RENAME" && !is_ytdlp_kind(kind) {
             let stem = Path::new(&raw_name).file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
             let ext = Path::new(&raw_name).extension().and_then(|s| s.to_str()).unwrap_or("bin").to_string();
             raw_name = format!("{}_{}.{}", stem, now_secs() % 100_000, ext);
@@ -1074,7 +1103,7 @@ impl NativeDownloadEngine {
                 tokio::time::sleep(Duration::from_millis(600)).await;
             }
             let res = match task.kind.as_str() {
-                KIND_YTDLP => run_ytdlp(&ctx, &task).await,
+                KIND_YTDLP | KIND_YTDLP_AUDIO | KIND_YTDLP_FLAC => run_ytdlp(&ctx, &task).await,
                 KIND_DASH => run_dash(&ctx, &task).await,
                 KIND_HLS => run_hls(&ctx, &task).await,
                 _ => run_http(&ctx, &task).await,
@@ -2193,8 +2222,16 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
         .map_err(|e| format!("yt-dlp unavailable: {}", e))?;
     // FFmpeg lets yt-dlp merge the best video and audio; without it we fall back to a single progressive file.
     let ffmpeg = ensure_ffmpeg(&ctx.client, &ctx.ffmpeg_status).await.ok();
+    let audio_only = task.kind == KIND_YTDLP_AUDIO || task.kind == KIND_YTDLP_FLAC;
+    if audio_only && ffmpeg.is_none() {
+        return Err("FFmpeg is required to save audio; install it from Downloads settings".to_string());
+    }
 
-    let target_dir = BrowserStorage::downloads_root_dir().join("Videos");
+    let target_dir = BrowserStorage::downloads_root_dir().join(match task.kind.as_str() {
+        KIND_YTDLP_FLAC => "Lossless Audio",
+        KIND_YTDLP_AUDIO => "Audio",
+        _ => "Videos",
+    });
     fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
     let temp_dir = NativeDownloadEngine::parts_dir().join(format!("{}_ytdlp", task.id));
     fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
@@ -2225,15 +2262,22 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
     if limit > 0 {
         cmd.args(["--limit-rate", &limit.to_string()]);
     }
-    match &ffmpeg {
-        Some(ff) if ff.is_absolute() => {
-            cmd.arg("--ffmpeg-location").arg(ff);
+    if let Some(ff) = ffmpeg.as_ref().filter(|f| f.is_absolute()) {
+        cmd.arg("--ffmpeg-location").arg(ff);
+    }
+    match (task.kind.as_str(), &ffmpeg) {
+        // Best audio stream, kept in its original codec (no generational loss).
+        (KIND_YTDLP_AUDIO, _) => {
+            cmd.args(["-f", "ba/b", "-x", "--audio-format", "best"]);
+        }
+        // Best audio stream re-encoded losslessly to FLAC. Bit-exact to the decoded source; adds no detail.
+        (KIND_YTDLP_FLAC, _) => {
+            cmd.args(["-f", "ba/b", "-x", "--audio-format", "flac"]);
+        }
+        (_, Some(_)) => {
             cmd.args(["-f", "bv*+ba/b", "-S", "res,ext:mp4:m4a", "--merge-output-format", "mp4"]);
         }
-        Some(_) => {
-            cmd.args(["-f", "bv*+ba/b", "-S", "res,ext:mp4:m4a", "--merge-output-format", "mp4"]);
-        }
-        None => {
+        (_, None) => {
             cmd.args(["-f", "b"]);
         }
     }
@@ -2272,6 +2316,12 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
                     t.total_bytes = total.map(|v| v as i64).unwrap_or(-1);
                     t.speed_bps = speed;
                     t.segment_map = if phase == 0 { "[yt-dlp]".to_string() } else { format!("[yt-dlp stream {}]", phase + 1) };
+                });
+            } else if line.starts_with("[ExtractAudio]") {
+                update_task(&tasks, task_id, |t| {
+                    t.status = "MUXING".to_string();
+                    t.segment_map = "[Converting audio]".to_string();
+                    t.speed_bps = 0;
                 });
             } else if line.starts_with("[Merger]") || line.starts_with("[VideoRemuxer]") {
                 update_task(&tasks, task_id, |t| {

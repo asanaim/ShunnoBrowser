@@ -3,6 +3,7 @@
 mod blocker;
 mod downloader;
 mod https_guard;
+mod importer;
 mod updater;
 mod sanitizer;
 mod state;
@@ -39,6 +40,7 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     ContentIpc(usize, String),
     DownloadIntercepted(String),
@@ -143,6 +145,8 @@ struct ChromeSnapshot {
     update_label: String,
     is_fullscreen: bool,
     is_maximized: bool,
+    import_sources: Vec<importer::ImportSource>,
+    import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
     find_total: usize,
@@ -620,7 +624,7 @@ fn dispatch_download_with_httponly_cookies(
             if let Ok(core) = controller.CoreWebView2() {
                 if let Ok(core2) = core.cast::<ICoreWebView2_2>() {
                     if let Ok(cookie_mgr) = core2.CookieManager() {
-                        let cookie_uri = url.strip_prefix(downloader::YTDLP_PREFIX).unwrap_or(&url);
+                        let cookie_uri = downloader::split_route_prefix(&url).1;
                         let wide_uri: Vec<u16> = cookie_uri.encode_utf16().chain(Some(0)).collect();
                         let url_cb = url.clone();
                         let ref_cb = referer.clone();
@@ -1633,6 +1637,28 @@ fn create_tab_webview(
 /// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
 #[cfg(windows)]
+/// COLORREF (0x00BBGGRR) used to paint the window's own client area: the resize grip strips
+/// around the web views. Unpainted, they show as black lines.
+#[cfg(windows)]
+static FRAME_COLOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x00FF_FFFF);
+
+#[cfg(windows)]
+fn set_frame_theme(window: &Window, dark: bool) {
+    use std::sync::atomic::Ordering;
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::InvalidateRect;
+    // Matches --surface in ui_chrome.rs: #FFFFFF light, #1C1C1E dark.
+    let c: u32 = if dark { 0x001E_1C1C } else { 0x00FF_FFFF };
+    if FRAME_COLOR.swap(c, Ordering::Relaxed) != c {
+        unsafe {
+            let _ = InvalidateRect(HWND(window.hwnd() as isize), None, true);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn set_frame_theme(_window: &Window, _dark: bool) {}
+
 fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use tao::platform::windows::WindowExtWindows;
@@ -1724,6 +1750,19 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             lparam: LPARAM,
         ) -> LRESULT {
             match msg {
+                // Paint the grip strips in the theme colour (the window class has no background brush).
+                0x0014 /* WM_ERASEBKGND */ => return LRESULT(1),
+                0x000F /* WM_PAINT */ => {
+                    use windows::Win32::Graphics::Gdi::{BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT};
+                    use windows::Win32::Foundation::COLORREF;
+                    let mut ps = PAINTSTRUCT::default();
+                    let hdc = BeginPaint(hwnd, &mut ps);
+                    let brush = CreateSolidBrush(COLORREF(FRAME_COLOR.load(Ordering::Relaxed)));
+                    FillRect(hdc, &ps.rcPaint, brush);
+                    let _ = DeleteObject(brush);
+                    let _ = EndPaint(hwnd, &ps);
+                    return LRESULT(0);
+                }
                 WM_NCCALCSIZE => {
                     if wparam.0 != 0 {
                         // Client area = whole window (custom frame). When maximized, Windows places a
@@ -1990,6 +2029,7 @@ fn main() -> wry::Result<()> {
         .build()?;
 
     install_native_win32_window_features(&window, &chrome_wv);
+    set_frame_theme(&window, global_settings.full_dark_mode);
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -2171,6 +2211,8 @@ fn main() -> wry::Result<()> {
             update_label: update_kind_label().1,
             is_fullscreen,
             is_maximized: window.is_maximized(),
+            import_sources: importer::ui_snapshot().0,
+            import_status: importer::ui_snapshot().1,
             has_closed_tabs,
             find_current,
             find_total,
@@ -2709,6 +2751,28 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
+            Event::UserEvent(AppEvent::ImportDone(result)) => {
+                match result {
+                    Ok((browser, b, h)) => {
+                        let nb = importer::merge_bookmarks(&mut bookmarks, b);
+                        let nh = importer::merge_history(&mut history, h, state::HISTORY_CAP);
+                        if nb > 0 {
+                            BrowserStorage::save_bookmarks(&bookmarks);
+                        }
+                        if nh > 0 {
+                            BrowserStorage::save_history(&history);
+                        }
+                        importer::set_status(format!(
+                            "Imported {nb} bookmark{} and {nh} history entr{} from {browser}.",
+                            if nb == 1 { "" } else { "s" },
+                            if nh == 1 { "y" } else { "ies" }
+                        ));
+                    }
+                    Err(e) => importer::set_status(e),
+                }
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
             Event::UserEvent(AppEvent::AdBlocked) => {
                 blocked_count += 1;
             }
@@ -2895,12 +2959,19 @@ fn main() -> wry::Result<()> {
                         let dl_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let threads = val.get("threads").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
                         // "page": the player streams via blob:/MSE, so let yt-dlp resolve the page URL.
-                        let via_page = val.get("via").and_then(|v| v.as_str()) == Some("page");
+                        // "page-audio" / "page-flac": the same, extracting audio only.
+                        let via = val.get("via").and_then(|v| v.as_str()).unwrap_or("");
+                        let route_prefix = match via {
+                            "page" => Some(downloader::YTDLP_PREFIX),
+                            "page-audio" => Some(downloader::YTDLP_AUDIO_PREFIX),
+                            "page-flac" => Some(downloader::YTDLP_FLAC_PREFIX),
+                            _ => None,
+                        };
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if dl_url.starts_with("http") && page_may_target(page_url.as_deref(), &dl_url) {
                             let wv_opt = tabs.iter().find(|t| t.id == tab_id).map(|t| &t.webview);
-                            let routed = if via_page { format!("{}{}", downloader::YTDLP_PREFIX, dl_url) } else { dl_url };
+                            let routed = match route_prefix { Some(p) => format!("{p}{dl_url}"), None => dl_url };
                             dispatch_download_with_httponly_cookies(
                                 wv_opt,
                                 routed,
@@ -3248,6 +3319,19 @@ fn main() -> wry::Result<()> {
                         }
                     }
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                } else if let Some(raw) = cmd.strip_prefix("NAV_NEW_TAB:") {
+                    // Bookmarks open in a new tab; an empty New Tab page is reused instead of left behind.
+                    drawer_open = false;
+                    engine_menu_open = false;
+                    palette_open = false;
+                    let reuse = tabs.get(active_tab_idx).map(|t| t.url == "shunno://newtab").unwrap_or(false);
+                    if reuse {
+                        let _ = proxy.send_event(AppEvent::ChromeIpc(format!("NAV:{raw}")));
+                    } else {
+                        // Opener id 0 belongs to no tab, so the new tab is never private.
+                        let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, raw.to_string()));
+                    }
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
                     let start = "shunno://newtab".to_string();
@@ -3442,6 +3526,7 @@ fn main() -> wry::Result<()> {
                     match gkey {
                         "full_dark" => {
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
+                            set_frame_theme(&window, global_settings.full_dark_mode);
                             let js = format!(
                                 "if (window.__shunnoSetDarkMode) window.__shunnoSetDarkMode({});",
                                 global_settings.full_dark_mode
@@ -3691,6 +3776,23 @@ fn main() -> wry::Result<()> {
                     let _ = BrowserStorage::export_portable_txt_bookmarks(&bookmarks);
                 } else if cmd == "IMPORT_TXT_BOOKMARKS" {
                     let _ = BrowserStorage::import_portable_txt_bookmarks(&mut bookmarks);
+                } else if cmd == "IMPORT_SCAN" {
+                    importer::scan();
+                } else if let Some(arg) = cmd.strip_prefix("IMPORT_BROWSER:") {
+                    // IMPORT_BROWSER:<source index>:<b?><h?>
+                    let mut it = arg.splitn(2, ':');
+                    let idx = it.next().and_then(|x| x.parse::<usize>().ok());
+                    let what = it.next().unwrap_or("");
+                    let (wb, wh) = (what.contains('b'), what.contains('h'));
+                    if let (Some(src), true) = (idx.and_then(importer::source_at), wb || wh) {
+                        importer::set_status(format!("Importing from {}\u{2026}", src.browser));
+                        let px = proxy.clone();
+                        std::thread::spawn(move || {
+                            let r = importer::load(&src, wb, wh, state::HISTORY_CAP)
+                                .map(|(b, h)| (src.browser.clone(), b, h));
+                            let _ = px.send_event(AppEvent::ImportDone(r));
+                        });
+                    }
                 } else if cmd == "CLEAR_HISTORY" {
                     history.clear();
                     BrowserStorage::save_history(&history);
