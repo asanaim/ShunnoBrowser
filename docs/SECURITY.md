@@ -1,6 +1,11 @@
-# Shunno Browser — Security & Privacy Architecture
+# Shunno Browser: Security & Privacy Architecture
 
-1. **Cryptographic Per-Launch IPC Token:** On startup, `src/main.rs` generates a 128-bit random hex token injected into `assets/js/content_guard.js`. Every `window.ipc.postMessage` payload from web content must carry this prefix or is dropped immediately, preventing untrusted webpages from spoofing browser commands.
-2. **User-Script Sandboxing & Explicit Approval:** User-scripts live in `%LOCALAPPDATA%\ShunnoBrowser\scripts\` (isolated from `Downloads`), `sanitize_download_filename` blocks `.js` writes from the downloader, and scripts only execute after their SHA-256 digest is explicitly approved in `global_settings.json`.
-3. **Path Traversal & Windows Device Name Hardening:** `sanitize_download_filename` strips directory separators, collapses `..`, removes control/illegal characters, and prefixes reserved Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1–LPT9`).
-4. **Memory-Safe TLS (`rustls-tls`):** Configured in `Cargo.toml` without C/OpenSSL dependencies.
+1. **Two IPC trust zones.** The browser UI (`src/ui_chrome.rs`) runs in its own WebView with its own IPC handler and may issue privileged commands. Web content gets `assets/js/content_guard.js`, whose IPC handler accepts only a small reporting/download command set.
+2. **Per-launch IPC token.** `src/main.rs` generates a 128-bit token injected into the content script. Every content message must carry it (constant-time compare); there is no token-free prefix. The script binds `chrome.webview.postMessage` at document start so later page code cannot intercept the token. The token stops other frames and scripts from forging messages; it is not a boundary against the page's own driver, so every content command is treated as untrusted input.
+3. **Page-originated network requests are restricted.** `PROBE_STREAM`, `FLOAT_DL` and grabber probes may not target loopback, private, link-local, CGNAT or metadata hosts (`sanitizer::is_public_http_url`) unless the page itself is on that host, because the engine bypasses CORS and probe results are returned to the page. `OFFLINE_HTML` is accepted only after the user requests Save Page for that tab.
+4. **UI rendering.** Page-controlled strings are HTML-escaped; values inside inline handlers are JS-escaped then HTML-escaped (`encodeAttr`).
+5. **User-script sandboxing & explicit approval.** User-scripts live in `%LOCALAPPDATA%\ShunnoBrowser\scripts\`, `sanitize_download_filename` blocks `.js` writes from the downloader, and scripts only execute after their SHA-256 digest is approved in `global_settings.json`.
+6. **Path traversal & Windows device names.** `sanitize_download_filename` strips separators, collapses `..`, removes control/illegal characters, caps length and prefixes reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `LPT9`).
+7. **Verified helper tools.** ffmpeg and yt-dlp are downloaded over HTTPS and accepted only if their SHA-256 matches the publisher's checksum file. They run without a console window and are killed as a process tree on pause.
+8. **TLS.** `reqwest` uses native Windows TLS (SChannel via `native-tls`).
+9. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.

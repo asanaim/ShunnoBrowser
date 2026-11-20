@@ -10,9 +10,23 @@
   const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
   const DESKTOP_UA_ON = __SHUNNO_DESKTOP_UA__;
 
+  // Capture the native channel at document start, before any page script runs.
+  // window.ipc forwards to window.chrome.webview.postMessage, which a page could replace later
+  // to read the token; holding our own bound reference keeps the token out of page code.
+  const NATIVE_POST = (function () {
+    try {
+      const wv = window.chrome && window.chrome.webview;
+      if (wv && typeof wv.postMessage === 'function') return wv.postMessage.bind(wv);
+    } catch (e) {}
+    return null;
+  })();
+
   function postSecure(msg) {
-    if (window.ipc) {
-      window.ipc.postMessage(IPC_TOKEN + "|" + msg);
+    const payload = IPC_TOKEN + "|" + msg;
+    if (NATIVE_POST) {
+      NATIVE_POST(payload);
+    } else if (window.ipc) {
+      window.ipc.postMessage(payload);
     }
   }
 
@@ -826,6 +840,15 @@
           m.querySelectorAll('source').forEach(s => {
             if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
           });
+          if (isYouTube && /\/(watch|shorts\/|live\/|embed\/)/.test(location.pathname)) {
+            // Direct googlevideo URLs are signature/PO-token bound and usually 403 outside the player.
+            // The page URL is routed natively to yt-dlp, which resolves and merges the best streams.
+            items.push({
+              url: location.href,
+              ext: '.MP4',
+              name: 'Best quality (yt-dlp): ' + (document.title || 'YouTube Video').replace(' - YouTube', '')
+            });
+          }
           if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {
             window.__shunnoYtStreams.forEach(ys => {
               if (!items.some(x => x.url === ys.url)) items.push(ys);
@@ -834,13 +857,6 @@
           capturedStreams.forEach(s => {
             if (!items.some(x => x.url === s.url)) items.push(s);
           });
-          if (items.length === 0 && isYouTube) {
-            items.push({
-              url: location.href,
-              ext: '.MP4',
-              name: (document.title || 'YouTube Video').replace(' - YouTube', '')
-            });
-          }
           if (items.length > 0) {
             const isAud = m.tagName === 'AUDIO';
             showPillAt(rect.right - 265, Math.max(8, rect.top + 12), isAud ? 'Download audio' : 'Download video', items, !isAud);

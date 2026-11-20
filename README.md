@@ -1,9 +1,9 @@
 # Shunno Browser (শূন্য ব্রাউজার) — v1.6.0
 
-**Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with `rustls-tls`).
+**Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with native Windows TLS / SChannel).
 
 ## Direct Download
-- **[Download ShunnoBrowser.exe](https://github.com/asanaim/ShunnoBrowser-Windows/releases/latest/download/ShunnoBrowser.exe)**
+- **[Download ShunnoBrowser.exe](https://github.com/asanaim/ShunnoBrowser/releases/latest/download/ShunnoBrowser.exe)**
 
 ---
 
@@ -14,7 +14,9 @@
 - **Duplicate Detection & Auto-Cleanup:** Detects existing active or completed files before creating duplicate tasks (offering one-click **Open** or **Download Again**), plus **🧹 Clean** and **Auto-Clean Done** switches.
 - **Trusted-Types Safe Floating Media Pill + Picture-in-Picture (`📺 PiP`):** Hovering over YouTube videos, HTML5 `<video>`/`<audio>` players, or downloadable links floats an isolated Shadow-DOM **`0↓ Download`** pill with live HTTP `HEAD`/`Range` file-size probing (`MB`/`GB`), stream quality selector, and a one-click **`📺 PiP`** button.
 - **Drag-and-Drop Floating Basket (`0↓ Drop Link`):** Drag any link or multi-line URL list onto the corner basket to start 16-thread downloads immediately.
-- **HLS (`.m3u8`) Grabber & Optional FFmpeg DASH Muxer:** Assembles `.m3u8` playlists into `.mp4` and muxes split DASH video + audio streams losslessly (`-c copy`) when `ffmpeg.exe` is placed in `Downloads\ShunnoBrowser\bin\` or on `PATH`.
+- **HLS (`.m3u8`) & DASH:** HLS is downloaded through FFmpeg (encrypted, byte-ranged and fMP4 streams included) with a plain segment fallback; split DASH video + audio are muxed losslessly (`-c copy`). FFmpeg is auto-installed on first use (SHA-256 verified) into `%LOCALAPPDATA%\ShunnoBrowser\bin\`, or picked up from `PATH`.
+- **YouTube via yt-dlp:** YouTube watch/shorts/live pages and `.mpd` manifests are routed to yt-dlp (auto-installed, SHA-256 verified), which merges the best video and audio into MP4 with live progress, pause and resume.
+- **Real Pause/Resume:** multi-connection and single-connection transfers resume from `.offset` sidecars; browser-native (WebView2) downloads are paused/resumed through `ICoreWebView2DownloadOperation`.
 
 ### 2. Tab Audio Mute Indicators, Ad-Free Browsing & Speed
 - **Tab Audio Mute Indicators (`🔊` / `🔇`):** Detects playing audio via native `ICoreWebView2_8` and HTML5 media events, letting you mute/unmute individual tabs with one click.

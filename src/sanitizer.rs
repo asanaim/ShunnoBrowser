@@ -117,3 +117,49 @@ pub fn extract_host(url_str: &str) -> String {
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default()
 }
+
+/// True only for http(s) URLs whose host is a public name or public IP literal.
+/// Used to stop web pages from making the native download engine reach
+/// loopback, LAN, link-local or cloud-metadata targets (the engine bypasses CORS,
+/// and probe results are reported back to the page).
+pub fn is_public_http_url(url_str: &str) -> bool {
+    let Ok(parsed) = Url::parse(url_str) else {
+        return false;
+    };
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            !(d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || d.ends_with(".internal")
+                || d.ends_with(".lan")
+                || d.ends_with(".home.arpa")
+                || !d.contains('.'))
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_documentation()
+                || ip.octets()[0] == 0
+                || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xC0) == 64)) // CGNAT 100.64/10
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            let seg0 = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00 // unique local fc00::/7
+                || (seg0 & 0xffc0) == 0xfe80 // link local fe80::/10
+                || ip.to_ipv4_mapped().map(|v4| v4.is_private() || v4.is_loopback() || v4.is_link_local()).unwrap_or(false))
+        }
+        None => false,
+    }
+}

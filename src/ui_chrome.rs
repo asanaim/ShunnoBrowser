@@ -778,7 +778,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title">⚡ Downloads</span>
             <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-              <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="Auto-download & extract ffmpeg.exe">🎬 FFmpeg</button>
+              <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="Download ffmpeg.exe (SHA-256 verified); needed for HLS, DASH and best-quality YouTube">🎬 FFmpeg</button>
+              <button class="pill-btn pill-soft" id="btn-ytdlp-setup" onclick="send('INSTALL_YTDLP')" title="Download yt-dlp.exe (SHA-256 verified); used for YouTube and DASH manifests">▶ yt-dlp</button>
               <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Site Grabber: Scan all links & media on active page">🕸️ Grab</button>
               <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Clean completed, failed & missing files">🧹 Clean</button>
               <button class="pill-btn pill-soft" onclick="send('EXPORT_DL_CSV')" title="Export download history with SHA-256 checksums to CSV">📄 CSV</button>
@@ -1279,6 +1280,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         ffBtn.textContent = '⬇ Install FFmpeg';
       }
     }
+    const ytBtn = document.getElementById('btn-ytdlp-setup');
+    if (ytBtn) {
+      const ys = state.ytdlp_status || '';
+      if (ys === 'Ready' || ys === 'Installed!') {
+        ytBtn.textContent = '▶ yt-dlp: Ready';
+        ytBtn.className = 'pill-btn pill-green';
+      } else {
+        ytBtn.textContent = ys ? ('▶ ' + ys) : '▶ yt-dlp';
+        ytBtn.className = 'pill-btn pill-soft';
+      }
+    }
     const maxConcEl = document.getElementById('max-conc-select');
     if (maxConcEl) maxConcEl.value = String(state.global.max_concurrent_downloads || 3);
     const onCompEl = document.getElementById('on-complete-select');
@@ -1582,7 +1594,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <div class="card-header" style="margin-bottom:4px;">
                 <div style="overflow:hidden;">
                   <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(d.file_name)}</div>
-                  <div class="meta" style="color:#0A84FF;">${escapeHtml(d.category)} • ${d.supports_ranges ? d.threads + 'T' : '1T'} • ${d.status}</div>
+                  <div class="meta" style="color:#0A84FF;">${escapeHtml(d.category)} • ${d.supports_ranges ? d.threads + 'T' : '1T'} • ${escapeHtml(d.status)}</div>
                 </div>
                 <div class="meta" style="font-weight:600;flex-shrink:0;">${sizeTxt}</div>
               </div>
@@ -1655,8 +1667,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   }
+  // For values placed inside a single-quoted JS string inside an HTML attribute:
+  // JS-escape first (backslash, quotes, control chars), then HTML-escape for the attribute.
   function encodeAttr(str) {
-    return String(str).replace(/'/g, "\\'");
+    const js = JSON.stringify(String(str)).slice(1, -1).replace(/'/g, "\\'");
+    return escapeHtml(js);
   }
 
   document.addEventListener('keydown', (e) => {
