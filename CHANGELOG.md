@@ -1,3 +1,8 @@
+## v2.1.2 (2026-11-20)
+- Fixed `assets/app.ico` 4x4 supersampling RGB double-division bug so the Windows taskbar, Alt+Tab, and `.exe` icon render at full sapphire/white/coral brightness instead of a dark circle.
+- Fixed `windows = "0.56.0"` Win32 type signatures (`HINSTANCE(hinst.0)` in `LoadImageW`, `HWND(isize)`, `HWND(0)`, `parent.0 != 0`) in `src/main.rs`.
+- Added JSON snapshot deduplication in `push_chrome_state` to skip redundant UI IPC evaluations.
+
 ## v2.1.1 (2026-11-20)
 - Fixed `HWND` / `HICON` raw pointer conversions (`*mut c_void` vs `isize`) in `windows = "0.56.0"` inside `src/main.rs`.
 
