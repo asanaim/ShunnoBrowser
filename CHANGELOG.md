@@ -1,3 +1,7 @@
+## v2.1.3 (2026-11-20)
+- Fixed `E0061` argument mismatch on `push_chrome_state(...)` inside `TabTitleChanged` (`src/main.rs`).
+- Added `move` to `push_chrome_state` closure so `last_chrome_json` moves cleanly into `event_loop.run` (`E0373`).
+
 ## v2.1.2 (2026-11-20)
 - Fixed `assets/app.ico` 4x4 supersampling RGB double-division bug so the Windows taskbar, Alt+Tab, and `.exe` icon render at full sapphire/white/coral brightness instead of a dark circle.
 - Fixed `windows = "0.56.0"` Win32 type signatures (`HINSTANCE(hinst.0)` in `LoadImageW`, `HWND(isize)`, `HWND(0)`, `parent.0 != 0`) in `src/main.rs`.

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const APP_VERSION: &str = "v2.1.2";
+pub const APP_VERSION: &str = "v2.1.3";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {

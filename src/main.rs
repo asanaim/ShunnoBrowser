@@ -771,7 +771,7 @@ fn main() -> wry::Result<()> {
     });
 
     let last_chrome_json = Arc::new(std::sync::Mutex::new(String::new()));
-    let push_chrome_state = |window: &Window,
+    let push_chrome_state = move |window: &Window,
                              chrome_wv: &WebView,
                              tabs: &[BrowserTab],
                              active_idx: usize,
@@ -944,6 +944,7 @@ fn main() -> wry::Result<()> {
                         tab.title = new_title;
                     }
                     push_chrome_state(
+                        &window,
                         &chrome_wv,
                         &tabs,
                         active_tab_idx,
@@ -954,6 +955,10 @@ fn main() -> wry::Result<()> {
                         &bookmarks,
                         &history,
                         &duplicate_alert,
+                        !closed_tabs.is_empty(),
+                        find_current,
+                        find_total,
+                        site_data_cleared,
                         &engine,
                     );
                 }

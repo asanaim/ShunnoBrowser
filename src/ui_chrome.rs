@@ -963,7 +963,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.1.2';
+    document.getElementById('version-badge').textContent = state.version || 'v2.1.3';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
