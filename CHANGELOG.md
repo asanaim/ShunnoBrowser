@@ -1,3 +1,8 @@
+## v2.7.1 (2026-11-20)
+- Fixed `E0433` (`cannot find type PCWSTR`) in `dispatch_download_with_httponly_cookies` and `clear_httponly_cookies_for_url` (`src/main.rs`).
+- Restored `SetCurrentProcessExplicitAppUserModelID` call inside `set_explicit_app_user_model_id()`, eliminating the `unused_unsafe` warning and ensuring proper Windows taskbar icon binding.
+- Upgraded `.github/workflows/main.yml` to Node.js 24-native `actions/checkout@v6` and `actions/upload-artifact@v7`.
+
 ## v2.7.0 (2026-11-20)
 - Fixed `src/downloader.rs:297` CSV export string escaping compile error.
 - Fixed Windows taskbar & `.exe` icon: moved `SetCurrentProcessExplicitAppUserModelID` before window creation, restored `WindowBuilder::with_window_icon(load_embedded_window_icon())` with full-brightness `assets/app.ico`, applied `CreateIconFromResourceEx` directly to `GCLP_HICON`/`WM_SETICON`, and enforced `winres` compilation in `build.rs`.

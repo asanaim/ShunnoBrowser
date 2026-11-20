@@ -155,7 +155,9 @@ fn build_content_init_script(
 
 #[cfg(windows)]
 fn set_explicit_app_user_model_id() {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop"));
     }
 }
 
@@ -344,7 +346,7 @@ fn dispatch_download_with_httponly_cookies(
 ) {
     use webview2_com::GetCookiesCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-    use windows::core::Interface;
+    use windows::core::{Interface, PCWSTR};
     use wry::WebViewExtWindows;
 
     let dup_mode_owned = dup_mode.to_string();
@@ -451,7 +453,7 @@ fn dispatch_download_with_httponly_cookies(
 fn clear_httponly_cookies_for_url(webview: &WebView, url: &str) {
     use webview2_com::GetCookiesCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-    use windows::core::Interface;
+    use windows::core::{Interface, PCWSTR};
     use wry::WebViewExtWindows;
 
     if !url.starts_with("http") {
@@ -929,9 +931,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use tao::platform::windows::WindowExtWindows;
     use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
     use windows::core::Interface;
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
-    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, CreateIconFromResourceEx, GetClientRect, GetWindowLongW, GetWindowRect, SendMessageW,
         SetClassLongPtrW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON,
@@ -999,9 +1000,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 }
             }
         }
-        if let Ok(hinst) = GetModuleHandleW(None) {
-            let _ = HINSTANCE(hinst.0);
-        }
+
 
         // 3. Make chrome_wv WebView2 background transparent (A=0) so overlays float cleanly over the live webpage
         let chrome_ctrl = chrome_wv.controller();
