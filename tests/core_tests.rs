@@ -40,6 +40,11 @@ fn test_search_engine_query_formatting() {
         sanitize_url("rust webview2", &cfg),
         "https://duckduckgo.com/?q=rust+webview2"
     );
+    // Right-click search always searches, even for domain-like or multi-line selections.
+    assert_eq!(sanitizer::search_url("example.com", &cfg), "https://duckduckgo.com/?q=example.com");
+    assert_eq!(sanitizer::selection_query("  রবীন্দ্রনাথ\n  ঠাকুর \t"), "রবীন্দ্রনাথ ঠাকুর");
+    assert_eq!(sanitizer::search_url(&sanitizer::selection_query("C++ & Rust?"), &cfg), "https://duckduckgo.com/?q=C%2B%2B+%26+Rust%3F");
+    assert_eq!(sanitizer::selection_query(&"a".repeat(500)).len(), 300);
 }
 
 #[test]

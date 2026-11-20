@@ -68,6 +68,12 @@ struct PeekView {
     rect: [f64; 4],
 }
 
+/// Active search engine name, for the right-click menu label (updated with every chrome state push).
+fn search_engine_label() -> &'static std::sync::Mutex<String> {
+    static L: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(String::from("the web")))
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -75,6 +81,8 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// Right-click → Search <engine> for the selected text (source tab id, raw selection).
+    SearchSelection(usize, String),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     ContentIpc(usize, String),
@@ -1473,6 +1481,36 @@ fn attach_native_webview2_hooks(
                 let mut insert_pos = 0u32;
                 let mut added_link_uri = String::new();
 
+                // Selected text: "Search <engine> for “…”" at the top of the menu.
+                let mut has_sel = windows::Win32::Foundation::BOOL::default();
+                let _ = target.HasSelection(&mut has_sel);
+                if has_sel.as_bool() {
+                    let mut sel_ptr = windows::core::PWSTR::null();
+                    if target.SelectionText(&mut sel_ptr).is_ok() {
+                        let query = sanitizer::selection_query(&webview2_com::take_pwstr(sel_ptr));
+                        if !query.is_empty() {
+                            let engine = search_engine_label().lock().map(|g| g.clone()).unwrap_or_default();
+                            let shown: String = if query.chars().count() > 28 {
+                                format!("{}\u{2026}", query.chars().take(27).collect::<String>().trim_end())
+                            } else {
+                                query.clone()
+                            };
+                            let label = windows::core::HSTRING::from(format!("Search {engine} for \u{201C}{shown}\u{201D}"));
+                            if let Ok(search_item) = env9.CreateContextMenuItem(&label, None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND) {
+                                let mut s_token = Default::default();
+                                let s_proxy = ctx_proxy.clone();
+                                let s_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = s_proxy.send_event(AppEvent::SearchSelection(tab_id, query.clone()));
+                                    Ok(())
+                                }));
+                                let _ = search_item.add_CustomItemSelected(&s_handler, &mut s_token);
+                                let _ = items.InsertValueAtIndex(insert_pos, &search_item);
+                                insert_pos += 1;
+                            }
+                        }
+                    }
+                }
+
                 let mut has_link = windows::Win32::Foundation::BOOL::default();
                 let _ = target.HasLinkUri(&mut has_link);
                 if has_link.as_bool() {
@@ -2297,7 +2335,14 @@ fn main() -> wry::Result<()> {
             update_label: update_kind_label().1,
             is_fullscreen,
             is_maximized: window.is_maximized(),
-            import_sources: importer::ui_snapshot().0,
+            import_sources: {
+                if let (Ok(mut l), Some(e)) = (search_engine_label().lock(), global_settings.search_engines.get(global_settings.active_search_engine)) {
+                    if *l != e.name {
+                        *l = e.name.clone();
+                    }
+                }
+                importer::ui_snapshot().0
+            },
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
                     url: k.webview.url().unwrap_or_default(),
@@ -2898,6 +2943,12 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
+            Event::UserEvent(AppEvent::SearchSelection(source_tab, query)) => {
+                // Opens next to the source like a link; a private tab's search stays private.
+                let url = sanitizer::search_url(&query, &global_settings);
+                let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(source_tab, url));
+            }
+
             Event::UserEvent(AppEvent::AdBlocked) => {
                 blocked_count += 1;
             }
@@ -2989,7 +3040,8 @@ fn main() -> wry::Result<()> {
                     .map(|t| t.incognito)
                     .or_else(|| PEEK.with(|p| p.borrow().as_ref().filter(|k| k.id == opener_id).map(|k| k.incognito)))
                     .unwrap_or(false);
-                let lower = popup_url.to_ascii_lowercase();
+                // Match ad networks by host only, so a search query or path mentioning them is not blocked.
+                let lower = extract_host(&popup_url).to_ascii_lowercase();
                 let is_ad_popup = lower.contains("popads")
                     || lower.contains("popcash")
                     || lower.contains("doubleclick")
