@@ -781,13 +781,30 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <!-- Panel D: Bookmarks & History -->
       <div id="panel-bookmarks" style="display:none">
+        <div class="card" id="import-card" style="display:none">
+          <div class="card-header">
+            <span class="card-title">Import from another browser</span>
+            <button class="pill-btn pill-red" onclick="document.getElementById('import-card').style.display='none'">✕</button>
+          </div>
+          <div style="display:flex;gap:14px;margin:2px 0 8px;font-size:12px;">
+            <label><input type="checkbox" id="imp-b" checked> Bookmarks</label>
+            <label><input type="checkbox" id="imp-h" checked> History</label>
+          </div>
+          <div id="import-sources"></div>
+          <div class="list-row">
+            <div class="meta">Shunno backup file (shunno_bookmarks.txt in Downloads)</div>
+            <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
+          </div>
+          <div class="meta" id="import-status" style="margin-top:6px;"></div>
+          <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; CSV import arrives with the password manager.</div>
+        </div>
         <div class="card">
           <div class="card-header">
             <span class="card-title">⭐ Bookmarks</span>
             <div style="display:flex;gap:5px;">
               <button class="pill-btn pill-blue" onclick="promptSaveBookmarkWithFolder()">+ Save</button>
-              <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')">Export</button>
-              <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
+              <button class="pill-btn pill-soft" onclick="openImport()">Import…</button>
+              <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')" title="Save shunno_bookmarks.txt to your downloads folder">Export</button>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
           </div>
@@ -1347,6 +1364,32 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
   }
 
+  function openImport() {
+    document.getElementById('import-card').style.display = '';
+    send('IMPORT_SCAN');
+  }
+
+  function renderImport(state) {
+    const list = document.getElementById('import-sources');
+    if (!list) return;
+    const src = state.import_sources || [];
+    list.innerHTML = src.map((s, i) => `
+      <div class="list-row">
+        <div style="overflow:hidden;">
+          <div style="font-size:12.5px;font-weight:600;">${escapeHtml(s.browser)}</div>
+          <div class="meta">${escapeHtml(s.profile)}${s.has_bookmarks ? '' : ' · no bookmarks'}${s.has_history ? '' : ' · no history'}</div>
+        </div>
+        <button class="pill-btn pill-blue" onclick="runImport(${i})">Import</button>
+      </div>`).join('');
+    document.getElementById('import-status').textContent = state.import_status || '';
+  }
+
+  function runImport(i) {
+    const what = (document.getElementById('imp-b').checked ? 'b' : '') + (document.getElementById('imp-h').checked ? 'h' : '');
+    if (!what) return;
+    send('IMPORT_BROWSER:' + i + ':' + what);
+  }
+
   window.renderChromeState = function(state) {
     window.__shunnoLastState = state;
     window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
@@ -1619,6 +1662,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
+    renderImport(state);
+
     const folderBar = document.getElementById('bookmark-folders-bar');
     folderBar.innerHTML = allFolders.map(f => `
       <button class="folder-pill ${activeBookmarkFolder === f ? 'active' : ''}"
@@ -1629,9 +1674,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       .map((b, i) => ({ b, i }))
       .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
 
+    const BM_RENDER_CAP = 300;
     document.getElementById('bookmarks-list').innerHTML = filteredBms.length === 0
       ? '<div class="meta">No bookmarks in this folder.</div>'
-      : filteredBms.map(({ b, i }) => `
+      : (filteredBms.length > BM_RENDER_CAP
+          ? `<div class="meta" style="margin-bottom:6px;">Showing ${BM_RENDER_CAP} of ${filteredBms.length}. Pick a folder to narrow the list.</div>`
+          : '') + filteredBms.slice(0, BM_RENDER_CAP).map(({ b, i }) => `
           <div class="list-row">
             <div style="overflow:hidden;">
               <div style="font-size:12.5px;font-weight:600;">${escapeHtml(b.title)} <span class="pill-btn pill-soft" style="padding:1px 6px;font-size:10px;">📁 ${escapeHtml(b.folder || 'General')}</span></div>

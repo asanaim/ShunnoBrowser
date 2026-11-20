@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.13.1";
+/// Stored history entries (newest first).
+pub const HISTORY_CAP: usize = 250;
+
+pub const APP_VERSION: &str = "v2.14.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -409,7 +412,7 @@ impl BrowserStorage {
 
     pub fn save_history(history: &[HistoryEntry]) {
         let path = Self::app_data_dir().join("history.json");
-        let capped: Vec<HistoryEntry> = history.iter().take(250).cloned().collect();
+        let capped: Vec<HistoryEntry> = history.iter().take(HISTORY_CAP).cloned().collect();
         if let Ok(json) = serde_json::to_string_pretty(&capped) {
             let _ = fs::write(path, json);
         }

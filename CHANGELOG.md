@@ -1,3 +1,15 @@
+## v2.14.0
+
+### Import
+* Bookmarks and history import from Chrome, Edge, Brave, Vivaldi, Opera and Opera GX, per profile (Bookmarks → Import…).
+* History is read with a built-in read-only SQLite reader (no SQLite library linked; binary size unchanged in practice). Inputs are bounds-checked; corrupt files fail cleanly.
+* Imported folders are flattened to `<Browser>/<top folder>` so the folder bar stays short. Duplicate URLs are skipped; re-importing is idempotent.
+* Import runs on a worker thread; the UI stays responsive on large profiles.
+* Passwords are not read from browser profiles (Chromium 127+ app-bound encryption); CSV import comes with the password manager.
+
+### Performance
+* Bookmark library renders at most 300 rows; pick a folder to narrow.
+
 ## v2.13.1
 
 ### UI
