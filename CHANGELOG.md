@@ -1,3 +1,21 @@
+## v2.14.1
+
+### Fixes
+* Dark lines along the window's left, right and bottom edges: the resize grip strips are now painted in the theme colour, and the toolbar no longer draws its own rounded corners (Windows 11 rounds the window).
+
+### Bookmarks
+* Bookmarks open in a new tab (bar, Library and command palette). An empty New Tab page is reused instead of left behind.
+
+### Downloads (Safari-style)
+* Status filter as a segmented control with counts: All, Downloading, Downloaded, Paused, Failed.
+* Compact rows: file-type badge, thin progress bar, size, speed and time left; round icon buttons for Pause, Resume/Retry, New link, Show in folder, Remove.
+* Header reduced to Clear plus three icons (find on page, folder, settings).
+
+### UI
+* Popovers resized: Menu 360 px, Downloads 400 px, Library 420 px. No close buttons inside popovers; click outside or press Esc.
+* Settings are single-column rows with iOS-style switches instead of ON/OFF buttons.
+* Grouped-inset card style inside popovers; font stack prefers Segoe UI Variable Text.
+
 ## v2.14.0
 
 ### Import

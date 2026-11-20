@@ -45,7 +45,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   * {
     box-sizing: border-box; margin: 0; padding: 0;
-    font-family: system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    font-family: -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
     user-select: none;
   }
   html, body {
@@ -55,7 +56,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     display: flex;
     flex-direction: column;
     height: 100vh;
-    border-radius: 12px;
     transition: color 0.36s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .chrome-shell, .floating-sheet, .card, .home-canvas, .home-search-box, .shortcut-tile, .engine-menu, .nav-icon-btn, .tab, .bookmarks-strip {
@@ -81,8 +81,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .chrome-shell {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    border-top-left-radius: 12px;
-    border-top-right-radius: 12px;
     z-index: 20;
     transition: background 0.3s var(--ease-fluid);
   }
@@ -129,6 +127,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab.drag-over-left { box-shadow: -3px 0 0 0 var(--blue); }
   .tab.drag-over-right { box-shadow: 3px 0 0 0 var(--blue); }
   .folder-pills { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+  #dl-category-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #dl-category-bar::-webkit-scrollbar { display: none; }
+  #dl-category-bar .folder-pill { flex-shrink: 0; }
   .folder-pill {
     border: none; border-radius: 8px; padding: 3px 9px; font-size: 11px; font-weight: 600;
     background: var(--input-bg); color: var(--text); cursor: pointer;
@@ -341,7 +342,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   .floating-sheet {
     position: fixed; top: 84px; left: 12px;
-    width: 430px; max-width: calc(100vw - 24px); max-height: calc(100vh - 100px);
+    width: 360px; max-width: calc(100vw - 24px); max-height: calc(100vh - 100px);
     display: flex; flex-direction: column;
     background: rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(22px) saturate(170%);
@@ -353,7 +354,79 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .floating-sheet.closing { animation: popoverOut var(--dur-fast) var(--ease-in) both; pointer-events: none; }
   body.dark .floating-sheet { background: rgba(30, 30, 34, 0.92); }
-  .floating-sheet.wide { width: 510px; }
+  .floating-sheet[data-panel="downloads"] { width: 400px; }
+  /* Settings rows: one column, hairline separators, iOS switches. */
+  .sheet-scroll .grid-toggles { grid-template-columns: 1fr; gap: 0; }
+  .sheet-scroll .toggle-tile { background: transparent; border-radius: 0; padding: 6px 2px; font-weight: 500; font-size: 12.5px; }
+  .sheet-scroll .toggle-tile + .toggle-tile { border-top: 1px solid var(--border); }
+  .switch {
+    position: relative; width: 34px; height: 20px; flex-shrink: 0; border: none; border-radius: 10px; padding: 0; cursor: pointer;
+    background: rgba(120, 120, 128, 0.32); transition: background 0.22s var(--ease-fluid);
+  }
+  .switch > i {
+    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.22s var(--ease-fluid);
+  }
+  .switch.on { background: var(--green); }
+  .switch.on > i { transform: translateX(14px); }
+  .floating-sheet[data-panel="bookmarks"] { width: 420px; }
+  .sheet-scroll .card {
+    background: rgba(118, 118, 128, 0.07); border: none; border-radius: 12px; padding: 11px 12px; margin-bottom: 8px;
+  }
+  body.dark .sheet-scroll .card { background: rgba(255, 255, 255, 0.05); }
+  .sheet-scroll .card-title { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  /* Popovers dismiss by clicking outside or Esc, like macOS; no close buttons inside. */
+  .sheet-scroll button[onclick="closeDrawer()"] { display: none; }
+
+  /* Segmented control */
+  .segmented {
+    display: flex; padding: 2px; gap: 2px; border-radius: 9px; background: var(--input-bg); margin: 0 0 8px;
+  }
+  .segmented button {
+    flex: 1 1 auto; min-width: 0; border: none; background: transparent; color: var(--text);
+    font-size: 11.5px; font-weight: 500; padding: 4px 6px; border-radius: 7px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: background 0.2s var(--ease-fluid), box-shadow 0.2s var(--ease-fluid);
+  }
+  .segmented button .n { color: var(--muted); font-weight: 500; margin-left: 3px; font-variant-numeric: tabular-nums; }
+  .segmented button.on { background: var(--surface-solid); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.04); font-weight: 600; }
+  body.dark .segmented button.on { background: #636366; }
+
+  /* Download rows (Safari downloads list) */
+  .dl-group { border-radius: 12px; background: rgba(118,118,128,0.07); overflow: hidden; }
+  body.dark .dl-group { background: rgba(255,255,255,0.05); }
+  .dl-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; position: relative; }
+  .dl-row + .dl-row::before { content: ""; position: absolute; top: 0; left: 52px; right: 0; border-top: 1px solid var(--border); }
+  .dl-icon {
+    width: 32px; height: 38px; flex-shrink: 0; border-radius: 5px; position: relative;
+    background: linear-gradient(180deg, var(--surface-solid), var(--input-bg)); border: 1px solid var(--border);
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px;
+  }
+  .dl-icon b { font-size: 7.5px; font-weight: 800; letter-spacing: 0.02em; color: #fff; padding: 1px 3px; border-radius: 3px; background: var(--muted); max-width: 30px; overflow: hidden; }
+  .dl-icon.c-video b { background: #AF52DE; } .dl-icon.c-audio b { background: #FF2D55; }
+  .dl-icon.c-archive b { background: #A2845E; } .dl-icon.c-program b { background: #5856D6; }
+  .dl-icon.c-doc b { background: #0A84FF; }
+  .dl-main { flex: 1; min-width: 0; }
+  .dl-name { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dl-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dl-sub.err { color: var(--red); }
+  .dl-bar { height: 4px; border-radius: 2px; background: var(--input-bg); overflow: hidden; margin: 4px 0 3px; }
+  .dl-bar > i { display: block; height: 100%; background: var(--blue); border-radius: 2px; transition: width 0.4s var(--ease-fluid); }
+  .dl-bar.paused > i { background: var(--muted); }
+  .dl-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn {
+    width: 24px; height: 24px; border-radius: 50%; border: none; cursor: pointer; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--input-bg); color: var(--muted);
+    transition: background 0.16s var(--ease-fluid), color 0.16s var(--ease-fluid), transform 0.12s var(--ease-fluid);
+  }
+  .icon-btn:hover { color: var(--text); background: rgba(118,118,128,0.2); }
+  .icon-btn:active { transform: scale(0.9); }
+  .icon-btn.primary { color: var(--blue); }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; margin: 0 2px 8px; gap: 6px; }
+  .sheet-head h3 { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+  .text-btn { border: none; background: none; color: var(--blue); font-size: 12px; font-weight: 500; cursor: pointer; padding: 3px 4px; border-radius: 6px; }
+  .text-btn:hover { background: var(--blue-soft); }
   .sheet-scroll { overflow-y: auto; padding: 14px; border-radius: 16px; min-height: 0; flex: 1 1 auto; }
   .sheet-caret {
     position: absolute; top: -7px; left: var(--caret-left, 380px);
@@ -823,17 +896,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <!-- Panel E: Downloads Downloads -->
       <div id="panel-downloads" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">Downloads <span class="meta" id="dl-live-speed"></span></span>
-            <div style="display:flex;gap:5px;align-items:center;">
-              <button class="pill-btn pill-soft" onclick="send('CLEAR_FINISHED_DL')" title="Remove finished and failed items from this list. Files stay on disk.">Clear</button>
-              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Find every downloadable file and video on this page">Find on page</button>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open downloads folder">📂</button>
-              <button class="pill-btn pill-soft" id="btn-dl-settings" onclick="toggleDlSettings()" title="Download settings">⚙</button>
-              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
-            </div>
+        <div class="sheet-head">
+          <h3>Downloads <span class="meta" id="dl-live-speed" style="font-weight:500;letter-spacing:0;"></span></h3>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button class="text-btn" onclick="send('CLEAR_FINISHED_DL')" title="Remove finished and failed items from this list. Files stay on disk.">Clear</button>
+            <button class="icon-btn" onclick="triggerGrabPage()" title="Find downloadable files and videos on this page"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14"/></svg></button>
+            <button class="icon-btn" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open downloads folder"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M1.8 4.2a1.2 1.2 0 0 1 1.2-1.2h3l1.5 1.6h5.5a1.2 1.2 0 0 1 1.2 1.2v6.2a1.2 1.2 0 0 1-1.2 1.2H3a1.2 1.2 0 0 1-1.2-1.2z"/></svg></button>
+            <button class="icon-btn" id="btn-dl-settings" onclick="toggleDlSettings()" title="Download settings"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7"/><circle cx="10.5" cy="4.5" r="1.6"/><circle cx="5.5" cy="11.5" r="1.6"/></svg></button>
           </div>
+        </div>
+        <div class="card">
           <div class="input-row" style="margin-bottom:0;">
             <input class="text-box" id="dl-url-input" placeholder="Paste a link to download" onkeydown="if (event.key === 'Enter') startManualDownload();" />
             <button class="pill-btn pill-blue" onclick="startManualDownload()">Download</button>
@@ -893,6 +965,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         </div>
 
+        <div class="segmented" id="dl-status-bar"></div>
         <div class="folder-pills" id="dl-category-bar"></div>
         <div id="duplicate-banner" class="card" style="display:none;border-color:var(--orange);"></div>
         <div id="downloads-list"></div>
@@ -910,6 +983,36 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   let draggedTabIdx = null;
   let activeBookmarkFolder = 'All';
   let activeDlCategory = 'All';
+  let activeDlStatus = 'all';
+  const DL_STATUS_GROUPS = [
+    ['all', 'All', () => true],
+    ['active', 'Downloading', d => d.status === 'DOWNLOADING' || d.status === 'QUEUED' || d.status === 'MUXING'],
+    ['done', 'Downloaded', d => d.status === 'COMPLETED'],
+    ['paused', 'Paused', d => d.status === 'PAUSED'],
+    ['failed', 'Failed', d => d.status === 'FAILED'],
+  ];
+  function setDlStatus(k) { activeDlStatus = k; send('REFRESH_UI'); }
+  function fmtEta(sec) {
+    if (!isFinite(sec) || sec <= 0) return '';
+    if (sec < 60) return Math.ceil(sec) + ' s left';
+    if (sec < 3600) return Math.ceil(sec / 60) + ' min left';
+    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    return h + ' h ' + m + ' min left';
+  }
+  function dlIconClass(cat) {
+    const c = String(cat || '').toLowerCase();
+    if (c.includes('video')) return 'c-video';
+    if (c.includes('audio')) return 'c-audio';
+    if (c.includes('archive')) return 'c-archive';
+    if (c.includes('program')) return 'c-program';
+    if (c.includes('doc')) return 'c-doc';
+    return '';
+  }
+  const SVG_PAUSE = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="2" y="1.5" width="2" height="7" rx="0.6" fill="currentColor"/><rect x="6" y="1.5" width="2" height="7" rx="0.6" fill="currentColor"/></svg>';
+  const SVG_RESUME = '<svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6a4 4 0 1 1-1.2-2.85"/><path d="M9.2 1.4v2.2H7"/></svg>';
+  const SVG_REVEAL = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14"/></svg>';
+  const SVG_LINK = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M7.3 4.3l1-1a2.8 2.8 0 0 1 4 4l-1 1"/><path d="M8.7 11.7l-1 1a2.8 2.8 0 0 1-4-4l1-1"/></svg>';
+  const SVG_X = '<svg width="9" height="9" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
   const speedHistory = new Array(36).fill(0);
   let peakSpeedBps = 0;
 
@@ -1022,11 +1125,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     else if (!activeDrawer) drawerAnchor = defaultAnchorFor(name);
     activeDrawer = name;
 
-    if (name === 'downloads' || name === 'bookmarks') {
-      sheet.classList.add('wide');
-    } else {
-      sheet.classList.remove('wide');
-    }
+    sheet.dataset.panel = name;
 
     ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
@@ -1311,7 +1410,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         items.push({
           kind: 'Bookmark',
           title: b.title + ' — ' + b.url,
-          run: () => send('NAV:' + b.url),
+          run: () => send('NAV_NEW_TAB:' + b.url),
         });
       });
       (st.history || []).slice(0, 20).forEach(h => {
@@ -1524,7 +1623,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               onclick="activeBookmarkFolder = (activeBookmarkFolder === '${encodeAttr(f)}' ? 'All' : '${encodeAttr(f)}'); send('REFRESH_UI');"
               title="Filter folder: ${escapeHtml(f)}">📁 ${escapeHtml(f)}</button>
     `).join('') + visibleBarBms.slice(0, 12).map(({ b, i }) => `
-      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')"
+      <button class="bm-chip" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
               oncontextmenu="event.preventDefault(); const nt=prompt('Rename bookmark (leave empty to remove):','${encodeAttr(b.title)}'); if(nt===null) return; if(nt.trim()===''){send('DEL_BOOKMARK:${i}');}else{send('RENAME_BOOKMARK:${i}|'+nt.trim());}"
               title="[${escapeHtml(b.folder || 'General')}] ${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
     `).join('');
@@ -1608,7 +1707,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
         <span>${label}</span>
-        <button class="pill-btn ${val ? 'pill-blue' : 'pill-soft'}" onclick="send('TOGGLE_GLOBAL:${key}')">${val ? 'ON' : 'OFF'}</button>
+        <button class="switch ${val ? 'on' : ''}" role="switch" aria-checked="${val ? 'true' : 'false'}" aria-label="${label}" onclick="this.classList.toggle('on'); send('TOGGLE_GLOBAL:${key}')"><i></i></button>
       </div>
     `).join('');
 
@@ -1629,7 +1728,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('site-toggles-grid').innerHTML = siteItems.map(([key, label, val]) => `
       <div class="toggle-tile">
         <span>${label}</span>
-        <button class="pill-btn ${val ? 'pill-blue' : 'pill-soft'}" onclick="send('TOGGLE_SITE:${key}')">${val ? 'ON' : 'OFF'}</button>
+        <button class="switch ${val ? 'on' : ''}" role="switch" aria-checked="${val ? 'true' : 'false'}" aria-label="${label}" onclick="this.classList.toggle('on'); send('TOGGLE_SITE:${key}')"><i></i></button>
       </div>
     `).join('');
 
@@ -1686,7 +1785,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(b.url)}</div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0;">
-              <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(b.url)}'); closeDrawer();">Open</button>
+              <button class="pill-btn pill-soft" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}'); closeDrawer();" title="Open in new tab">Open</button>
               <button class="pill-btn pill-soft" onclick="const nf=prompt('Move to folder:','${encodeAttr(b.folder || 'General')}'); if(nf && nf.trim()) send('SET_BOOKMARK_FOLDER:${i}|'+nf.trim());" title="Move Folder">📁</button>
               <button class="pill-btn pill-soft" onclick="const nt=prompt('Rename bookmark:','${encodeAttr(b.title)}'); if(nt && nt.trim()) send('RENAME_BOOKMARK:${i}|'+nt.trim());" title="Rename">✎</button>
               <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
@@ -1743,6 +1842,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
+    const statusBar = document.getElementById('dl-status-bar');
+    statusBar.style.display = state.downloads.length ? '' : 'none';
+    statusBar.innerHTML = DL_STATUS_GROUPS.map(([k, label, f]) => {
+      const n = state.downloads.filter(f).length;
+      return `<button class="${activeDlStatus === k ? 'on' : ''}" onclick="setDlStatus('${k}')">${label}${k !== 'all' && n ? `<span class="n">${n}</span>` : ''}</button>`;
+    }).join('');
+
     const dlCats = ['All', 'Videos', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
     const catBar = document.getElementById('dl-category-bar');
     catBar.style.display = state.downloads.length >= 6 ? '' : 'none';
@@ -1752,50 +1858,56 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               onclick="activeDlCategory = '${c}'; send('REFRESH_UI');">${c}</button>
     `).join('');
 
-    const visibleDownloads = state.downloads.filter(d => activeDlCategory === 'All' || d.category === activeDlCategory);
-    document.getElementById('downloads-list').innerHTML = visibleDownloads.length === 0
-      ? '<div class="card"><div class="meta">No downloads yet. Hover over any video/file or click 🕸️ Grab to scan all downloadable files on the active tab.</div></div>'
-      : visibleDownloads.map(d => {
-          const pct = d.status === 'COMPLETED' ? 100 : (d.total_bytes > 0 ? Math.min(100, (d.downloaded_bytes * 100 / d.total_bytes)) : 0);
-          const sizeTxt = d.total_bytes > 0 ? `${fmtBytes(d.downloaded_bytes)} / ${fmtBytes(d.total_bytes)} (${pct.toFixed(1)}%)` : fmtBytes(d.downloaded_bytes);
-          const infoTxt = d.status === 'DOWNLOADING'
-            ? `⚡ ${fmtBytes(d.speed_bps)}/s ${d.segment_map || ''}`
-            : d.status === 'MUXING'
-              ? '🎬 Muxing via FFmpeg...'
-              : d.status === 'COMPLETED'
-                ? `<span title="SHA-256 ${escapeHtml(d.sha256 || '')}">✓ Saved</span>`
-                : d.status === 'FAILED'
-                  ? `⚠ ${escapeHtml(d.error_message || 'Error')}`
-                  : `Paused at ${fmtBytes(d.downloaded_bytes)}`;
-
-          return `
-            <div class="card">
-              <div class="card-header" style="margin-bottom:4px;">
-                <div style="overflow:hidden;">
-                  <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(d.file_name)}</div>
-                  <div class="meta" style="color:#0A84FF;">${escapeHtml(d.category)}${d.status === 'DOWNLOADING' && d.supports_ranges ? ' · ' + d.threads + ' connections' : ''} · ${escapeHtml(({DOWNLOADING:'Downloading',PAUSED:'Paused',FAILED:'Failed',COMPLETED:'Done',QUEUED:'Waiting',MUXING:'Merging'})[d.status] || d.status)}</div>
-                </div>
-                <div class="meta" style="font-weight:600;flex-shrink:0;">${sizeTxt}</div>
-              </div>
-              <div class="prog-track"><div class="prog-fill ${d.status === 'COMPLETED' ? 'done' : ''}" style="width:${pct}%"></div></div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:5px;">
-                <div class="meta">${infoTxt}</div>
-                <div style="display:flex;gap:5px;">
-                  ${d.status === 'DOWNLOADING'
-                    ? `<button class="pill-btn pill-orange" onclick="send('DL_PAUSE:${d.id}')">Pause</button>`
-                    : d.status !== 'COMPLETED' && d.status !== 'MUXING'
-                      ? `<button class="pill-btn pill-soft" onclick="send('DL_RESUME:${d.id}')">Resume</button>
-                         <button class="pill-btn pill-soft" onclick="const u=prompt('Paste fresh mirror URL:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);">Fix</button>`
-                      : d.status === 'COMPLETED'
-                        ? `<button class="pill-btn pill-green" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')">Show</button>`
-                        : ''
-                  }
-                  <button class="pill-btn pill-red" onclick="send('DL_DEL:${d.id}')">✕</button>
-                </div>
-              </div>
+    const statusFilter = (DL_STATUS_GROUPS.find(g => g[0] === activeDlStatus) || DL_STATUS_GROUPS[0])[2];
+    const visibleDownloads = state.downloads.filter(d => statusFilter(d) && (activeDlCategory === 'All' || d.category === activeDlCategory));
+    const listEl = document.getElementById('downloads-list');
+    if (visibleDownloads.length === 0) {
+      listEl.innerHTML = state.downloads.length === 0
+        ? '<div class="meta" style="text-align:center;padding:22px 8px;">No downloads.<br>Hover a video or file to download it, or search this page for downloadable files.</div>'
+        : '<div class="meta" style="text-align:center;padding:18px 8px;">Nothing here.</div>';
+    } else {
+      listEl.innerHTML = '<div class="dl-group">' + visibleDownloads.map(d => {
+        const known = d.total_bytes > 0;
+        const pct = d.status === 'COMPLETED' ? 100 : (known ? Math.min(100, d.downloaded_bytes * 100 / d.total_bytes) : 0);
+        const ofTotal = known ? `${fmtBytes(d.downloaded_bytes)} of ${fmtBytes(d.total_bytes)}` : fmtBytes(d.downloaded_bytes);
+        const ext = ((String(d.file_name).match(/\.([A-Za-z0-9]{1,5})$/) || [])[1] || 'FILE').toUpperCase();
+        let sub = '', subCls = '', bar = '';
+        switch (d.status) {
+          case 'DOWNLOADING': {
+            const eta = known && d.speed_bps > 0 ? fmtEta((d.total_bytes - d.downloaded_bytes) / d.speed_bps) : '';
+            sub = `${ofTotal} \u2014 ${fmtBytes(d.speed_bps)}/s${eta ? ' \u00b7 ' + eta : ''}`;
+            bar = `<div class="dl-bar"><i style="width:${known ? pct : 8}%"></i></div>`;
+            break;
+          }
+          case 'QUEUED': sub = 'Waiting\u2026'; bar = '<div class="dl-bar paused"><i style="width:0%"></i></div>'; break;
+          case 'MUXING': sub = 'Merging audio and video\u2026'; bar = '<div class="dl-bar"><i style="width:100%"></i></div>'; break;
+          case 'PAUSED': sub = `Paused \u2014 ${ofTotal}`; bar = `<div class="dl-bar paused"><i style="width:${pct}%"></i></div>`; break;
+          case 'FAILED': sub = d.error_message || 'Failed'; subCls = 'err'; break;
+          case 'COMPLETED': sub = `${fmtBytes(d.total_bytes > 0 ? d.total_bytes : d.downloaded_bytes)} \u00b7 ${(d.url.match(/^https?:\/\/([^/]+)/) || [])[1] || ''}`; break;
+          default: sub = d.status;
+        }
+        const tip = `${d.category}${d.supports_ranges ? ' \u00b7 ' + d.threads + ' connections' : ''}${d.segment_map ? ' ' + d.segment_map : ''}${d.sha256 ? '\nSHA-256 ' + d.sha256 : ''}`;
+        const actions =
+          d.status === 'DOWNLOADING' || d.status === 'QUEUED'
+            ? `<button class="icon-btn" onclick="send('DL_PAUSE:${d.id}')" title="Pause">${SVG_PAUSE}</button>`
+          : d.status === 'PAUSED' || d.status === 'FAILED'
+            ? `<button class="icon-btn primary" onclick="send('DL_RESUME:${d.id}')" title="${d.status === 'FAILED' ? 'Retry' : 'Resume'}">${SVG_RESUME}</button>
+               <button class="icon-btn" onclick="const u=prompt('Paste a fresh link for this file:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);" title="Use a new link">${SVG_LINK}</button>`
+          : d.status === 'COMPLETED'
+            ? `<button class="icon-btn primary" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')" title="Show in folder">${SVG_REVEAL}</button>`
+            : '';
+        return `
+          <div class="dl-row" title="${escapeHtml(tip)}">
+            <div class="dl-icon ${dlIconClass(d.category)}"><b>${escapeHtml(ext)}</b></div>
+            <div class="dl-main">
+              <div class="dl-name">${escapeHtml(d.file_name)}</div>
+              ${bar}
+              <div class="dl-sub ${subCls}">${escapeHtml(sub)}</div>
             </div>
-          `;
-        }).join('');
+            <div class="dl-actions">${actions}<button class="icon-btn" onclick="send('DL_DEL:${d.id}')" title="Remove from list">${SVG_X}</button></div>
+          </div>`;
+      }).join('') + '</div>';
+    }
   };
 
   function getEngineLogoSvg(name) {

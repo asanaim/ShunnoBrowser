@@ -1637,6 +1637,28 @@ fn create_tab_webview(
 /// while the active tab WebView occupies the left viewport `(0, CHROME_BAR_HEIGHT, w - panel_w, content_h)`.
 /// Because WebView2 HWNDs never overlap, every button in the menu/downloads panel is 100% clickable AND the live webpage remains visible!
 #[cfg(windows)]
+/// COLORREF (0x00BBGGRR) used to paint the window's own client area: the resize grip strips
+/// around the web views. Unpainted, they show as black lines.
+#[cfg(windows)]
+static FRAME_COLOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x00FF_FFFF);
+
+#[cfg(windows)]
+fn set_frame_theme(window: &Window, dark: bool) {
+    use std::sync::atomic::Ordering;
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::InvalidateRect;
+    // Matches --surface in ui_chrome.rs: #FFFFFF light, #1C1C1E dark.
+    let c: u32 = if dark { 0x001E_1C1C } else { 0x00FF_FFFF };
+    if FRAME_COLOR.swap(c, Ordering::Relaxed) != c {
+        unsafe {
+            let _ = InvalidateRect(HWND(window.hwnd() as isize), None, true);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn set_frame_theme(_window: &Window, _dark: bool) {}
+
 fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use tao::platform::windows::WindowExtWindows;
@@ -1728,6 +1750,19 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             lparam: LPARAM,
         ) -> LRESULT {
             match msg {
+                // Paint the grip strips in the theme colour (the window class has no background brush).
+                0x0014 /* WM_ERASEBKGND */ => return LRESULT(1),
+                0x000F /* WM_PAINT */ => {
+                    use windows::Win32::Graphics::Gdi::{BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT};
+                    use windows::Win32::Foundation::COLORREF;
+                    let mut ps = PAINTSTRUCT::default();
+                    let hdc = BeginPaint(hwnd, &mut ps);
+                    let brush = CreateSolidBrush(COLORREF(FRAME_COLOR.load(Ordering::Relaxed)));
+                    FillRect(hdc, &ps.rcPaint, brush);
+                    let _ = DeleteObject(brush);
+                    let _ = EndPaint(hwnd, &ps);
+                    return LRESULT(0);
+                }
                 WM_NCCALCSIZE => {
                     if wparam.0 != 0 {
                         // Client area = whole window (custom frame). When maximized, Windows places a
@@ -1994,6 +2029,7 @@ fn main() -> wry::Result<()> {
         .build()?;
 
     install_native_win32_window_features(&window, &chrome_wv);
+    set_frame_theme(&window, global_settings.full_dark_mode);
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -3276,6 +3312,19 @@ fn main() -> wry::Result<()> {
                         }
                     }
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                } else if let Some(raw) = cmd.strip_prefix("NAV_NEW_TAB:") {
+                    // Bookmarks open in a new tab; an empty New Tab page is reused instead of left behind.
+                    drawer_open = false;
+                    engine_menu_open = false;
+                    palette_open = false;
+                    let reuse = tabs.get(active_tab_idx).map(|t| t.url == "shunno://newtab").unwrap_or(false);
+                    if reuse {
+                        let _ = proxy.send_event(AppEvent::ChromeIpc(format!("NAV:{raw}")));
+                    } else {
+                        // Opener id 0 belongs to no tab, so the new tab is never private.
+                        let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, raw.to_string()));
+                    }
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
                     let start = "shunno://newtab".to_string();
@@ -3470,6 +3519,7 @@ fn main() -> wry::Result<()> {
                     match gkey {
                         "full_dark" => {
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
+                            set_frame_theme(&window, global_settings.full_dark_mode);
                             let js = format!(
                                 "if (window.__shunnoSetDarkMode) window.__shunnoSetDarkMode({});",
                                 global_settings.full_dark_mode
