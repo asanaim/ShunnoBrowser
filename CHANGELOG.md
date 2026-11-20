@@ -1,3 +1,10 @@
+## v2.12.0 (2026-11-20)
+- **Fingerprint Shield (per site, on by default):** canvas exports and pixel reads, WebGL readPixels, audio samples and `hardwareConcurrency` get small changes that are stable per site within a session and different across sites and launches (Brave-style farbling). WebGL GPU vendor/renderer strings are generalised when a page asks for them. Trackers can no longer match one canvas/audio fingerprint across sites.
+- Changes are invisible in practice: at most 48 pixels flip one colour bit; audio varies by under one part in ten million.
+- Wrappers are Proxies over native functions, so `Function.prototype.toString` still reports native code.
+- Known limits: Web Workers and some sandboxed blank frames are not covered (Brave does this in the engine).
+- New test fails the build if any content-script placeholder is left unreplaced (a missing one silently disables every in-page feature).
+
 ## v2.11.0 (2026-11-20)
 - **Real ad and tracker blocking:** Brave's `adblock` engine with EasyList + EasyPrivacy (135,151 rules on 2026-11-20) replaces the 16 hard-coded URL patterns. Every request is checked, including those from iframes and workers (`ICoreWebView2_22` source kinds), about 3 µs per request.
 - **Element hiding:** page-specific and generic cosmetic rules hide empty ad containers. Applied with constructable stylesheets (works under strict CSP), one rule at a time so a bad list selector cannot break the rest; new elements are picked up as the page changes.

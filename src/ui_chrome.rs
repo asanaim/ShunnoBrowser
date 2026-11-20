@@ -1461,7 +1461,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['js_enabled', '⚙️ JavaScript', state.site.js_enabled],
       ['images_enabled', '🖼️ Images', state.site.images_enabled],
       ['mobile_ua', '📱 Mobile Site', state.site.mobile_ua],
-      ['auto_reject_cookies', '🍪 Reject Cookie Banners', state.site.auto_reject_cookies]
+      ['auto_reject_cookies', '🍪 Reject Cookie Banners', state.site.auto_reject_cookies],
+      ['fp_protect', '🫥 Fingerprint Shield', state.site.fp_protect]
     ];
     document.getElementById('site-toggles-grid').innerHTML = siteItems.map(([key, label, val]) => `
       <div class="toggle-tile">
