@@ -142,6 +142,7 @@ struct ChromeSnapshot {
     update_kind: String,
     update_label: String,
     is_fullscreen: bool,
+    is_maximized: bool,
     has_closed_tabs: bool,
     find_current: usize,
     find_total: usize,
@@ -1725,6 +1726,27 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             match msg {
                 WM_NCCALCSIZE => {
                     if wparam.0 != 0 {
+                        // Client area = whole window (custom frame). When maximized, Windows places a
+                        // WS_THICKFRAME window ~8 px beyond every monitor edge; inset by the real frame size
+                        // for this window's DPI, or the top of the tab strip and the window buttons are clipped.
+                        if IsZoomed(hwnd).as_bool() {
+                            use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+                            use windows::Win32::UI::WindowsAndMessaging::{
+                                NCCALCSIZE_PARAMS, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
+                            };
+                            let dpi = GetDpiForWindow(hwnd).max(96);
+                            let pad = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                            let fx = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + pad;
+                            let fy = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + pad;
+                            let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+                            if !params.is_null() {
+                                let r = &mut (*params).rgrc[0];
+                                r.left += fx;
+                                r.right -= fx;
+                                r.top += fy;
+                                r.bottom -= fy;
+                            }
+                        }
                         return LRESULT(0);
                     }
                 }
@@ -2109,7 +2131,7 @@ fn main() -> wry::Result<()> {
     let cached_scripts = Arc::new(std::sync::Mutex::new(list_user_scripts(&global_settings.approved_script_hashes)));
     let last_chrome_json = Arc::new(std::sync::Mutex::new(String::new()));
     let cached_scripts_for_push = cached_scripts.clone();
-    let push_chrome_state = move |_window: &Window,
+    let push_chrome_state = move |window: &Window,
                              chrome_wv: &WebView,
                              tabs: &[BrowserTab],
                              active_idx: usize,
@@ -2148,6 +2170,7 @@ fn main() -> wry::Result<()> {
             update_kind: update_kind_label().0.to_string(),
             update_label: update_kind_label().1,
             is_fullscreen,
+            is_maximized: window.is_maximized(),
             has_closed_tabs,
             find_current,
             find_total,
@@ -2205,6 +2228,27 @@ fn main() -> wry::Result<()> {
                 ..
             } => {
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                // Keeps the maximize/restore icon and corner radius in sync (state push is de-duplicated).
+                push_chrome_state(
+                    &window,
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    split_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
+                    site_data_cleared,
+                    is_fullscreen,
+                    &engine,
+                );
             }
 
             Event::WindowEvent {

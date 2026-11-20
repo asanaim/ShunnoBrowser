@@ -244,6 +244,10 @@
       applyTheme();
       return;
     }
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (document.startViewTransition && !reduce) {
+      try { document.startViewTransition(applyTheme); return; } catch (e) {}
+    }
     const oldVeil = document.getElementById('shunno-theme-veil');
     if (oldVeil) oldVeil.remove();
     const veil = document.createElement('div');

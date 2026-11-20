@@ -19,8 +19,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     --text: #1D1D1F;
     --muted: #6E6E73;
     --input-bg: rgba(118, 118, 128, 0.11);
-    --ease-fluid: cubic-bezier(0.25, 1, 0.5, 1);
-    --ease-spring: cubic-bezier(0.22, 1.15, 0.36, 1);
+    /* Motion: one curve family, no bounce (Apple-style deceleration). */
+    --ease-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+    --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --dur-fast: 0.16s;
+    --dur: 0.28s;
   }
   body.dark {
     --bg: #0D0D10;
@@ -56,6 +60,21 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .chrome-shell, .floating-sheet, .card, .home-canvas, .home-search-box, .shortcut-tile, .engine-menu, .nav-icon-btn, .tab, .bookmarks-strip {
     transition: background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1), color 0.36s ease, border-color 0.36s ease, box-shadow 0.36s ease;
+  }
+
+  body.maximized, html.maximized { border-radius: 0; }
+  body.maximized .chrome-shell, body.maximized .tab-bar { border-top-left-radius: 0; border-top-right-radius: 0; }
+  body.maximized .tab-bar { padding-top: 6px; height: 38px; }
+
+  /* Theme switch is one cross-fade (View Transitions); per-element transitions are paused meanwhile. */
+  body.theme-switching, body.theme-switching * { transition: none !important; }
+  ::view-transition-old(root), ::view-transition-new(root) {
+    animation-duration: 0.38s;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
 
   /* Unified Top Chrome Shell (112px total: 36px Tab Strip + 46px Firefox-Style Address Bar + 30px Bookmarks Bar) */
@@ -302,39 +321,47 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .shortcut-del:hover { background: var(--red); color: #fff; }
 
   /* Floating Overlay Panel over Webpage (10% Transparency = 90% Opaque, Zero Page Splitting!) */
+  /* Popover: anchored under the button that opened it, with a pointer, like macOS Safari. */
   .overlay-backdrop {
-    position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
-    display: none; justify-content: flex-end; align-items: flex-start;
-    padding: 12px 14px;
-    background: rgba(15, 15, 20, 0.04);
+    position: fixed; inset: 0;
+    display: none;
+    background: transparent;
     z-index: 50;
   }
-  .overlay-backdrop.open {
-    display: flex;
-  }
+  .overlay-backdrop.open { display: block; }
 
-  @keyframes panelFloatIn {
-    0%   { opacity: 0; transform: translateY(-10px) scale(0.97); }
-    100% { opacity: 1; transform: translateY(0) scale(1); }
+  @keyframes popoverIn {
+    from { opacity: 0; transform: translateY(-6px) scale(0.95); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes popoverOut {
+    from { opacity: 1; transform: translateY(0) scale(1); }
+    to   { opacity: 0; transform: translateY(-4px) scale(0.97); }
   }
 
   .floating-sheet {
-    position: relative;
-    width: 430px; max-width: calc(100vw - 28px); max-height: calc(100vh - 136px);
-    background: rgba(255, 255, 255, 0.90);
-    backdrop-filter: blur(18px) saturate(160%);
+    position: fixed; top: 84px; left: 12px;
+    width: 430px; max-width: calc(100vw - 24px); max-height: calc(100vh - 100px);
+    display: flex; flex-direction: column;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(22px) saturate(170%);
     border: 1px solid var(--border);
-    border-radius: 18px;
-    padding: 14px;
-    overflow-y: auto;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
-    transform-origin: top right;
-    animation: panelFloatIn 0.24s var(--ease-spring) forwards;
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.20), 0 2px 8px rgba(0, 0, 0, 0.06);
+    transform-origin: 90% 0;
+    animation: popoverIn var(--dur) var(--ease-fluid) both;
   }
-  body.dark .floating-sheet {
-    background: rgba(28, 28, 32, 0.90);
-  }
+  .floating-sheet.closing { animation: popoverOut var(--dur-fast) var(--ease-in) both; pointer-events: none; }
+  body.dark .floating-sheet { background: rgba(30, 30, 34, 0.92); }
   .floating-sheet.wide { width: 510px; }
+  .sheet-scroll { overflow-y: auto; padding: 14px; border-radius: 16px; min-height: 0; flex: 1 1 auto; }
+  .sheet-caret {
+    position: absolute; top: -7px; left: var(--caret-left, 380px);
+    width: 14px; height: 14px; transform: rotate(45deg);
+    background: inherit; backdrop-filter: inherit;
+    border-left: 1px solid var(--border); border-top: 1px solid var(--border);
+    border-top-left-radius: 3px;
+  }
 
   .card {
     background: var(--surface); border-radius: 14px; padding: 12px 13px; margin-bottom: 10px;
@@ -490,7 +517,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: var(--surface-solid); border: 1px solid var(--border);
     box-shadow: 0 18px 46px rgba(0, 0, 0, 0.24);
   }
-  .snap-flyout.open { display: grid; }
+  .snap-flyout.open { display: grid; animation: popoverIn var(--dur) var(--ease-fluid) both; transform-origin: 90% 0; }
   .snap-grid {
     display: grid; gap: 3px; width: 76px; height: 48px;
   }
@@ -542,7 +569,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
           <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
-        <button class="win-btn" onclick="closeSnapFlyout(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize / Snap Layouts (Hover)">
+        <button class="win-btn" id="btn-max" onclick="closeSnapFlyout(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize">
           <svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
         </button>
         <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">
@@ -654,6 +681,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <!-- 5. Translucent Frosted-Glass Floating Overlay (Floats over live webpage!) -->
   <div class="overlay-backdrop" id="drawer" onclick="if(event.target===this) closeDrawer()">
     <div class="floating-sheet" id="floating-sheet">
+      <div class="sheet-caret"></div>
+      <div class="sheet-scroll">
 
       <!-- Panel A: Controls & Settings -->
       <div id="panel-controls" style="display:none">
@@ -852,6 +881,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div id="downloads-list"></div>
       </div>
 
+      </div>
     </div>
   </div>
 
@@ -883,7 +913,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.classList.add('open');
         send('ENGINE_MENU:1');
       }
-    }, 260);
+    }, 600);
   }
   function keepSnapOpen() {
     if (snapCloseTimer) { clearTimeout(snapCloseTimer); snapCloseTimer = null; }
@@ -932,13 +962,47 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     toggleDrawer(name);
   }
 
-  function toggleDrawer(name) {
+  let drawerCloseTimer = null;
+  let drawerAnchor = null;
+
+  function defaultAnchorFor(name) {
+    return document.getElementById(name === 'downloads' ? 'btn-downloads' : 'btn-controls');
+  }
+
+  // Place the popover under its anchor; the caret points at the anchor's centre.
+  function positionSheet() {
+    const sheet = document.getElementById('floating-sheet');
+    const anchor = (drawerAnchor && drawerAnchor.isConnected) ? drawerAnchor : defaultAnchorFor(activeDrawer);
+    if (!sheet || !anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const w = Math.min(sheet.offsetWidth || 430, vw - 24);
+    let left = Math.round(r.right - w + 4);
+    left = Math.max(12, Math.min(left, vw - w - 12));
+    const top = Math.round(r.bottom + 10);
+    sheet.style.left = left + 'px';
+    sheet.style.top = top + 'px';
+    sheet.style.maxHeight = Math.max(160, vh - top - 14) + 'px';
+    const caretLeft = Math.max(14, Math.min(w - 28, Math.round(r.left + r.width / 2 - left - 7)));
+    sheet.style.setProperty('--caret-left', caretLeft + 'px');
+    sheet.style.transformOrigin = (caretLeft + 7) + 'px 0';
+  }
+  window.addEventListener('resize', () => { if (activeDrawer) positionSheet(); });
+
+  function toggleDrawer(name, anchorEl) {
     if (activeDrawer === name) {
       closeDrawer();
       return;
     }
     const drawer = document.getElementById('drawer');
     const sheet = document.getElementById('floating-sheet');
+    if (drawerCloseTimer) { clearTimeout(drawerCloseTimer); drawerCloseTimer = null; }
+    sheet.classList.remove('closing');
+    const ev = window.event;
+    const clicked = anchorEl || (ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect ? ev.currentTarget : null);
+    // Only anchor to toolbar elements; buttons inside the sheet keep the current anchor.
+    if (clicked && !sheet.contains(clicked)) drawerAnchor = clicked;
+    else if (!activeDrawer) drawerAnchor = defaultAnchorFor(name);
     activeDrawer = name;
 
     if (name === 'downloads' || name === 'bookmarks') {
@@ -951,17 +1015,55 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
+    drawer.classList.add('open');
+    positionSheet();
     sheet.style.animation = 'none';
     void sheet.offsetWidth;
     sheet.style.animation = '';
-    drawer.classList.add('open');
     send('DRAWER_OPEN:' + name);
   }
 
   function closeDrawer() {
+    if (!activeDrawer) return;
     activeDrawer = null;
-    document.getElementById('drawer').classList.remove('open');
-    send('DRAWER_CLOSE');
+    const drawer = document.getElementById('drawer');
+    const sheet = document.getElementById('floating-sheet');
+    sheet.classList.add('closing');
+    if (drawerCloseTimer) clearTimeout(drawerCloseTimer);
+    // Let the fade-out finish before the native layer shrinks back over the page.
+    drawerCloseTimer = setTimeout(() => {
+      drawerCloseTimer = null;
+      drawer.classList.remove('open');
+      sheet.classList.remove('closing');
+      send('DRAWER_CLOSE');
+    }, 150);
+  }
+
+  function applyTheme(dark) {
+    const flip = () => {
+      document.body.classList.add('theme-switching');
+      document.body.classList.toggle('dark', dark);
+      requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove('theme-switching')));
+    };
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (document.startViewTransition && !reduce) document.startViewTransition(flip);
+    else flip();
+  }
+
+  const ICON_MAX = '<svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+  const ICON_RESTORE = '<svg width="11" height="11" viewBox="0 0 12 12"><rect x="1.8" y="3.6" width="6.6" height="6.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.8 3.6V2.9a1.1 1.1 0 0 1 1.1-1.1h4.2a1.1 1.1 0 0 1 1.1 1.1v4.2a1.1 1.1 0 0 1-1.1 1.1h-0.7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+  let lastMaximized = null;
+  function applyWindowState(maximized) {
+    if (lastMaximized === maximized) return;
+    lastMaximized = maximized;
+    document.body.classList.toggle('maximized', maximized);
+    document.documentElement.classList.toggle('maximized', maximized);
+    const b = document.getElementById('btn-max');
+    if (b) {
+      b.innerHTML = maximized ? ICON_RESTORE : ICON_MAX;
+      b.title = maximized ? 'Restore Down' : 'Maximize';
+    }
+    if (activeDrawer) requestAnimationFrame(positionSheet);
   }
 
   function cycleSpeed() {
@@ -1255,9 +1357,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       spBtn.textContent = splitOn ? '◫ Split: ON' : '◫ Split';
     }
     const wantDark = !!state.global.full_dark_mode;
-    if (document.body.classList.contains('dark') !== wantDark) {
-      setTimeout(() => document.body.classList.toggle('dark', wantDark), 120);
-    }
+    if (document.body.classList.contains('dark') !== wantDark) applyTheme(wantDark);
+    applyWindowState(!!state.is_maximized);
 
     document.getElementById('version-badge').textContent = state.version || '';
     const upBtn = document.getElementById('btn-update');
