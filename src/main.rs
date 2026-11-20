@@ -284,6 +284,81 @@ fn resume_tab_webview(webview: &WebView) {
 fn resume_tab_webview(_webview: &WebView) {}
 
 #[cfg(windows)]
+fn trigger_win11_snap_layouts() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+        VK_LWIN, VK_Z,
+    };
+
+    let make_key = |vk: VIRTUAL_KEY, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+
+    let inputs = [
+        make_key(VK_LWIN, false),
+        make_key(VK_Z, false),
+        make_key(VK_Z, true),
+        make_key(VK_LWIN, true),
+    ];
+    unsafe {
+        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+#[cfg(not(windows))]
+fn trigger_win11_snap_layouts() {}
+
+#[cfg(windows)]
+fn print_tab_to_pdf(webview: &WebView, page_title: &str) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows::core::{Interface, PCWSTR};
+    use wry::WebViewExtWindows;
+
+    let controller = webview.controller();
+    unsafe {
+        let Ok(core) = controller.CoreWebView2() else { return; };
+        let Ok(core7) = core.cast::<ICoreWebView2_7>() else { return; };
+
+        let pdf_dir = BrowserStorage::downloads_root_dir().join("PDFs");
+        let _ = fs::create_dir_all(&pdf_dir);
+        let raw_stem = if page_title.trim().is_empty() || page_title == "New Tab" {
+            "shunno_page".to_string()
+        } else {
+            page_title.trim().chars().take(60).collect::<String>()
+        };
+        let safe_name = downloader::sanitize_download_filename(&format!("{}_{}.pdf", raw_stem, now_epoch_secs()));
+        let out_path = pdf_dir.join(safe_name);
+        let out_str = out_path.to_string_lossy().to_string();
+        let wide_path: Vec<u16> = out_str.encode_utf16().chain(Some(0)).collect();
+
+        let reveal_path = out_str.clone();
+        let handler = PrintToPdfCompletedHandler::create(Box::new(move |res, is_successful| {
+            if res.is_ok() && is_successful {
+                let _ = Command::new("explorer.exe")
+                    .args(["/select,", &reveal_path])
+                    .spawn();
+            }
+            Ok(())
+        }));
+
+        let _ = core7.PrintToPdf(PCWSTR::from_raw(wide_path.as_ptr()), None, &handler);
+    }
+}
+
+#[cfg(not(windows))]
+fn print_tab_to_pdf(_webview: &WebView, _page_title: &str) {}
+
+#[cfg(windows)]
 fn capture_tab_screenshot_to_file(webview: &WebView) {
     use webview2_com::CapturePreviewCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
@@ -1490,6 +1565,7 @@ fn main() -> wry::Result<()> {
     let mut engine_menu_open = false;
     let mut palette_open = false;
     let mut is_fullscreen = false;
+    let mut last_fs_toggle = std::time::Instant::now() - Duration::from_secs(5);
     let mut split_tab_idx: Option<usize> = None;
     let mut blocked_count: usize = 0;
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
@@ -1602,6 +1678,7 @@ fn main() -> wry::Result<()> {
                              find_current: usize,
                              find_total: usize,
                              site_data_cleared: bool,
+                             is_fullscreen: bool,
                              engine: &NativeDownloadEngine| {
         let active_url = tabs.get(active_idx).map(|t| t.url.clone()).unwrap_or_default();
         let active_zoom = tabs.get(active_idx).map(|t| t.zoom).unwrap_or(1.0);
@@ -1619,7 +1696,7 @@ fn main() -> wry::Result<()> {
             version: APP_VERSION,
             ffmpeg_available: ffmpeg_available_flag.load(Ordering::Relaxed),
             ffmpeg_status: ff_status,
-            is_fullscreen: window.fullscreen().is_some(),
+            is_fullscreen,
             has_closed_tabs,
             find_current,
             find_total,
@@ -1750,12 +1827,17 @@ fn main() -> wry::Result<()> {
                         find_current,
                         find_total,
                         site_data_cleared,
+                        is_fullscreen,
                         &engine,
                     );
                 }
             }
 
             Event::UserEvent(AppEvent::ToggleFullscreen) => {
+                if last_fs_toggle.elapsed() < Duration::from_millis(300) {
+                    return;
+                }
+                last_fs_toggle = std::time::Instant::now();
                 is_fullscreen = !is_fullscreen;
                 window.set_fullscreen(if is_fullscreen {
                     Some(Fullscreen::Borderless(None))
@@ -1780,6 +1862,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -1823,6 +1906,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -1849,6 +1933,7 @@ fn main() -> wry::Result<()> {
                         find_current,
                         find_total,
                         site_data_cleared,
+                        is_fullscreen,
                         &engine,
                     );
                 }
@@ -1886,6 +1971,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -1919,6 +2005,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -1944,6 +2031,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -1999,6 +2087,7 @@ fn main() -> wry::Result<()> {
                         find_current,
                         find_total,
                         site_data_cleared,
+                        is_fullscreen,
                         &engine,
                     );
                 }
@@ -2050,6 +2139,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2078,6 +2168,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2106,6 +2197,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2163,6 +2255,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2217,6 +2310,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2472,6 +2566,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }
@@ -2990,6 +3085,14 @@ fn main() -> wry::Result<()> {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let _ = tab.webview.evaluate_script("if (window.__shunnoGrabAllPageLinks) window.__shunnoGrabAllPageLinks();");
                     }
+                } else if cmd == "OPEN_SNAP_LAYOUTS" {
+                    trigger_win11_snap_layouts();
+                } else if cmd == "PRINT_TO_PDF" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        if tab.url != "shunno://newtab" {
+                            print_tab_to_pdf(&tab.webview, &tab.title);
+                        }
+                    }
                 } else if cmd == "CAPTURE_SCREENSHOT" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         if tab.url != "shunno://newtab" {
@@ -3201,6 +3304,7 @@ fn main() -> wry::Result<()> {
                     find_current,
                     find_total,
                     site_data_cleared,
+                    is_fullscreen,
                     &engine,
                 );
             }

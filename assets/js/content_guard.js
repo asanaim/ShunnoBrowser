@@ -66,17 +66,24 @@
       applyTheme();
       return;
     }
+    const oldVeil = document.getElementById('shunno-theme-veil');
+    if (oldVeil) oldVeil.remove();
     const veil = document.createElement('div');
-    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:' + (enabled ? '#0F0F12' : '#F5F5F7') + ';opacity:0;transition:opacity 0.16s cubic-bezier(0.22,1,0.36,1);';
+    veil.id = 'shunno-theme-veil';
+    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:' + (enabled ? '#111114' : '#F5F5F7') + ';opacity:0;transition:opacity 0.18s cubic-bezier(0.22,1,0.36,1);will-change:opacity;';
     document.documentElement.appendChild(veil);
     requestAnimationFrame(() => {
-      veil.style.opacity = '0.32';
+      veil.style.opacity = '0.98';
       setTimeout(() => {
         applyTheme();
-        veil.style.transition = 'opacity 0.24s cubic-bezier(0.22,1,0.36,1)';
-        veil.style.opacity = '0';
-        setTimeout(() => veil.remove(), 260);
-      }, 150);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            veil.style.transition = 'opacity 0.28s cubic-bezier(0.22,1,0.36,1)';
+            veil.style.opacity = '0';
+            setTimeout(() => veil.remove(), 300);
+          });
+        });
+      }, 185);
     });
   };
   if (FULL_DARK_ON) {
@@ -1151,10 +1158,7 @@
   } catch (e) {}
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'F11') {
-      e.preventDefault();
-      postSecure('KEY:f11');
-    } else if (e.ctrlKey && e.key === 'Tab') {
+    if (e.ctrlKey && e.key === 'Tab') {
       e.preventDefault();
       postSecure(e.shiftKey ? 'KEY:prev_tab' : 'KEY:next_tab');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {

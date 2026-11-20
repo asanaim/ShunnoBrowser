@@ -1,3 +1,14 @@
+## v2.9.5 (2026-11-20)
+- Restored the **`⚡` Downloads** button back onto the right side of the Address Bar next to **`•••` Controls**.
+- Kept **Playback Speed (`⏩ 1.0×`)** cleanly inside **Controls (`•••`)**.
+
+## v2.9.4 (2026-11-20)
+- Added **Windows 11 Snap Layouts** flyout on hovering the Maximize button (`□`) via native Win32 `SendInput` (`Win + Z`).
+- Added native **Save Page as PDF (`📄 PDF`)** using WebView2 `ICoreWebView2_7::PrintToPdf` inside **Controls (`•••`)** and **`Ctrl + K`** Command Palette.
+- Fixed **Light ↔ Dark** transition flicker using an opaque (`0.98`) ambient cross-dissolve curtain with double-`requestAnimationFrame` compositor synchronization.
+- Fixed **`F11` Fullscreen Off** by removing duplicate `KEY:f11` dispatch, adding a `300ms` toggle debounce, and passing explicit `is_fullscreen` state into `ChromeSnapshot`.
+- Replaced the private tab icon with a clean **Anonymous Mask SVG** and moved the `⚡` Downloads/Speed button into **Controls (`•••`)**.
+
 ## v2.9.3 (2026-11-20)
 - **Responsive Unified Address Bar (`src/ui_chrome.rs`):** Rebuilt `.nav-bar` with a 3-column CSS Grid and proportional `clamp(320px, 48vw, 640px)` scaling so the centered Address Capsule adjusts smoothly on window resize without collapsing `#url-input` (`min-width: 140px`).
 - **Resolved Intermittent Web Page Freezes (`src/main.rs`):** Eliminated synchronous `ffmpeg -version` subprocess spawns and `list_user_scripts` disk scans from `push_chrome_state` (moved to async startup/on-demand cache), offloaded `save_history` writes to Tokio, skipped `WM_NCHITTEST` border interception when maximized (`IsZoomed`), and explicitly raised the active tab HWND above `chrome_wv` whenever overlays close (`bring_active_tab_above_chrome`).

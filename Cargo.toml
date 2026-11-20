@@ -1,6 +1,6 @@
 [package]
 name = "shunno-browser"
-version = "2.9.3"
+version = "2.9.5"
 edition = "2021"
 description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
@@ -33,6 +33,7 @@ windows = { version = "=0.56.0", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Memory",
     "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

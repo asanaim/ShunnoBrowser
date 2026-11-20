@@ -512,7 +512,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11h18"/><path d="M5 11l2-6h10l2 6"/><circle cx="8.5" cy="16" r="2.5"/><circle cx="15.5" cy="16" r="2.5"/><line x1="11" y1="16" x2="13" y2="16"/></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3C7.5 3 4.5 6.2 4.5 10.5c0 4.8 3.2 9.5 7.5 10.5 4.3-1 7.5-5.7 7.5-10.5C19.5 6.2 16.5 3 12 3z"/><path d="M8.5 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M12.9 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M9.5 15.2c1.4.9 3.6.9 5 0"/></svg>
       </button>
       <button class="tab-add" id="btn-reopen-tab" style="display:none;color:var(--muted)" onclick="send('REOPEN_CLOSED_TAB')" title="Reopen Closed Tab (Ctrl+Shift+T)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
@@ -522,7 +522,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
           <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
-        <button class="win-btn" onclick="send('WIN_MAXIMIZE')" title="Maximize / Restore">
+        <button class="win-btn" onclick="cancelSnapHover(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize / Snap Layouts (Hover)">
           <svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
         </button>
         <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">
@@ -622,7 +622,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <button class="pill-btn pill-soft" onclick="send('SLEEP_INACTIVE_TABS');" title="Hibernate idle background tabs to save RAM">💤 Sleep Tabs</button>
           <button class="pill-btn pill-soft" onclick="closeDrawer(); openPalette();" title="Command Palette (Ctrl+K)">⌘ Palette</button>
             <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
-            <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
+            <button class="pill-btn pill-blue" id="menu-speed-btn" onclick="cycleSpeed()" title="Video &amp; Audio Playback Speed">⏩ 1.0×</button>
+            <button class="pill-btn pill-soft" onclick="closeDrawer(); send('PRINT_TO_PDF');" title="Save current page as PDF">📄 PDF</button>
             <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
           </div>
 
@@ -818,6 +819,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('ADD_BOOKMARK:' + (folder.trim() || 'General'));
   }
 
+  let snapHoverTimer = null;
+  function startSnapHover() {
+    cancelSnapHover();
+    snapHoverTimer = setTimeout(() => {
+      send('OPEN_SNAP_LAYOUTS');
+    }, 380);
+  }
+  function cancelSnapHover() {
+    if (snapHoverTimer) {
+      clearTimeout(snapHoverTimer);
+      snapHoverTimer = null;
+    }
+  }
+
   function send(msg) {
     if (window.ipc) window.ipc.postMessage(msg);
   }
@@ -1001,7 +1016,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       el.oncontextmenu = (ev) => { ev.preventDefault(); send('TOGGLE_PIN_TAB:' + idx); };
       el.title = t.title || 'New Tab';
 
-      const displayTitle = (t.sleeping ? '💤 ' : '') + (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
+      const displayTitle = (t.sleeping ? '💤 ' : '') + (t.title || 'New Tab');
       const hasAudio = !!(t.playing_audio || t.muted);
       const audioKey = hasAudio ? (t.muted ? 'M' : 'P') : 'N';
 
@@ -1010,9 +1025,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
-        const tabLogoHtml = (!hasAudio && (isNewTab || t.pinned))
-          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/><path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/><circle cx="14" cy="14" r="1.6" fill="white"/></svg></span>`
-          : '';
+        const anonSvg = `<span style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3C7.5 3 4.5 6.2 4.5 10.5c0 4.8 3.2 9.5 7.5 10.5 4.3-1 7.5-5.7 7.5-10.5C19.5 6.2 16.5 3 12 3z"/><path d="M8.5 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M12.9 10.5c.8-.7 1.8-.7 2.6 0"/><path d="M9.5 15.2c1.4.9 3.6.9 5 0"/></svg></span>`;
+        const tabLogoHtml = t.incognito
+          ? anonSvg
+          : ((!hasAudio && (isNewTab || t.pinned))
+              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/><path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/><circle cx="14" cy="14" r="1.6" fill="white"/></svg></span>`
+              : '');
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
           : '';
@@ -1065,6 +1083,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     const actions = [
       { kind: 'Action', title: 'Toggle Split-View (50/50 Dual Pane)', run: () => send('TOGGLE_SPLIT_VIEW') },
+      { kind: 'Action', title: 'Save Page as PDF (PrintToPdf)', run: () => send('PRINT_TO_PDF') },
       { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
       { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
       { kind: 'Action', title: 'Export Download History to CSV (with SHA-256)', run: () => send('EXPORT_DL_CSV') },
@@ -1152,13 +1171,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       spBtn.className = 'pill-btn ' + (splitOn ? 'pill-blue' : 'pill-soft');
       spBtn.textContent = splitOn ? '◫ Split: ON' : '◫ Split';
     }
-    if (state.global.full_dark_mode) {
-      document.body.classList.add('dark');
-    } else {
-      document.body.classList.remove('dark');
+    const wantDark = !!state.global.full_dark_mode;
+    if (document.body.classList.contains('dark') !== wantDark) {
+      setTimeout(() => document.body.classList.toggle('dark', wantDark), 120);
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.9.3';
+    document.getElementById('version-badge').textContent = state.version || 'v2.9.5';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
