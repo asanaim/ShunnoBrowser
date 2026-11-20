@@ -691,6 +691,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
+            <button class="pill-btn pill-soft" onclick="if (confirm('Delete every saved password and autofill entry?')) send('CLEAR_PASSWORDS')" title="Delete all passwords saved by Shunno">🔑 Clear Passwords</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
         </div>
@@ -776,79 +777,71 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <div id="panel-downloads" style="display:none">
         <div class="card">
           <div class="card-header">
-            <span class="card-title">⚡ Downloads</span>
-            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-              <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="Download ffmpeg.exe (SHA-256 verified); needed for HLS, DASH and best-quality YouTube">🎬 FFmpeg</button>
-              <button class="pill-btn pill-soft" id="btn-ytdlp-setup" onclick="send('INSTALL_YTDLP')" title="Download yt-dlp.exe (SHA-256 verified); used for YouTube and DASH manifests">▶ yt-dlp</button>
-              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Site Grabber: Scan all links & media on active page">🕸️ Grab</button>
-              <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Clean completed, failed & missing files">🧹 Clean</button>
-              <button class="pill-btn pill-soft" onclick="send('EXPORT_DL_CSV')" title="Export download history with SHA-256 checksums to CSV">📄 CSV</button>
-              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open Downloads Folder">📂</button>
+            <span class="card-title">Downloads <span class="meta" id="dl-live-speed"></span></span>
+            <div style="display:flex;gap:5px;align-items:center;">
+              <button class="pill-btn pill-soft" onclick="send('CLEAR_FINISHED_DL')" title="Remove finished and failed items from this list. Files stay on disk.">Clear</button>
+              <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Find every downloadable file and video on this page">Find on page</button>
+              <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open downloads folder">📂</button>
+              <button class="pill-btn pill-soft" id="btn-dl-settings" onclick="toggleDlSettings()" title="Download settings">⚙</button>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
           </div>
-          <div class="speed-graph-box">
-            <div class="speed-graph-hdr">
-              <span style="color:var(--blue);" id="dl-live-speed">⚡ 0 B/s</span>
-              <span class="meta" id="dl-peak-speed">Peak: 0 B/s</span>
-            </div>
-            <svg id="dl-speed-svg" width="100%" height="36" viewBox="0 0 360 36" preserveAspectRatio="none" style="display:block;overflow:visible;">
-              <defs>
-                <linearGradient id="dlSpeedGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#0A84FF" stop-opacity="0.34"/>
-                  <stop offset="100%" stop-color="#0A84FF" stop-opacity="0.02"/>
-                </linearGradient>
-              </defs>
-              <polygon id="dl-speed-area" fill="url(#dlSpeedGrad)" points="0,36 360,36"/>
-              <polyline id="dl-speed-line" fill="none" stroke="#0A84FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="0,35 360,35"/>
-            </svg>
-          </div>
-          <div class="input-row">
-            <input class="text-box" id="dl-url-input" placeholder="Paste link or track_[01-12].flac..." />
-            <select class="select-box" id="dl-threads-select" title="Parallel Connections">
-              <option value="1">1T</option>
-              <option value="4">4T</option>
-              <option value="8">8T</option>
-              <option value="16" selected>16T</option>
-              <option value="32">32T</option>
-            </select>
-            <select class="select-box" id="dl-delay-select" title="Schedule Start">
-              <option value="0">Now</option>
-              <option value="60">In 1m</option>
-              <option value="300">In 5m</option>
-              <option value="900">In 15m</option>
-            </select>
-            <button class="pill-btn pill-blue" onclick="startManualDownload()">⚡ Get</button>
-          </div>
-          <div class="input-row">
-            <select class="select-box" id="max-conc-select" onchange="send('SET_MAX_CONCURRENT:' + this.value)" title="Sequential Queue Limit">
-              <option value="1">Queue: 1 at a time</option>
-              <option value="2">Queue: Max 2</option>
-              <option value="3" selected>Queue: Max 3</option>
-              <option value="4">Queue: Max 4</option>
-            </select>
-            <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)" title="Bandwidth Limit">
-              <option value="0">Speed: Unlimited</option>
-              <option value="10485760">Speed: 10 MB/s</option>
-              <option value="5242880">Speed: 5 MB/s</option>
-              <option value="2097152">Speed: 2 MB/s</option>
-              <option value="524288">Speed: 512 KB/s</option>
-            </select>
-            <select class="select-box" id="on-complete-select" onchange="send('SET_ON_COMPLETE:' + this.value)" title="Action when queue finishes">
-              <option value="NONE">Done: Keep Open</option>
-              <option value="OPEN_FOLDER">Done: Open Folder</option>
-              <option value="EXIT_APP">Done: Exit Browser</option>
-            </select>
-          </div>
-          <div class="input-row">
-            <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
-            <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
-            <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
-          </div>
           <div class="input-row" style="margin-bottom:0;">
-            <input class="text-box" id="custom-dl-dir-input" placeholder="Custom Downloads Folder (e.g., D:\Downloads)..." />
-            <button class="pill-btn pill-soft" onclick="applyCustomDlDir()">Set</button>
-            <button class="pill-btn pill-soft" onclick="send('SET_DOWNLOAD_DIR:'); document.getElementById('custom-dl-dir-input').value='';" title="Reset to default Downloads\ShunnoBrowser">Reset</button>
+            <input class="text-box" id="dl-url-input" placeholder="Paste a link to download" onkeydown="if (event.key === 'Enter') startManualDownload();" />
+            <button class="pill-btn pill-blue" onclick="startManualDownload()">Download</button>
+          </div>
+          <div id="dl-settings" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
+            <div class="meta" style="margin-bottom:6px;">Batch links: <code>track_[01-12].flac</code> downloads 12 files.</div>
+            <div class="input-row">
+              <select class="select-box" id="dl-threads-select" title="Connections per file">
+                <option value="1">1 connection</option>
+                <option value="4">4 connections</option>
+                <option value="8">8 connections</option>
+                <option value="16" selected>16 connections</option>
+                <option value="32">32 connections</option>
+              </select>
+              <select class="select-box" id="dl-delay-select" title="Start time">
+                <option value="0">Start now</option>
+                <option value="60">Start in 1 min</option>
+                <option value="300">Start in 5 min</option>
+                <option value="900">Start in 15 min</option>
+              </select>
+            </div>
+            <div class="input-row">
+              <select class="select-box" id="max-conc-select" onchange="send('SET_MAX_CONCURRENT:' + this.value)" title="How many files download at once">
+                <option value="1">1 at a time</option>
+                <option value="2">2 at a time</option>
+                <option value="3" selected>3 at a time</option>
+                <option value="4">4 at a time</option>
+              </select>
+              <select class="select-box" id="speed-limit-select" onchange="send('SET_SPEED_LIMIT:' + this.value)" title="Bandwidth limit">
+                <option value="0">No speed limit</option>
+                <option value="10485760">Limit 10 MB/s</option>
+                <option value="5242880">Limit 5 MB/s</option>
+                <option value="2097152">Limit 2 MB/s</option>
+                <option value="524288">Limit 512 KB/s</option>
+              </select>
+              <select class="select-box" id="on-complete-select" onchange="send('SET_ON_COMPLETE:' + this.value)" title="When all downloads finish">
+                <option value="NONE">When done: nothing</option>
+                <option value="OPEN_FOLDER">When done: open folder</option>
+                <option value="EXIT_APP">When done: close browser</option>
+              </select>
+            </div>
+            <div class="input-row">
+              <input class="text-box" id="custom-dl-dir-input" placeholder="Save to folder (e.g. D:\Downloads)" />
+              <button class="pill-btn pill-soft" onclick="applyCustomDlDir()">Set</button>
+              <button class="pill-btn pill-soft" onclick="send('SET_DOWNLOAD_DIR:'); document.getElementById('custom-dl-dir-input').value='';" title="Back to Downloads\ShunnoBrowser">Reset</button>
+            </div>
+            <div class="input-row">
+              <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="ffmpeg.exe, SHA-256 verified. Installs automatically when a video needs it.">🎬 FFmpeg</button>
+              <button class="pill-btn pill-soft" id="btn-ytdlp-setup" onclick="send('INSTALL_YTDLP')" title="yt-dlp.exe, SHA-256 verified. Installs automatically for YouTube and streaming sites.">▶ yt-dlp</button>
+              <button class="pill-btn pill-soft" onclick="send('EXPORT_DL_CSV')" title="Export the list with SHA-256 checksums">Export CSV</button>
+            </div>
+            <div class="input-row" style="margin-bottom:0;">
+              <input class="text-box" id="mux-video-input" placeholder="Advanced: DASH video URL" />
+              <input class="text-box" id="mux-audio-input" placeholder="DASH audio URL" />
+              <button class="pill-btn pill-soft" onclick="startDashMux()">Merge</button>
+            </div>
           </div>
         </div>
 
@@ -982,6 +975,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('SET_DOWNLOAD_DIR:' + inp.value.trim());
   }
 
+  function toggleDlSettings() {
+    const box = document.getElementById('dl-settings');
+    const btn = document.getElementById('btn-dl-settings');
+    const open = box.style.display === 'none';
+    box.style.display = open ? 'block' : 'none';
+    btn.className = 'pill-btn ' + (open ? 'pill-blue' : 'pill-soft');
+  }
   function startManualDownload() {
     const input = document.getElementById('dl-url-input');
     const threads = document.getElementById('dl-threads-select').value;
@@ -1437,7 +1437,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
       ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
-      ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups]
+      ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups],
+      ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
+      ['strict_tracking', '🛡️ Strict Tracking Block', state.global.strict_tracking]
     ];
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
@@ -1540,7 +1542,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     const liveSpdEl = document.getElementById('dl-live-speed');
     const peakSpdEl = document.getElementById('dl-peak-speed');
-    if (liveSpdEl) liveSpdEl.textContent = '⚡ ' + fmtBytes(totalSpeed) + '/s';
+    if (liveSpdEl) liveSpdEl.textContent = totalSpeed > 0 ? '· ' + fmtBytes(totalSpeed) + '/s' : '';
     if (peakSpdEl) peakSpdEl.textContent = 'Peak: ' + fmtBytes(peakSpeedBps) + '/s';
 
     const polyLine = document.getElementById('dl-speed-line');
@@ -1568,7 +1570,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     const dlCats = ['All', 'Videos', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
-    document.getElementById('dl-category-bar').innerHTML = dlCats.map(c => `
+    const catBar = document.getElementById('dl-category-bar');
+    catBar.style.display = state.downloads.length >= 6 ? '' : 'none';
+    if (catBar.style.display === 'none') activeDlCategory = 'All';
+    catBar.innerHTML = dlCats.map(c => `
       <button class="folder-pill ${activeDlCategory === c ? 'active' : ''}"
               onclick="activeDlCategory = '${c}'; send('REFRESH_UI');">${c}</button>
     `).join('');
@@ -1584,7 +1589,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             : d.status === 'MUXING'
               ? '🎬 Muxing via FFmpeg...'
               : d.status === 'COMPLETED'
-                ? `✓ Saved • SHA-256: ${(d.sha256 || '').slice(0, 14)}...`
+                ? `<span title="SHA-256 ${escapeHtml(d.sha256 || '')}">✓ Saved</span>`
                 : d.status === 'FAILED'
                   ? `⚠ ${escapeHtml(d.error_message || 'Error')}`
                   : `Paused at ${fmtBytes(d.downloaded_bytes)}`;
@@ -1594,7 +1599,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <div class="card-header" style="margin-bottom:4px;">
                 <div style="overflow:hidden;">
                   <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(d.file_name)}</div>
-                  <div class="meta" style="color:#0A84FF;">${escapeHtml(d.category)} • ${d.supports_ranges ? d.threads + 'T' : '1T'} • ${escapeHtml(d.status)}</div>
+                  <div class="meta" style="color:#0A84FF;">${escapeHtml(d.category)}${d.status === 'DOWNLOADING' && d.supports_ranges ? ' · ' + d.threads + ' connections' : ''} · ${escapeHtml(({DOWNLOADING:'Downloading',PAUSED:'Paused',FAILED:'Failed',COMPLETED:'Done',QUEUED:'Waiting',MUXING:'Merging'})[d.status] || d.status)}</div>
                 </div>
                 <div class="meta" style="font-weight:600;flex-shrink:0;">${sizeTxt}</div>
               </div>

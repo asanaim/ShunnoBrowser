@@ -73,7 +73,8 @@ enum AppEvent {
         delay_secs: Option<u64>,
         open_drawer: bool,
     },
-    NewWindowBlockedOrOpened(String),
+    /// (opener tab id, url)
+    NewWindowBlockedOrOpened(usize, String),
     NativeStreamCaptured(usize, String, String, String),
     StreamSizeResolved(usize, StreamProbeResult),
     TabAudioChanged(usize, bool),
@@ -597,7 +598,8 @@ fn dispatch_download_with_httponly_cookies(
             if let Ok(core) = controller.CoreWebView2() {
                 if let Ok(core2) = core.cast::<ICoreWebView2_2>() {
                     if let Ok(cookie_mgr) = core2.CookieManager() {
-                        let wide_uri: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+                        let cookie_uri = url.strip_prefix(downloader::YTDLP_PREFIX).unwrap_or(&url);
+                        let wide_uri: Vec<u16> = cookie_uri.encode_utf16().chain(Some(0)).collect();
                         let url_cb = url.clone();
                         let ref_cb = referer.clone();
                         let fb_cb = fallback_cookie.clone();
@@ -689,6 +691,68 @@ fn dispatch_download_with_httponly_cookies(
         open_drawer,
     });
 }
+
+
+/// Applies password autosave and tracking prevention to a tab's WebView2 settings/profile.
+#[cfg(windows)]
+fn apply_privacy_settings(webview: &WebView, save_passwords: bool, strict_tracking: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile3, ICoreWebView2Settings4, ICoreWebView2_13, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED,
+        COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT,
+    };
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+    unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        if let Ok(settings) = core.Settings() {
+            if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                let _ = s4.SetIsPasswordAutosaveEnabled(save_passwords);
+                let _ = s4.SetIsGeneralAutofillEnabled(save_passwords);
+            }
+        }
+        if let Ok(c13) = core.cast::<ICoreWebView2_13>() {
+            if let Ok(profile) = c13.Profile() {
+                if let Ok(p3) = profile.cast::<ICoreWebView2Profile3>() {
+                    let level = if strict_tracking {
+                        COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT
+                    } else {
+                        COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED
+                    };
+                    let _ = p3.SetPreferredTrackingPreventionLevel(level);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_privacy_settings(_webview: &WebView, _save_passwords: bool, _strict_tracking: bool) {}
+
+/// Deletes every password saved by the built-in password manager (normal profile).
+#[cfg(windows)]
+fn clear_saved_passwords(webview: &WebView) {
+    use webview2_com::ClearBrowsingDataCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile2, ICoreWebView2_13, COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,
+    };
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+    unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        let Ok(c13) = core.cast::<ICoreWebView2_13>() else { return };
+        let Ok(profile) = c13.Profile() else { return };
+        let Ok(p2) = profile.cast::<ICoreWebView2Profile2>() else { return };
+        let handler = ClearBrowsingDataCompletedHandler::create(Box::new(|_| Ok(())));
+        let _ = p2.ClearBrowsingData(
+            COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE | COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL,
+            &handler,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn clear_saved_passwords(_webview: &WebView) {}
 
 #[cfg(windows)]
 fn clear_httponly_cookies_for_url(webview: &WebView, url: &str) {
@@ -1253,7 +1317,7 @@ fn attach_native_webview2_hooks(
                                 let sel_proxy = ctx_proxy.clone();
                                 let sel_uri = link_uri.clone();
                                 let sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
-                                    let _ = sel_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(sel_uri.clone()));
+                                    let _ = sel_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(tab_id, sel_uri.clone()));
                                     Ok(())
                                 }));
                                 let _ = new_tab_item.add_CustomItemSelected(&sel_handler, &mut sel_token);
@@ -1335,6 +1399,7 @@ fn create_tab_webview(
     global: &GlobalSettings,
     ipc_token: &str,
     proxy: EventLoopProxy<AppEvent>,
+    incognito: bool,
 ) -> wry::Result<WebView> {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let content_h = (size.height - CHROME_BAR_HEIGHT).max(100.0);
@@ -1354,6 +1419,8 @@ fn create_tab_webview(
             size: LogicalSize::new(size.width.max(400.0), content_h).into(),
         })
         .with_url(if url == "shunno://newtab" { "about:blank" } else { url })
+        // Private tabs get a separate in-memory WebView2 InPrivate session: no shared cookies, storage, cache or passwords.
+        .with_incognito(incognito)
         .with_initialization_script(&init_script)
         .with_document_title_changed_handler(move |new_title| {
             let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
@@ -1378,13 +1445,14 @@ fn create_tab_webview(
             {
                 return true;
             }
-            let _ = win_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(popup_url));
+            let _ = win_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(tab_id, popup_url));
             false
         })
         .build()?;
 
     attach_f11_accelerator_hook(&wv, proxy.clone());
     attach_native_webview2_hooks(&wv, tab_id, policy.adblock, proxy);
+    apply_privacy_settings(&wv, global.save_passwords && !incognito, global.strict_tracking);
 
     if (policy.zoom - 1.0).abs() > f64::EPSILON {
         apply_tab_zoom(&wv, policy.zoom);
@@ -1766,7 +1834,7 @@ fn main() -> wry::Result<()> {
         let host = extract_host(&u);
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone()) {
+        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
             let init_title = if u == "shunno://newtab" {
                 "New Tab".to_string()
             } else if host.is_empty() {
@@ -2463,7 +2531,8 @@ fn main() -> wry::Result<()> {
                 );
             }
 
-            Event::UserEvent(AppEvent::NewWindowBlockedOrOpened(popup_url)) => {
+            Event::UserEvent(AppEvent::NewWindowBlockedOrOpened(opener_id, popup_url)) => {
+                let opener_private = tabs.iter().find(|t| t.id == opener_id).map(|t| t.incognito).unwrap_or(false);
                 let lower = popup_url.to_ascii_lowercase();
                 let is_ad_popup = lower.contains("popads")
                     || lower.contains("popcash")
@@ -2476,13 +2545,13 @@ fn main() -> wry::Result<()> {
                     let host = extract_host(&clean);
                     let pol = site_policies.get(&host).cloned().unwrap_or_default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                    if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &clean, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                    if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &clean, &pol, &global_settings, &ipc_token, proxy.clone(), opener_private) {
                         tabs.push(BrowserTab {
                             id: tid,
                             title: clean.clone(),
                             url: clean,
                             cookie: None,
-                            incognito: false,
+                            incognito: opener_private,
                             pinned: false,
                             playing_audio: false,
                             muted: false,
@@ -2564,13 +2633,16 @@ fn main() -> wry::Result<()> {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(float_json) {
                         let dl_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let threads = val.get("threads").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
+                        // "page": the player streams via blob:/MSE, so let yt-dlp resolve the page URL.
+                        let via_page = val.get("via").and_then(|v| v.as_str()) == Some("page");
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if dl_url.starts_with("http") && page_may_target(page_url.as_deref(), &dl_url) {
                             let wv_opt = tabs.iter().find(|t| t.id == tab_id).map(|t| &t.webview);
+                            let routed = if via_page { format!("{}{}", downloader::YTDLP_PREFIX, dl_url) } else { dl_url };
                             dispatch_download_with_httponly_cookies(
                                 wv_opt,
-                                dl_url,
+                                routed,
                                 threads,
                                 referer,
                                 cookie,
@@ -2620,7 +2692,7 @@ fn main() -> wry::Result<()> {
                             let start = "shunno://newtab".to_string();
                             let pol = SitePolicy::default();
                             let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
                                 tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, pinned: false, playing_audio: false, muted: false, reader_active: false, sleeping: false, last_active_secs: now_epoch_secs(), zoom: 1.0, webview: wv });
                                 active_tab_idx = tabs.len() - 1;
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
@@ -2886,7 +2958,7 @@ fn main() -> wry::Result<()> {
                     let start = "shunno://newtab".to_string();
                     let pol = SitePolicy::default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                    if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                    if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone(), is_incog) {
                         tabs.push(BrowserTab {
                             id: tid,
                             title: if is_incog { "Private Tab".to_string() } else { "New Tab".to_string() },
@@ -2996,7 +3068,7 @@ fn main() -> wry::Result<()> {
                         let host = extract_host(&saved.url);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &saved.url, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &saved.url, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
                             tabs.push(BrowserTab {
                                 id: tid,
                                 title: saved.title,
@@ -3105,9 +3177,27 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "save_passwords" | "strict_tracking" => {
+                            if gkey == "save_passwords" {
+                                global_settings.save_passwords = !global_settings.save_passwords;
+                            } else {
+                                global_settings.strict_tracking = !global_settings.strict_tracking;
+                            }
+                            for tab in tabs.iter() {
+                                apply_privacy_settings(
+                                    &tab.webview,
+                                    global_settings.save_passwords && !tab.incognito,
+                                    global_settings.strict_tracking,
+                                );
+                            }
+                        }
                         _ => {}
                     }
                     BrowserStorage::save_global_settings(&global_settings);
+                } else if cmd == "CLEAR_PASSWORDS" {
+                    if let Some(tab) = tabs.iter().find(|t| !t.incognito) {
+                        clear_saved_passwords(&tab.webview);
+                    }
                 } else if let Some(skey) = cmd.strip_prefix("TOGGLE_SITE:") {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let host = extract_host(&tab.url);
@@ -3129,7 +3219,7 @@ fn main() -> wry::Result<()> {
                         let is_incog = tab.incognito;
                         let is_muted = tab.muted;
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                        if let Ok(new_wv) = create_tab_webview(&window, &mut web_context, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone()) {
+                        if let Ok(new_wv) = create_tab_webview(&window, &mut web_context, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone(), is_incog) {
                             if is_muted { set_webview_muted(&new_wv, true); }
                             if (tab.zoom - 1.0).abs() > f64::EPSILON { apply_tab_zoom(&new_wv, tab.zoom); }
                             tabs[active_tab_idx] = BrowserTab {
@@ -3335,7 +3425,7 @@ fn main() -> wry::Result<()> {
                         let host = extract_host(&dup_url);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &dup_url, &pol, &global_settings, &ipc_token, proxy.clone()) {
+                        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &dup_url, &pol, &global_settings, &ipc_token, proxy.clone(), dup_incog) {
                             let insert_at = (active_tab_idx + 1).min(tabs.len());
                             tabs.insert(insert_at, BrowserTab {
                                 id: tid,
@@ -3356,8 +3446,8 @@ fn main() -> wry::Result<()> {
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
-                } else if cmd == "CLEAR_COMPLETED_DL" {
-                    engine.clean_stale_and_completed();
+                } else if cmd == "CLEAR_COMPLETED_DL" || cmd == "CLEAR_FINISHED_DL" {
+                    engine.clear_finished();
                 } else if cmd == "DISMISS_DUP" {
                     duplicate_alert = None;
                 } else if let Some(ren_url) = cmd.strip_prefix("DUP_RENAME:") {

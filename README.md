@@ -37,3 +37,7 @@
 - **`Ctrl + J`** — Open Downloads Downloads
 - **`Ctrl + R`** — Reload Page
 - **`Esc`** — Close Side Panel
+
+
+## License
+Free to use. Proprietary, closed source: Copyright (c) 2026 Sayed Naim. All rights reserved. The source is visible for transparency; it is not open source. See `LICENSE`.

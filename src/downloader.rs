@@ -28,6 +28,9 @@ pub const KIND_DASH: &str = "DASH";
 pub const KIND_YTDLP: &str = "YTDLP";
 pub const KIND_NATIVE: &str = "NATIVE";
 
+/// URL prefix that forces yt-dlp resolution of a web page (used by the floating bar for blob:/MSE players).
+pub const YTDLP_PREFIX: &str = "ytdlp:";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DownloadTask {
     pub id: u64,
@@ -617,20 +620,11 @@ impl NativeDownloadEngine {
         Ok(out_path)
     }
 
-    pub fn clean_stale_and_completed(&self) -> usize {
-        let auto_clean = self.auto_clean_completed.load(Ordering::Relaxed);
+    /// Removes finished entries (completed, failed) from the list. Files on disk are never touched.
+    pub fn clear_finished(&self) -> usize {
         let removed = if let Ok(mut list) = self.tasks.lock() {
             let before = list.len();
-            list.retain(|t| {
-                if t.status == "FAILED" {
-                    return false;
-                }
-                if t.status == "COMPLETED" {
-                    let exists = t.saved_path.as_ref().map(|p| Path::new(p).exists()).unwrap_or(false);
-                    return exists && !auto_clean;
-                }
-                true
-            });
+            list.retain(|t| t.status != "COMPLETED" && t.status != "FAILED");
             before.saturating_sub(list.len())
         } else {
             0
@@ -866,14 +860,16 @@ impl NativeDownloadEngine {
         dup_mode: &str, // "CHECK", "RENAME", "OVERWRITE"
         delay_secs: Option<u64>,
     ) -> EnqueueOutcome {
-        let trimmed_u = url.trim();
+        let raw = url.trim();
+        let force_ytdlp = raw.starts_with(YTDLP_PREFIX);
+        let trimmed_u = raw.strip_prefix(YTDLP_PREFIX).unwrap_or(raw).trim();
         let normalized_url = if trimmed_u.starts_with("http://") || trimmed_u.starts_with("https://") {
             trimmed_u.to_string()
         } else {
             format!("https://{}", trimmed_u)
         };
 
-        let kind = if is_ytdlp_url(&normalized_url) {
+        let kind = if force_ytdlp || is_ytdlp_url(&normalized_url) {
             KIND_YTDLP
         } else if is_hls_url(&normalized_url) {
             KIND_HLS
@@ -2205,6 +2201,18 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
 
     let mut cmd = hidden_command(&ytdlp);
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    // Logged-in sites (Facebook, Instagram, Vimeo private) need the tab's session. Not sent for YouTube:
+    // yt-dlp documents that using account cookies there can get the account flagged.
+    let cookie_file = temp_dir.join("cookies.txt");
+    let host = url::Url::parse(&task.url).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
+    let is_youtube = host.ends_with("youtube.com") || host == "youtu.be";
+    if let (Some(c), false) = (&task.cookie, is_youtube || host.is_empty()) {
+        if let Some(jar) = netscape_cookie_jar(&host, c) {
+            if fs::write(&cookie_file, jar).is_ok() {
+                cmd.arg("--cookies").arg(&cookie_file);
+            }
+        }
+    }
     cmd.args(["--encoding", "utf-8", "--newline", "--no-colors", "--no-playlist", "--no-mtime", "--progress"]);
     cmd.args(["--retries", "10", "--fragment-retries", "10", "--concurrent-fragments", "4"]);
     cmd.args(["--user-agent", &ctx.ua]);
@@ -2280,12 +2288,18 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
     let (outcome, final_path) = outcome_and_path;
     let outcome = outcome?;
 
+    let _ = fs::remove_file(&cookie_file);
     if !ctx.is_running() {
         return Err("Paused".to_string());
     }
     if !outcome.success {
         let msg = if outcome.stderr_tail.is_empty() { "yt-dlp failed".to_string() } else { outcome.stderr_tail };
-        return Err(msg);
+        let hint = if msg.contains("Unsupported URL") {
+            " (this site is not supported by yt-dlp; try Grab or the stream list)"
+        } else {
+            ""
+        };
+        return Err(format!("{}{}", msg, hint));
     }
 
     let path = final_path
@@ -2301,6 +2315,27 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     mark_completed(ctx, task.id, &path, sha, size);
     Ok(())
+}
+
+/// Builds a Netscape cookies.txt for one host from a `Cookie:` header value.
+pub fn netscape_cookie_jar(host: &str, cookie_header: &str) -> Option<String> {
+    let host = host.trim().trim_start_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    let base = host.strip_prefix("www.").unwrap_or(host);
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    let mut n = 0;
+    for pair in cookie_header.split(';') {
+        let Some((name, value)) = pair.trim().split_once('=') else { continue };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || name.contains(['\t', '\n', '\r']) || value.contains(['\t', '\n', '\r']) {
+            continue;
+        }
+        out.push_str(&format!(".{}\tTRUE\t/\tFALSE\t0\t{}\t{}\n", base, name, value));
+        n += 1;
+    }
+    (n > 0).then_some(out)
 }
 
 fn newest_file_since(dir: &Path, since: SystemTime) -> Option<PathBuf> {
