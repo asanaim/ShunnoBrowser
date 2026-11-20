@@ -662,6 +662,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <span class="card-title">Controls</span>
             <div style="display:flex;gap:5px;align-items:center;">
               <span class="meta" id="version-badge" style="font-weight:700;">v1.5.0</span>
+              <button class="pill-btn pill-soft" id="btn-update" style="display:none;"></button>
               <button class="pill-btn pill-soft" onclick="send('ZOOM_OUT')" title="Zoom Out (Ctrl+-)">A−</button>
               <button class="pill-btn pill-soft" onclick="send('ZOOM_RESET')" title="Reset Zoom (Ctrl+0)">100%</button>
               <button class="pill-btn pill-soft" onclick="send('ZOOM_IN')" title="Zoom In (Ctrl++)">A+</button>
@@ -1258,7 +1259,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       setTimeout(() => document.body.classList.toggle('dark', wantDark), 120);
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.9.6';
+    document.getElementById('version-badge').textContent = state.version || '';
+    const upBtn = document.getElementById('btn-update');
+    if (upBtn) {
+      const k = state.update_kind || '';
+      upBtn.title = state.update_label || '';
+      if (k === 'ready') {
+        upBtn.style.display = ''; upBtn.className = 'pill-btn pill-green';
+        upBtn.textContent = '⬆ Restart to update'; upBtn.onclick = () => send('RESTART_FOR_UPDATE');
+      } else if (k === 'available') {
+        upBtn.style.display = ''; upBtn.className = 'pill-btn pill-blue';
+        upBtn.textContent = '⬆ Update available'; upBtn.onclick = () => send('OPEN_RELEASES');
+      } else {
+        upBtn.style.display = ''; upBtn.className = 'pill-btn pill-soft';
+        upBtn.textContent = k === 'uptodate' ? '✓ Up to date' : (k === 'failed' ? '⟳ Check again' : '⟳ Check for updates');
+        upBtn.onclick = () => send('CHECK_UPDATES');
+      }
+    }
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
@@ -1440,6 +1457,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups],
       ['https_only', '🔒 HTTPS Only', state.global.https_only],
+      ['auto_update', '⬆️ Auto Update', state.global.auto_update],
       ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
       ['strict_tracking', '🛡️ Strict Tracking Block', state.global.strict_tracking]
     ];

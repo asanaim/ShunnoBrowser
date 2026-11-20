@@ -1,6 +1,6 @@
 [package]
 name = "shunno-browser"
-version = "2.12.0"
+version = "2.13.0"
 edition = "2021"
 description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
@@ -28,6 +28,8 @@ dirs = "5.0.1"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 # Brave's ad/tracker blocking engine (MPL-2.0, used unmodified). The full public suffix list is kept
 # (embedded-domain-resolver) so third-party detection is exact.
+# Update manifest signature verification (verify only, no precomputed tables: small).
+ed25519-dalek = { version = "3.0.0", default-features = false }
 adblock = { version = "0.13.6", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 
 [target.'cfg(windows)'.dependencies]

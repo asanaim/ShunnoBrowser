@@ -12,6 +12,8 @@ mod downloader;
 mod https_guard;
 #[path = "../src/blocker.rs"]
 mod blocker;
+#[path = "../src/updater.rs"]
+mod updater;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -205,4 +207,45 @@ fn test_every_content_script_placeholder_is_replaced() {
         rest = &tail[end + 2..];
     }
     assert!(found >= 9);
+}
+
+#[test]
+fn test_update_manifest_signature_and_versions() {
+    use updater::{is_newer, verify_manifest, Manifest};
+    // Test-only key pair produced by scripts/sign_update.py (not the release key).
+    let pk = "62d2b1deff4a99ffb134ccec895afbcb821cb4a6b8b9e8284c51e5ecd40f2c6b";
+    let good = || Manifest {
+        version: "9.9.9".into(),
+        url: "https://github.com/asanaim/ShunnoBrowser/releases/download/latest/ShunnoBrowser.exe".into(),
+        sha256: "a56c5875d765a618180353e49e08ae1625b30116c13e422dbc324e58ece4de85".into(),
+        signature: "18ee4ca67592f107f1caed94fbe1307abce3a59080968da29026b7ba6b9c940390b17984e3e801a6e56b6081ad5f082c830bcb5945ee071165e3139f84f00a04".into(),
+    };
+    assert!(verify_manifest(&good(), pk), "signature from the Python CI signer must verify in Rust");
+    let mut m = good(); m.version = "9.9.10".into(); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.sha256 = m.sha256.replace('a', "b"); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.url = "https://evil.example/ShunnoBrowser.exe".into(); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.signature = m.signature.replace('1', "2"); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.signature.clear(); assert!(!verify_manifest(&m, pk));
+    assert!(!verify_manifest(&good(), "00".repeat(32).as_str()), "wrong key");
+    assert!(!verify_manifest(&good(), ""), "no key configured");
+
+    assert!(is_newer("2.12.1", "v2.12.0"));
+    assert!(is_newer("v2.13.0", "v2.12.9"));
+    assert!(is_newer("3.0.0", "v2.99.99"));
+    assert!(!is_newer("2.12.0", "v2.12.0"));
+    assert!(!is_newer("2.9.10", "v2.10.0"), "numeric, not string, comparison");
+}
+
+#[test]
+fn test_update_install_swaps_and_keeps_old() {
+    let dir = std::env::temp_dir().join(format!("shunno_upd_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("ShunnoBrowser.exe");
+    std::fs::write(&exe, b"MZ old").unwrap();
+    updater::install(&exe, b"MZ new").unwrap();
+    assert_eq!(std::fs::read(&exe).unwrap(), b"MZ new");
+    assert_eq!(std::fs::read(dir.join("ShunnoBrowser.old.exe")).unwrap(), b"MZ old");
+    assert!(!dir.join("ShunnoBrowser.new.exe").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -3,6 +3,7 @@
 mod blocker;
 mod downloader;
 mod https_guard;
+mod updater;
 mod sanitizer;
 mod state;
 mod ui_chrome;
@@ -137,6 +138,9 @@ struct ChromeSnapshot {
     ffmpeg_status: String,
     ytdlp_status: String,
     adblock_status: String,
+    /// "", "uptodate", "available", "ready", "failed"
+    update_kind: String,
+    update_label: String,
     is_fullscreen: bool,
     has_closed_tabs: bool,
     find_current: usize,
@@ -709,6 +713,25 @@ fn dispatch_download_with_httponly_cookies(
     });
 }
 
+
+async fn check_for_updates() {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("ShunnoBrowser/{}", APP_VERSION))
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    updater::global().check(&client).await;
+}
+
+fn update_kind_label() -> (&'static str, String) {
+    match updater::global().state() {
+        updater::UpdateState::Idle => ("", String::new()),
+        updater::UpdateState::UpToDate => ("uptodate", "Up to date".to_string()),
+        updater::UpdateState::Available { version, reason } => ("available", format!("v{} available ({})", version, reason)),
+        updater::UpdateState::Ready { version } => ("ready", format!("v{} installed, restart to use it", version)),
+        updater::UpdateState::Failed(e) => ("failed", format!("Update check failed: {}", e)),
+    }
+}
 
 /// Downloads and compiles the filter lists; on failure keeps whatever engine is loaded.
 async fn refresh_filter_lists() {
@@ -2044,6 +2067,20 @@ fn main() -> wry::Result<()> {
         }
     });
 
+    // Updates: remove the EXE left by a previous update, then check shortly after start and daily.
+    updater::global().cleanup_previous();
+    if global_settings.auto_update {
+        let px = proxy.clone();
+        rt_handle.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            loop {
+                check_for_updates().await;
+                let _ = px.send_event(AppEvent::RefreshChrome);
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+            }
+        });
+    }
+
     // Ad blocking: load the cached engine instantly, refresh the lists in the background when a week old.
     {
         let px = proxy.clone();
@@ -2108,6 +2145,8 @@ fn main() -> wry::Result<()> {
             ffmpeg_status: ff_status,
             ytdlp_status: engine.ytdlp_install_status.lock().map(|s| s.clone()).unwrap_or_default(),
             adblock_status: blocker::global().status(),
+            update_kind: update_kind_label().0.to_string(),
+            update_label: update_kind_label().1,
             is_fullscreen,
             has_closed_tabs,
             find_current,
@@ -3389,6 +3428,7 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "auto_update" => global_settings.auto_update = !global_settings.auto_update,
                         "https_only" => {
                             global_settings.https_only = !global_settings.https_only;
                             https_guard::global().set_enabled(global_settings.https_only);
@@ -3410,6 +3450,31 @@ fn main() -> wry::Result<()> {
                         _ => {}
                     }
                     BrowserStorage::save_global_settings(&global_settings);
+                } else if cmd == "CHECK_UPDATES" {
+                    let px = proxy.clone();
+                    rt_handle.spawn(async move {
+                        check_for_updates().await;
+                        let _ = px.send_event(AppEvent::RefreshChrome);
+                    });
+                } else if cmd == "OPEN_RELEASES" {
+                    let opener = tabs.get(active_tab_idx).map(|t| t.id).unwrap_or(0);
+                    let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(opener, updater::RELEASES_PAGE.to_string()));
+                } else if cmd == "RESTART_FOR_UPDATE" {
+                    if matches!(updater::global().state(), updater::UpdateState::Ready { .. }) {
+                        let to_save: Vec<SavedTab> = tabs
+                            .iter()
+                            .filter(|t| !t.incognito)
+                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone() })
+                            .collect();
+                        BrowserStorage::save_session(&to_save);
+                        engine.save_queue();
+                        if let Ok(exe) = std::env::current_exe() {
+                            if Command::new(exe).spawn().is_ok() {
+                                *control_flow = ControlFlow::Exit;
+                                return;
+                            }
+                        }
+                    }
                 } else if cmd == "UPDATE_FILTERS" {
                     blocker::global().set_status("Updating filter lists...".to_string());
                     let px = proxy.clone();
