@@ -1,3 +1,12 @@
+## v2.16.0
+
+### Peek (from Arc)
+* **Shift+click** any link to preview it in a floating panel over the current page, without leaving it.
+* **Open in New Tab** keeps the live preview as a tab (scroll position, logins and form input are preserved). **Esc**, clicking outside, or the close button dismisses it.
+* Shift+click inside a Peek navigates the Peek. Switching tabs, navigating, or opening Menu/Downloads closes it.
+* The preview uses the same protections as tabs (ad blocking, HTTPS-only, fingerprint shield); a Peek opened from a private tab is private, and so are its pop-ups.
+* Toggle: Menu, **Shift-Click Peek** (on by default).
+
 ## v2.15.1
 
 ### Downloads
