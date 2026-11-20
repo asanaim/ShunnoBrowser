@@ -373,6 +373,25 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .switch.on { background: var(--blue); }
 
+  /* Password save prompt: inline in the toolbar, never blocks the page. */
+  .pw-offer {
+    display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 10px; margin-right: 4px;
+    border-radius: 15px; background: var(--blue-soft); font-size: 12px; white-space: nowrap; max-width: 420px;
+    animation: popoverIn var(--dur) var(--ease-fluid) both;
+  }
+  .pw-offer .t { overflow: hidden; text-overflow: ellipsis; }
+  .pw-offer .t b { font-weight: 600; }
+  .pw-offer .save { border: none; background: var(--blue); color: #fff; border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .pw-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; position: relative; }
+  .pw-row + .pw-row::before { content: ""; position: absolute; top: 0; left: 44px; right: 0; border-top: 1px solid var(--border); }
+  .pw-av { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(180deg, #48b2ff, #0062eb); }
+  .pw-main { flex: 1; min-width: 0; }
+  .pw-host { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pw-user { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pw-secret { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; color: var(--text); user-select: text; }
+  .pw-edit { display: flex; flex-direction: column; gap: 5px; padding: 6px 10px 10px 45px; }
+
   /* Peek: dimmed backdrop + a floating sheet whose body is the native preview web view. */
   #peek-layer { position: fixed; inset: 0; z-index: 80; display: none; }
   #peek-layer.open { display: block; }
@@ -681,6 +700,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div class="nav-group right">
+        <div id="pw-offer" class="pw-offer" style="display:none"></div>
         <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
@@ -801,7 +821,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
-            <button class="pill-btn pill-soft" onclick="if (confirm('Delete every saved password and autofill entry?')) send('CLEAR_PASSWORDS')" title="Delete all passwords saved by Shunno">🔑 Clear Passwords</button>
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
@@ -902,6 +922,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <!-- Panel E: Downloads Downloads -->
+      <div id="panel-passwords" style="display:none">
+        <div class="sheet-head">
+          <h3>Passwords</h3>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button class="text-btn" onclick="send('PW_IMPORT')" title="Import a CSV exported from Chrome, Edge, Brave, Firefox, Opera, Vivaldi or Bitwarden">Import…</button>
+          </div>
+        </div>
+        <input class="text-box" id="pw-search" placeholder="Search sites and usernames" style="width:100%;margin-bottom:8px;" oninput="renderPasswords(lastState)" />
+        <div id="pw-list"></div>
+        <div class="meta" id="pw-status" style="margin-top:8px;"></div>
+        <button class="pill-btn pill-red" id="pw-del-csv" style="display:none;margin-top:6px;" onclick="send('PW_DELETE_CSV')">Delete the imported CSV file</button>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">
+          Stored only on this PC, encrypted with your Windows account. Showing or copying a password asks for Windows Hello.
+          <a href="#" onclick="event.preventDefault(); if (confirm('Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.')) send('CLEAR_PASSWORDS');" style="color:var(--blue);">Clear old built-in passwords</a>
+        </div>
+      </div>
+
       <div id="panel-downloads" style="display:none">
         <div class="sheet-head">
           <h3>Downloads <span class="meta" id="dl-live-speed" style="font-weight:500;letter-spacing:0;"></span></h3>
@@ -1146,7 +1183,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1547,7 +1584,89 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (e.key === 'Escape' && document.getElementById('peek-layer').classList.contains('open')) send('PEEK_CLOSE');
   });
 
+  let lastState = null;
+  let pwEditing = null;
+  const pwRevealed = new Map();
+  window.__pwReveal = function (id, pw) {
+    pwRevealed.set(id, pw);
+    setTimeout(() => { pwRevealed.delete(id); if (lastState) renderPasswords(lastState); }, 30000);
+    if (lastState) renderPasswords(lastState);
+  };
+  function pwHost(o) { try { return new URL(o).host.replace(/^www\./, ''); } catch (e) { return o; } }
+  function renderPwOffer(state) {
+    const el = document.getElementById('pw-offer');
+    const o = state.pw_offer;
+    if (!o) { el.style.display = 'none'; el.dataset.k = ''; return; }
+    const k = o.origin + '|' + o.username + '|' + o.kind;
+    if (el.dataset.k === k) return;
+    el.dataset.k = k;
+    const verb = o.kind === 'Update' ? 'Update password' : 'Save password';
+    el.title = o.username ? o.username + ' on ' + pwHost(o.origin) : pwHost(o.origin);
+    el.innerHTML = `<span class="t">🔑 ${verb} for <b>${escapeHtml(pwHost(o.origin))}</b>?</span>
+      <button class="save" onclick="send('PW_SAVE')">${o.kind === 'Update' ? 'Update' : 'Save'}</button>
+      ${o.kind === 'Update' ? '' : `<button class="text-btn" onclick="send('PW_NEVER')" title="Never offer for this site">Never</button>`}
+      <button class="icon-btn" onclick="send('PW_DISMISS')" title="Not now">${SVG_X}</button>`;
+    el.style.display = 'flex';
+  }
+  function renderPasswords(state) {
+    const list = document.getElementById('pw-list');
+    if (!list) return;
+    document.getElementById('pw-status').textContent = state.pw_status || '';
+    document.getElementById('pw-del-csv').style.display = state.pw_csv_pending ? '' : 'none';
+    const q = (document.getElementById('pw-search').value || '').trim().toLowerCase();
+    const items = (state.passwords || []).filter(c => !q || c.origin.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
+    // Redraw only when something visible changed (state pushes are frequent; an edit box must keep its text).
+    const sig = JSON.stringify([items, q, pwEditing, Array.from(pwRevealed.entries())]);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    if (!items.length) {
+      list.innerHTML = `<div class="meta" style="text-align:center;padding:20px 8px;">${(state.passwords || []).length ? 'No matches.' : 'No saved passwords yet.<br>Sign in to a site and choose Save, or import a CSV.'}</div>`;
+      return;
+    }
+    const EYE = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+    const COPY = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>';
+    const EDIT = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg>';
+    list.innerHTML = '<div class="dl-group">' + items.slice(0, 400).map(c => {
+      const host = pwHost(c.origin);
+      const shown = pwRevealed.get(c.id);
+      const editing = pwEditing === c.id;
+      return `<div class="pw-row-wrap">
+        <div class="pw-row" title="${escapeHtml(c.origin)}">
+          <div class="pw-av">${escapeHtml(host.charAt(0).toUpperCase())}</div>
+          <div class="pw-main">
+            <div class="pw-host">${escapeHtml(host)}</div>
+            <div class="pw-user">${escapeHtml(c.username || '(no username)')}${shown !== undefined ? ` \u00b7 <span class="pw-secret">${escapeHtml(shown)}</span>` : ''}</div>
+          </div>
+          <div class="dl-actions">
+            <button class="icon-btn" onclick="send('PW_COPY_USER:${c.id}')" title="Copy username">@</button>
+            <button class="icon-btn" onclick="send('PW_COPY:${c.id}')" title="Copy password">${COPY}</button>
+            <button class="icon-btn ${shown !== undefined ? 'primary' : ''}" onclick="${shown !== undefined ? `pwRevealed.delete(${c.id}); renderPasswords(lastState)` : `send('PW_REVEAL:${c.id}')`}" title="${shown !== undefined ? 'Hide' : 'Show password'}">${EYE}</button>
+            <button class="icon-btn" onclick="pwEditing = ${editing ? 'null' : c.id}; renderPasswords(lastState)" title="Edit">${EDIT}</button>
+            <button class="icon-btn" onclick="if (confirm('Delete the saved password for ${encodeAttr(c.username || host)} on ${encodeAttr(host)}?')) send('PW_DELETE:${c.id}')" title="Delete">${SVG_X}</button>
+          </div>
+        </div>
+        ${editing ? `<div class="pw-edit">
+          <input class="text-box" id="pw-e-u-${c.id}" value="${encodeAttr(c.username)}" placeholder="Username" />
+          <input class="text-box" id="pw-e-p-${c.id}" type="password" placeholder="New password" />
+          <div style="display:flex;gap:6px;justify-content:flex-end;">
+            <button class="text-btn" onclick="pwEditing = null; renderPasswords(lastState)">Cancel</button>
+            <button class="pill-btn pill-blue" onclick="pwSaveEdit(${c.id})">Save</button>
+          </div>
+        </div>` : ''}
+      </div>`;
+    }).join('') + '</div>';
+  }
+  function pwSaveEdit(id) {
+    const u = document.getElementById('pw-e-u-' + id).value;
+    const p = document.getElementById('pw-e-p-' + id).value;
+    if (!p) { document.getElementById('pw-status').textContent = 'Enter the new password.'; return; }
+    pwEditing = null;
+    pwRevealed.delete(id);
+    send('PW_EDIT:' + id + '|' + JSON.stringify({ u, p }));
+  }
+
   window.renderChromeState = function(state) {
+    lastState = state;
     window.__shunnoLastState = state;
     window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
     const spBtn = document.getElementById('btn-split-toggle');
@@ -1826,6 +1945,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     renderImport(state);
     renderPeek(state);
+    renderPwOffer(state);
+    renderPasswords(state);
 
     const folderBar = document.getElementById('bookmark-folders-bar');
     folderBar.innerHTML = allFolders.map(f => `
