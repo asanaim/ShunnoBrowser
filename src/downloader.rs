@@ -435,7 +435,6 @@ struct JobCtx {
     running: Arc<AtomicBool>,
     speed_limit: Arc<AtomicU64>,
     tasks: Arc<Mutex<Vec<DownloadTask>>>,
-    auto_clean: bool,
     ffmpeg_status: Arc<Mutex<String>>,
     ytdlp_status: Arc<Mutex<String>>,
 }
@@ -468,7 +467,11 @@ impl NativeDownloadEngine {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        let loaded = Self::load_queue();
+        let mut loaded = Self::load_queue();
+        // "Auto-clean finished": finished items stay visible for the session and are dropped at the next start.
+        if initial_auto_clean {
+            loaded.retain(|t| t.status != "COMPLETED");
+        }
         Self {
             client,
             tasks: Arc::new(Mutex::new(loaded)),
@@ -519,7 +522,6 @@ impl NativeDownloadEngine {
             running,
             speed_limit: self.speed_limit_bps.clone(),
             tasks: self.tasks.clone(),
-            auto_clean: self.auto_clean_completed.load(Ordering::Relaxed),
             ffmpeg_status: self.ffmpeg_install_status.clone(),
             ytdlp_status: self.ytdlp_install_status.clone(),
         }
@@ -587,12 +589,8 @@ impl NativeDownloadEngine {
     pub fn finish_native_download(&self, id: u64, ok: bool, final_path: Option<String>, err_msg: Option<String>) {
         let sha_hex = if ok { final_path.as_deref().and_then(|p| sha256_file(Path::new(p))) } else { None };
         let final_size = final_path.as_ref().and_then(|p| fs::metadata(p).ok().map(|m| m.len()));
-        let auto_clean = self.auto_clean_completed.load(Ordering::Relaxed);
-
         if let Ok(mut list) = self.tasks.lock() {
-            if ok && auto_clean {
-                list.retain(|i| i.id != id);
-            } else if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+            if let Some(t) = list.iter_mut().find(|i| i.id == id) {
                 t.speed_bps = 0;
                 if ok {
                     t.status = "COMPLETED".to_string();
@@ -1708,9 +1706,7 @@ async fn finalize_completed(ctx: &JobCtx, task_id: u64, part_path: &Path, name_o
 
 fn mark_completed(ctx: &JobCtx, task_id: u64, dest: &Path, sha: Option<String>, size: u64) {
     if let Ok(mut list) = ctx.tasks.lock() {
-        if ctx.auto_clean {
-            list.retain(|i| i.id != task_id);
-        } else if let Some(t) = list.iter_mut().find(|i| i.id == task_id) {
+        if let Some(t) = list.iter_mut().find(|i| i.id == task_id) {
             t.file_name = dest.file_name().and_then(|s| s.to_str()).unwrap_or("download.bin").to_string();
             t.category = detect_download_category(&t.file_name);
             t.total_bytes = size as i64;

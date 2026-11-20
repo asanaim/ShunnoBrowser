@@ -1,3 +1,18 @@
+## v2.15.1
+
+### Downloads
+* Finished downloads stay in the list. "Auto-Clean Done" is now **Tidy Finished on Start**: completed items are removed at the next launch, not the moment they finish (which emptied the list and hid the filters).
+* The All / Downloading / Downloaded / Paused / Failed bar is always shown.
+
+### Bookmarks bar
+* Shown only on the New Tab page (Safari's Favorites behaviour). Web pages get the full height.
+* The page now sits flush under the toolbar at its real height (reported by the toolbar), fixing a 1 to 2 px overlap, larger when maximized.
+
+### Icon
+* New app icon: blue rounded tile, white open ring for *shunno* (zero), amber dot. Sizes 16 to 256 px, small sizes as BMP, large as PNG. Source: `assets/brand/make_icon.py`.
+* Taskbar and title-bar icons are chosen for the display DPI (32 px at 100%, 40 px at 125%, 48 px at 150%); previously a 48 px icon was downscaled, which blurred it.
+* Toolbar logo updated to match.
+
 ## v2.15.0
 
 ### Tabs (from Arc)
