@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-/// Hex Ed25519 public key (32 bytes). Empty = notify-only mode. See docs/RELEASING.md.
-pub const UPDATE_PUBLIC_KEY_HEX: &str = "";
+/// Hex Ed25519 public key (32 bytes) of the release signing key. Empty = notify-only mode.
+/// See docs/RELEASING.md. Rotating it requires one release signed with the old key.
+pub const UPDATE_PUBLIC_KEY_HEX: &str = "d39e65379f6f4ed0edefc7b3bfef0a642e23cbaa6375bdc2d420b943c4027478";
 pub const MANIFEST_URL: &str = "https://github.com/asanaim/ShunnoBrowser/releases/latest/download/latest.json";
 pub const RELEASES_PAGE: &str = "https://github.com/asanaim/ShunnoBrowser/releases/latest";
 const ALLOWED_URL_PREFIX: &str = "https://github.com/asanaim/ShunnoBrowser/releases/download/";
@@ -145,6 +146,10 @@ impl Updater {
         }
         if UPDATE_PUBLIC_KEY_HEX.is_empty() {
             return Ok(UpdateState::Available { version, reason: "signing key not configured".to_string() });
+        }
+        if m.signature.trim().is_empty() {
+            // CI has no UPDATE_SIGNING_KEY secret yet: never install, just point to the release page.
+            return Ok(UpdateState::Available { version, reason: "release is not signed".to_string() });
         }
         if !verify_manifest(&m, UPDATE_PUBLIC_KEY_HEX) {
             return Err(fail("update signature invalid, ignored".to_string()));

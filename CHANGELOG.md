@@ -1,3 +1,13 @@
+## v2.13.1
+
+### UI
+* Menu and Downloads open as popovers anchored under their buttons, with a pointer; no detached gap.
+* Motion follows one deceleration curve without bounce; popovers fade out on close instead of vanishing.
+* Light and dark switch as a single cross-fade (View Transitions), in the toolbar and in pages.
+* Maximized windows keep a top margin, use square corners, and show a Restore Down icon.
+* Snap Layouts flyout waits 600 ms on hover, matching Windows.
+* Respects the system Reduce Motion setting.
+
 ## v2.13.0 (2026-11-20)
 - **Auto-update with signed manifests:** CI publishes `latest.json` (version, URL, SHA-256, Ed25519 signature) beside the EXE. The browser checks 20 s after start and daily, verifies the signature against the compiled-in public key and the EXE hash, swaps the EXE (old one kept until next start) and offers **Restart to update**. Tampered manifests, files or links are rejected; downloads are only accepted from this repository's releases.
 - **Notify-only until configured:** with no signing key set, it only shows "Update available" linking to the release page. Setup in `docs/RELEASING.md` (free, one time).
