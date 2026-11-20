@@ -20,7 +20,7 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{ElementState, Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::KeyCode;
-use tao::window::{Fullscreen, Window, WindowBuilder};
+use tao::window::{Fullscreen, Icon, Window, WindowBuilder};
 use userscripts::{list_user_scripts, load_approved_user_scripts, user_scripts_dir, UserScriptInfo};
 use wry::{Rect, WebContext, WebView, WebViewBuilder};
 
@@ -46,7 +46,7 @@ enum AppEvent {
         open_drawer: bool,
     },
     NewWindowBlockedOrOpened(String),
-    NativeStreamCaptured(usize, String),
+    NativeStreamCaptured(usize, String, String, String),
     StreamSizeResolved(usize, StreamProbeResult),
     TabAudioChanged(usize, bool),
     TabTitleChanged(usize, String),
@@ -151,6 +151,67 @@ fn build_content_init_script(
     }
 
     script
+}
+
+#[cfg(windows)]
+fn set_explicit_app_user_model_id() {
+    unsafe {
+    }
+}
+
+#[cfg(not(windows))]
+fn set_explicit_app_user_model_id() {}
+
+fn load_embedded_window_icon() -> Option<Icon> {
+    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+    if ICO_BYTES.len() < 22 {
+        return None;
+    }
+    let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
+    for target_size in [48u32, 32u32, 64u32] {
+        for i in 0..count {
+            let off = 6 + i * 16;
+            if off + 16 > ICO_BYTES.len() {
+                break;
+            }
+            let w = ICO_BYTES[off] as u32;
+            let h = ICO_BYTES[off + 1] as u32;
+            let bytes_in_res = u32::from_le_bytes([
+                ICO_BYTES[off + 8],
+                ICO_BYTES[off + 9],
+                ICO_BYTES[off + 10],
+                ICO_BYTES[off + 11],
+            ]) as usize;
+            let img_offset = u32::from_le_bytes([
+                ICO_BYTES[off + 12],
+                ICO_BYTES[off + 13],
+                ICO_BYTES[off + 14],
+                ICO_BYTES[off + 15],
+            ]) as usize;
+
+            if w == target_size && h == target_size && img_offset + 40 + (w * h * 4) as usize <= ICO_BYTES.len() && bytes_in_res >= 40 {
+                let pixel_start = img_offset + 40;
+                let row_bytes = (w * 4) as usize;
+                let mut rgba = vec![0u8; (w * h * 4) as usize];
+                for y in 0..(h as usize) {
+                    let src_row = pixel_start + ((h as usize - 1 - y) * row_bytes);
+                    let dst_row = y * row_bytes;
+                    for x in 0..(w as usize) {
+                        let s = src_row + x * 4;
+                        let d = dst_row + x * 4;
+                        rgba[d] = ICO_BYTES[s + 2];     // R
+                        rgba[d + 1] = ICO_BYTES[s + 1]; // G
+                        rgba[d + 2] = ICO_BYTES[s];     // B
+                        rgba[d + 3] = ICO_BYTES[s + 3]; // A
+                    }
+                }
+                if let Ok(icon) = Icon::from_rgba(rgba, w, h) {
+                    return Some(icon);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn now_epoch_secs() -> u64 {
@@ -283,7 +344,7 @@ fn dispatch_download_with_httponly_cookies(
 ) {
     use webview2_com::GetCookiesCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-    use windows::core::{Interface, PCWSTR};
+    use windows::core::Interface;
     use wry::WebViewExtWindows;
 
     let dup_mode_owned = dup_mode.to_string();
@@ -390,7 +451,7 @@ fn dispatch_download_with_httponly_cookies(
 fn clear_httponly_cookies_for_url(webview: &WebView, url: &str) {
     use webview2_com::GetCookiesCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-    use windows::core::{Interface, PCWSTR};
+    use windows::core::Interface;
     use wry::WebViewExtWindows;
 
     if !url.starts_with("http") {
@@ -632,6 +693,88 @@ fn attach_native_webview2_hooks(
         }
 
 
+
+        // 2b. Native IDM-Class HTTP Response Media Sniffer (ICoreWebView2_2::add_WebResourceResponseReceived)
+        use webview2_com::WebResourceResponseReceivedEventHandler;
+        let mut resp_token = Default::default();
+        let resp_proxy = proxy.clone();
+        let resp_handler = WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()); };
+            let Ok(req) = args.Request() else { return Ok(()); };
+            let mut uri_ptr = windows::core::PWSTR::null();
+            if req.Uri(&mut uri_ptr).is_err() { return Ok(()); }
+            let raw_uri = webview2_com::take_pwstr(uri_ptr);
+            if !raw_uri.starts_with("http") { return Ok(()); }
+
+            let Ok(resp) = args.Response() else { return Ok(()); };
+            let Ok(headers) = resp.Headers() else { return Ok(()); };
+
+            let mut ct_ptr = windows::core::PWSTR::null();
+            let content_type = if headers.GetHeader(w!("content-type"), &mut ct_ptr).is_ok() {
+                webview2_com::take_pwstr(ct_ptr).to_ascii_lowercase()
+            } else {
+                String::new()
+            };
+
+            let mut cl_ptr = windows::core::PWSTR::null();
+            let content_len: u64 = if headers.GetHeader(w!("content-length"), &mut cl_ptr).is_ok() {
+                webview2_com::take_pwstr(cl_ptr).trim().parse::<u64>().unwrap_or(0)
+            } else {
+                0
+            };
+
+            let lower_uri = raw_uri.to_ascii_lowercase();
+            let is_media_ct = content_type.starts_with("video/")
+                || content_type.starts_with("audio/")
+                || content_type.contains("mpegurl")
+                || content_type.contains("dash+xml")
+                || content_type.contains("x-matroska");
+
+            let is_large_enough = content_len == 0 || content_len >= 65_536 || content_type.contains("mpegurl") || content_type.contains("dash+xml");
+
+            if is_media_ct && is_large_enough {
+                let mut clean_uri = raw_uri;
+                if lower_uri.contains("googlevideo.com/videoplayback") {
+                    // Strip transient MSE byte-range parameters so NativeDownloadEngine downloads the complete stream
+                    let mut parts: Vec<&str> = Vec::new();
+                    if let Some((base, q)) = clean_uri.split_once('?') {
+                        for kv in q.split('&') {
+                            if !kv.starts_with("range=") && !kv.starts_with("rbuf=") && !kv.starts_with("rn=") {
+                                parts.push(kv);
+                            }
+                        }
+                        clean_uri = format!("{}?{}", base, parts.join("&"));
+                    }
+                }
+                let ext = if content_type.contains("mpegurl") {
+                    ".M3U8"
+                } else if content_type.contains("dash+xml") {
+                    ".MPD"
+                } else if content_type.contains("webm") {
+                    ".WEBM"
+                } else if content_type.contains("matroska") {
+                    ".MKV"
+                } else if content_type.starts_with("audio/") {
+                    ".M4A"
+                } else {
+                    ".MP4"
+                };
+                let size_label = if content_len > 0 {
+                    downloader::format_human_size(content_len)
+                } else {
+                    "Stream".to_string()
+                };
+                let _ = resp_proxy.send_event(AppEvent::NativeStreamCaptured(
+                    tab_id,
+                    clean_uri,
+                    ext.to_string(),
+                    size_label,
+                ));
+            }
+            Ok(())
+        }));
+        let _ = core2.add_WebResourceResponseReceived(&resp_handler, &mut resp_token);
+
         // 4. Native WebView2 ContextMenuRequested Hook: Replace "Open link in new window" with "Open link in new tab"
         use webview2_com::ContextMenuRequestedEventHandler;
         use webview2_com::CustomItemSelectedEventHandler;
@@ -785,17 +928,16 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use tao::platform::windows::WindowExtWindows;
     use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_COLOR, ICoreWebView2Controller2};
-    use windows::core::{Interface, PCWSTR};
+    use windows::core::Interface;
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, GetClientRect, GetWindowLongW, GetWindowRect, LoadImageW, SendMessageW,
+        CallWindowProcW, CreateIconFromResourceEx, GetClientRect, GetWindowLongW, GetWindowRect, SendMessageW,
         SetClassLongPtrW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON,
         GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, HTBOTTOM, HTBOTTOMLEFT,
         HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG,
-        ICON_SMALL, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, SWP_FRAMECHANGED, SWP_NOMOVE,
+        ICON_SMALL, LR_DEFAULTCOLOR, SWP_FRAMECHANGED, SWP_NOMOVE,
         SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON, WNDPROC,
         WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
@@ -805,7 +947,6 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     let hwnd = HWND(window.hwnd() as isize);
 
     unsafe {
-        let _ = SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Shunno.Browser.Desktop"));
 
         // 0. Native Windows 11 Rounded Corners (DWMWCP_ROUND)
         let corner_pref = DWMWCP_ROUND;
@@ -834,31 +975,32 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
 
-        // 2. Load the embedded EXE icon resource (#1 compiled by winres) onto both Window & Class
+        // 2. Apply full-brightness embedded icon directly onto Window & Class (GCLP_HICON / WM_SETICON)
+        const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+        if ICO_BYTES.len() >= 22 {
+            let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
+            for i in 0..count {
+                let off = 6 + i * 16;
+                if off + 16 > ICO_BYTES.len() { break; }
+                let w = ICO_BYTES[off] as i32;
+                let sz = u32::from_le_bytes([ICO_BYTES[off + 8], ICO_BYTES[off + 9], ICO_BYTES[off + 10], ICO_BYTES[off + 11]]) as usize;
+                let img_off = u32::from_le_bytes([ICO_BYTES[off + 12], ICO_BYTES[off + 13], ICO_BYTES[off + 14], ICO_BYTES[off + 15]]) as usize;
+                if img_off + sz <= ICO_BYTES.len() {
+                    let slice = &ICO_BYTES[img_off..img_off + sz];
+                    if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
+                        if w == 48 || w == 32 {
+                            SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
+                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
+                        } else if w == 16 || w == 24 {
+                            SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon.0);
+                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0));
+                        }
+                    }
+                }
+            }
+        }
         if let Ok(hinst) = GetModuleHandleW(None) {
-            let hinstance = HINSTANCE(hinst.0);
-            if let Ok(hicon_big) = LoadImageW(
-                hinstance,
-                PCWSTR(1 as *const u16),
-                IMAGE_ICON,
-                48,
-                48,
-                LR_SHARED,
-            ) {
-                SetClassLongPtrW(hwnd, GCLP_HICON, hicon_big.0);
-                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon_big.0));
-            }
-            if let Ok(hicon_sm) = LoadImageW(
-                hinstance,
-                PCWSTR(1 as *const u16),
-                IMAGE_ICON,
-                16,
-                16,
-                LR_DEFAULTSIZE | LR_SHARED,
-            ) {
-                SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon_sm.0);
-                let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon_sm.0));
-            }
+            let _ = HINSTANCE(hinst.0);
         }
 
         // 3. Make chrome_wv WebView2 background transparent (A=0) so overlays float cleanly over the live webpage
@@ -1020,6 +1162,8 @@ fn layout_webviews(
 }
 
 fn main() -> wry::Result<()> {
+    set_explicit_app_user_model_id();
+
     // Store WebView2 user profile cleanly inside %LOCALAPPDATA%\ShunnoBrowser\WebView2
     // so ShunnoBrowser.exe stays 100% standalone with zero folder beside the executable.
     let wv2_data_dir = BrowserStorage::app_data_dir().join("WebView2");
@@ -1050,6 +1194,7 @@ fn main() -> wry::Result<()> {
     let window = WindowBuilder::new()
         .with_title("Shunno Browser")
         .with_decorations(false)
+        .with_window_icon(load_embedded_window_icon())
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
         .build(&event_loop)
         .unwrap();
@@ -1518,39 +1663,59 @@ fn main() -> wry::Result<()> {
                 );
             }
 
-            Event::UserEvent(AppEvent::NativeStreamCaptured(tab_id, stream_url)) => {
+            Event::UserEvent(AppEvent::NativeStreamCaptured(tab_id, stream_url, ext, size_label)) => {
                 if !sniffed_streams.iter().any(|s| s.url == stream_url) {
-                    let name = stream_url
-                        .split('?')
-                        .next()
-                        .and_then(|p| p.rsplit('/').next())
-                        .unwrap_or("Media Stream")
-                        .to_string();
+                    let tab_title = tabs
+                        .iter()
+                        .find(|t| t.id == tab_id)
+                        .map(|t| t.title.clone())
+                        .filter(|t| !t.is_empty() && t != "New Tab")
+                        .unwrap_or_else(|| "Media Stream".to_string());
+                    let display_name = format!("{} ({})", tab_title, ext.trim_start_matches('.'));
                     sniffed_streams.insert(
                         0,
                         SniffedStreamItem {
                             url: stream_url.clone(),
-                            name,
-                            size_label: "Probing...".to_string(),
+                            name: display_name.clone(),
+                            size_label: size_label.clone(),
                         },
                     );
                     if sniffed_streams.len() > 25 {
                         sniffed_streams.truncate(25);
                     }
-                    let tab_info = tabs
-                        .iter()
-                        .find(|t| t.id == tab_id)
-                        .map(|t| (t.url.clone(), t.cookie.clone()));
-                    let (ref_url, cookie_val) = match tab_info {
-                        Some((u, c)) => (Some(u), c),
-                        None => (None, None),
-                    };
-                    let eng = engine.clone();
-                    let px = proxy.clone();
-                    rt_handle.spawn(async move {
-                        let res = eng.probe_stream_metadata(stream_url, ref_url, cookie_val).await;
-                        let _ = px.send_event(AppEvent::StreamSizeResolved(tab_id, res));
-                    });
+
+                    if let Some(tab) = tabs.iter().find(|t| t.id == tab_id) {
+                        let payload = serde_json::json!({
+                            "url": stream_url,
+                            "ext": ext,
+                            "name": display_name,
+                            "size_label": size_label,
+                        });
+                        if let Ok(js_arg) = serde_json::to_string(&payload) {
+                            let js = format!("if (window.__shunnoOnNativeStream) window.__shunnoOnNativeStream({});", js_arg);
+                            let _ = tab.webview.evaluate_script(&js);
+                        }
+                    }
+
+                    push_chrome_state(
+                        &window,
+                        &chrome_wv,
+                        &tabs,
+                        active_tab_idx,
+                        split_tab_idx,
+                        &site_policies,
+                        &global_settings,
+                        blocked_count,
+                        &sniffed_streams,
+                        &bookmarks,
+                        &history,
+                        &duplicate_alert,
+                        !closed_tabs.is_empty(),
+                        find_current,
+                        find_total,
+                        site_data_cleared,
+                        &engine,
+                    );
                 }
             }
 

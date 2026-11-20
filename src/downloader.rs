@@ -292,13 +292,11 @@ impl NativeDownloadEngine {
     pub fn export_history_csv(&self) -> Result<PathBuf, String> {
         let out_path = BrowserStorage::downloads_root_dir().join("download_history.csv");
         let list = self.tasks.lock().map_err(|e| e.to_string())?;
-        let mut csv = String::from("ID,FileName,Category,Status,TotalBytes,SHA256,SavedPath,URL
-");
-        let esc = |s: &str| format!(""{}"", s.replace('"', """"));
+        let mut csv = String::from("ID,FileName,Category,Status,TotalBytes,SHA256,SavedPath,URL\n");
+        let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
         for t in list.iter() {
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{}
-",
+                "{},{},{},{},{},{},{},{}\n",
                 t.id,
                 esc(&t.file_name),
                 esc(&t.category),
@@ -959,6 +957,7 @@ async fn download_raw_to_path(
 
     let mut total_len = 0u64;
     let mut supports_range = false;
+    let mut reused_full_resp: Option<reqwest::Response> = None;
     let mut probe_resp_opt = req.send().await.ok();
     if let Some(ref r) = probe_resp_opt {
         if !r.status().is_success() && r.status() != StatusCode::PARTIAL_CONTENT {
@@ -1017,7 +1016,10 @@ async fn download_raw_to_path(
                 .get(ACCEPT_RANGES)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.eq_ignore_ascii_case("bytes"));
-            supports_range = false; // Server ignored Range: bytes=0-0 and returned 200 OK; use safe single-stream fallback
+            supports_range = false; // Server ignored Range: bytes=0-0 and returned 200 OK; reuse this live response directly
+            if resp.status() == StatusCode::OK {
+                reused_full_resp = Some(resp);
+            }
         }
     }
 
@@ -1229,20 +1231,25 @@ async fn download_raw_to_path(
             let _ = fs::remove_file(NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i)));
         }
     } else {
-        let mut rb = client
-            .get(&task.url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
-            .header("Accept", "*/*");
-        if let Some(ref r) = task.referer {
-            if !r.is_empty() { rb = rb.header(REFERER, r); }
-        }
-        if let Some(ref ck) = task.cookie {
-            if !ck.is_empty() { rb = rb.header(COOKIE, ck); }
-        }
-        let resp = rb.send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}", resp.status()));
-        }
+        let resp = if let Some(r) = reused_full_resp {
+            r
+        } else {
+            let mut rb = client
+                .get(&task.url)
+                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+                .header("Accept", "*/*");
+            if let Some(ref r) = task.referer {
+                if !r.is_empty() { rb = rb.header(REFERER, r); }
+            }
+            if let Some(ref ck) = task.cookie {
+                if !ck.is_empty() { rb = rb.header(COOKIE, ck); }
+            }
+            let r = rb.send().await.map_err(|e| e.to_string())?;
+            if !r.status().is_success() {
+                return Err(format!("HTTP {}", r.status()));
+            }
+            r
+        };
 
         let mut out = File::create(part_path).map_err(|e| e.to_string())?;
         let mut stream = resp.bytes_stream();

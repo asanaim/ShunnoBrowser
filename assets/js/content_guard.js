@@ -316,6 +316,17 @@
     postSecure('STREAM:' + urlStr);
   }
 
+  window.__shunnoOnNativeStream = function(info) {
+    if (!info || !info.url || !String(info.url).startsWith('http')) return;
+    const urlStr = String(info.url);
+    if (capturedStreams.some(s => s.url === urlStr)) return;
+    const ext = String(info.ext || '.MP4').toUpperCase();
+    const name = String(info.name || (document.title || 'Media Stream')).trim();
+    if (info.size_label) probedSizes.set(urlStr, info.size_label);
+    capturedStreams.unshift({ url: urlStr, ext: ext, name: name });
+    if (capturedStreams.length > 24) capturedStreams.pop();
+  };
+
   window.__shunnoOnStreamProbed = function(info) {
     if (!info || !info.url) return;
     probedSizes.set(info.url, info.size_label || 'Stream');
@@ -337,8 +348,23 @@
       postSecure('AD_BLOCKED');
       return true;
     }
-    if (ALL_EXTS.some(ext => cleanLower.endsWith(ext)) && str.startsWith('http')) {
-      addCapturedStream(str);
+    if (str.startsWith('http')) {
+      if (ALL_EXTS.some(ext => cleanLower.endsWith(ext))) {
+        addCapturedStream(str);
+      } else if (
+        lower.includes('googlevideo.com/videoplayback')
+        || lower.includes('mime=video')
+        || lower.includes('mime=audio')
+        || lower.includes('/manifest.mpd')
+        || lower.includes('/playlist.m3u8')
+      ) {
+        let cleanedStream = str;
+        if (lower.includes('googlevideo.com/videoplayback')) {
+          cleanedStream = str.replace(/&range=[^&]+/g, '').replace(/&rbuf=[^&]+/g, '');
+        }
+        const hint = lower.includes('mime=audio') ? '.m4a' : (lower.includes('.m3u8') ? '.m3u8' : '.mp4');
+        addCapturedStream(cleanedStream, hint);
+      }
     }
     return false;
   }

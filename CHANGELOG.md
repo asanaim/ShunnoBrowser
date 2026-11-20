@@ -1,3 +1,8 @@
+## v2.7.0 (2026-11-20)
+- Fixed `src/downloader.rs:297` CSV export string escaping compile error.
+- Fixed Windows taskbar & `.exe` icon: moved `SetCurrentProcessExplicitAppUserModelID` before window creation, restored `WindowBuilder::with_window_icon(load_embedded_window_icon())` with full-brightness `assets/app.ico`, applied `CreateIconFromResourceEx` directly to `GCLP_HICON`/`WM_SETICON`, and enforced `winres` compilation in `build.rs`.
+- Built true native IDM-class HTTP Response Media Sniffer (`ICoreWebView2_2::add_WebResourceResponseReceived`): detects `video/*`, `audio/*`, `.m3u8`, `.mpd`, and `googlevideo.com/videoplayback` streams by `Content-Type` header regardless of URL extension, injects them straight into the floating `0↓ Download` pill, and reuses `200 OK` responses directly in `NativeDownloadEngine` so single-use tokenized download links never break.
+
 ## v2.6.0 (2026-11-20)
 - Added **One-Click Page Screenshot (`📸 Capture`)** via WebView2 `CapturePreview`, saving crisp PNG captures directly to `<Downloads>\Screenshots\` and revealing them in File Explorer.
 - Added **Custom Downloads Folder** setting (`custom_downloads_dir` in `GlobalSettings`) so users can route downloads, screenshots, and CSV exports to any drive or directory.
