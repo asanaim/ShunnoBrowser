@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.7";
+pub const APP_VERSION: &str = "v2.9.8";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -108,6 +108,12 @@ pub struct GlobalSettings {
     pub on_queue_complete: String,
     #[serde(default)]
     pub custom_downloads_dir: Option<String>,
+    /// WebView2 built-in password manager (DPAPI-encrypted in the profile). Never active in private tabs.
+    #[serde(default = "default_true")]
+    pub save_passwords: bool,
+    /// Edge tracking prevention: Strict when true, Balanced when false.
+    #[serde(default)]
+    pub strict_tracking: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -116,6 +122,10 @@ pub struct GlobalSettings {
     pub speed_limit_bps: u64,
     pub active_search_engine: usize,
     pub search_engines: Vec<SearchEngine>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for GlobalSettings {
@@ -131,6 +141,8 @@ impl Default for GlobalSettings {
             max_concurrent_downloads: 3,
             on_queue_complete: "NONE".to_string(),
             custom_downloads_dir: None,
+            save_passwords: true,
+            strict_tracking: false,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },

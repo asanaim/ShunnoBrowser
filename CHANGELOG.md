@@ -1,3 +1,13 @@
+## v2.9.8 (2026-11-20)
+- **Floating download bar never appeared (root cause):** `content_guard.js` crashed at document start on every page (`appendChild` on a null `<head>`), which aborted the whole script: floating bar, drop-basket handlers, page metadata (history titles, tab UA/cookies), find counts, audio state and in-page shortcuts never ran. Early DOM writes now wait for a root element.
+- **IDM-style bar:** appears over every visible video/audio player, including `blob:`/MSE streaming players, and pops up once when a video starts playing. "This video" hands the page to yt-dlp (with the tab's session cookies, except on YouTube). Styling uses constructable stylesheets so strict-CSP sites cannot hide it.
+- **Downloads panel simplified:** one link box, Clear, Find on page, folder, settings. Connections, schedule, queue, speed limit, folder, tools, CSV and DASH merge moved behind settings. Rows use plain language.
+- **Clear works:** it removed only failed or missing items before; it now removes all finished and failed entries (files stay on disk).
+- **Private tabs are actually private:** they shared the normal profile (cookies, logins, storage, cache). They now run in a WebView2 InPrivate session; popups from private tabs stay private.
+- **Password manager:** WebView2's built-in password saving and autofill enabled (DPAPI-encrypted in the profile, off in private tabs), with Save Passwords toggle and Clear Passwords.
+- **Tracking prevention:** Edge tracking prevention set to Balanced, with a Strict toggle.
+- **Closed source:** proprietary `LICENSE`, `THIRD_PARTY_NOTICES.md`, CI publishes releases to the public `ShunnoBrowser-Windows` repo (secret `RELEASES_TOKEN`) so this source repo can be private.
+
 ## v2.9.7 (2026-11-20)
 **Download engine (`src/downloader.rs`), rebuilt so the IDM features actually work:**
 - **Pause/Resume fixed:** `.offset` resume files were deleted on every pause, so Resume restarted from zero. They are now removed only after a fully successful transfer. Single-connection downloads also resume (new `_s.offset` sidecar plus `Range: bytes=N-`).

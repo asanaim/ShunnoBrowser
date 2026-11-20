@@ -3,7 +3,7 @@
 **Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with native Windows TLS / SChannel).
 
 ## Direct Download
-- **[Download ShunnoBrowser.exe](https://github.com/asanaim/ShunnoBrowser/releases/latest/download/ShunnoBrowser.exe)**
+- **[Download ShunnoBrowser.exe](https://github.com/asanaim/ShunnoBrowser-Windows/releases/latest/download/ShunnoBrowser.exe)**
 
 ---
 
@@ -37,3 +37,7 @@
 - **`Ctrl + J`** — Open Downloads Downloads
 - **`Ctrl + R`** — Reload Page
 - **`Esc`** — Close Side Panel
+
+
+## License
+Free to use. Proprietary, closed source: Copyright (c) 2026 Syed Naim. All rights reserved. See `LICENSE`.

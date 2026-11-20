@@ -30,6 +30,25 @@
     }
   }
 
+  // WebView2 runs this script when the global object is created, before <html> exists.
+  // Appending to document.head/documentElement at that moment throws and used to abort the
+  // whole script (floating bar, page metadata, find, shortcuts). Defer until a root exists.
+  function appendWhenReady(el) {
+    const target = document.head || document.documentElement;
+    if (target) {
+      target.appendChild(el);
+      return;
+    }
+    const obs = new MutationObserver(() => {
+      const t = document.head || document.documentElement;
+      if (t) {
+        obs.disconnect();
+        t.appendChild(el);
+      }
+    });
+    obs.observe(document, { childList: true, subtree: true });
+  }
+
   function formatBytesJS(bytes) {
     const b = Number(bytes);
     if (!b || isNaN(b) || b <= 0) return null;
@@ -109,7 +128,7 @@
   if (IMAGES_DISABLED) {
     const st = document.createElement('style');
     st.textContent = 'img, picture, svg, video[poster], [style*="background-image"] { display: none !important; background-image: none !important; }';
-    (document.head || document.documentElement).appendChild(st);
+    appendWhenReady(st);
   }
 
   // 5. Reader Mode On/Off Toggle (Clean typography with instant restore)
@@ -149,7 +168,7 @@
       #shunno-reader-wrap h1 { font-family: system-ui, "Segoe UI", sans-serif; font-size: 26px; line-height: 1.3; margin-bottom: 18px; }
       #shunno-reader-wrap p { margin-bottom: 16px; }
     `;
-    document.head.appendChild(st);
+    (document.head || document.documentElement).appendChild(st);
 
     const wrap = document.createElement('div');
     wrap.id = 'shunno-reader-wrap';
@@ -423,11 +442,12 @@
     return origSend.apply(this, arguments);
   };
 
-  function triggerNativeDownload(targetUrl, threads) {
+  function triggerNativeDownload(targetUrl, threads, via) {
     if (!targetUrl) return;
     postSecure('FLOAT_DL:' + JSON.stringify({
       url: targetUrl,
       threads: threads || 16,
+      via: via || '',
       referer: location.href,
       cookie: document.cookie || ''
     }));
@@ -589,10 +609,20 @@
         border-style: solid;
       }
     `;
-    shadow.appendChild(styleEl);
+    let styledViaSheet = false;
+    try {
+      if ('adoptedStyleSheets' in shadow && typeof CSSStyleSheet === 'function') {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(styleEl.textContent);
+        shadow.adoptedStyleSheets = [sheet];
+        styledViaSheet = true;
+      }
+    } catch (e) {}
+    if (!styledViaSheet) shadow.appendChild(styleEl);
 
     const pillWrap = document.createElement('div');
     pillWrap.className = 'pill-wrap';
+    pillWrap.style.display = 'none';
 
     const pillMain = document.createElement('div');
     pillMain.className = 'pill-main';
@@ -626,6 +656,7 @@
 
     const menu = document.createElement('div');
     menu.className = 'menu';
+    menu.style.display = 'none';
 
     const basket = document.createElement('div');
     basket.className = 'basket';
@@ -729,20 +760,20 @@
       }
     };
 
-    function scheduleHide() {
+    function scheduleHide(delayMs) {
       clearTimeout(hideTimer);
       hideTimer = setTimeout(() => {
         if (!pillWrap.matches(':hover') && !menu.matches(':hover')) {
           pillWrap.style.display = 'none';
           menu.style.display = 'none';
         }
-      }, 1200);
+      }, delayMs || 1200);
     }
 
     pillWrap.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    pillWrap.addEventListener('mouseleave', scheduleHide);
+    pillWrap.addEventListener('mouseleave', () => scheduleHide());
     menu.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    menu.addEventListener('mouseleave', scheduleHide);
+    menu.addEventListener('mouseleave', () => scheduleHide());
 
     function showPillAt(x, y, baseLabel, items, isVideo) {
       if (!items || items.length === 0) return;
@@ -750,7 +781,7 @@
       activeItems = items;
       activeBaseLabel = baseLabel;
       pipBtn.style.display = isVideo ? 'inline-block' : 'none';
-      items.slice(0, 6).forEach(it => requestSizeProbe(it.url));
+      items.slice(0, 6).forEach(it => { if (!it.via) requestSizeProbe(it.url); });
 
       if (items.length === 1) {
         const sz = probedSizes.get(items[0].url);
@@ -769,7 +800,7 @@
     pillMain.addEventListener('click', (e) => {
       e.stopPropagation();
       if (activeItems.length === 1) {
-        triggerNativeDownload(activeItems[0].url, 16);
+        triggerNativeDownload(activeItems[0].url, 16, activeItems[0].via);
         pillWrap.style.display = 'none';
         return;
       }
@@ -800,9 +831,9 @@
         nm.textContent = it.name;
         const go = document.createElement('button');
         go.className = 'go';
-        go.textContent = '16T';
+        go.textContent = it.via ? 'Get' : '16T';
         go.onclick = () => {
-          triggerNativeDownload(it.url, 16);
+          triggerNativeDownload(it.url, 16, it.via);
           menu.style.display = 'none';
           pillWrap.style.display = 'none';
         };
@@ -817,51 +848,81 @@
       menu.style.display = 'flex';
     });
 
-    // Coordinate-based hit-testing so transparent overlays on top of <video> never block IDM floating pill!
+    // Items offered for one media element. Streaming players (blob:/MSE, HLS, DASH) have no direct
+    // file URL, so the first item hands the page URL to yt-dlp, exactly like IDM's "Download this video".
+    function buildMediaItems(m) {
+      if (isYouTube && window.__shunnoYtStreams.length === 0) {
+        try {
+          if (window.ytInitialPlayerResponse) stripAdFields(window.ytInitialPlayerResponse);
+          const mp = document.getElementById('movie_player');
+          if (mp && typeof mp.getPlayerResponse === 'function') stripAdFields(mp.getPlayerResponse());
+        } catch (e) {}
+      }
+      const isAud = m.tagName === 'AUDIO';
+      const items = [];
+      const directSrc = m.currentSrc || m.src || '';
+      const hasDirectFile = /^https?:/i.test(directSrc);
+      if (hasDirectFile) addCapturedStream(directSrc, isAud ? '.m4a' : '.mp4');
+      m.querySelectorAll('source').forEach(s => {
+        if (s.src && /^https?:/i.test(s.src)) addCapturedStream(s.src);
+      });
+      const title = (document.title || (isAud ? 'Audio' : 'Video')).replace(' - YouTube', '').trim();
+      if (!hasDirectFile || isYouTube) {
+        items.push({
+          url: location.href,
+          ext: isAud ? '.AUDIO' : '.VIDEO',
+          name: (isYouTube ? 'Best quality: ' : 'This ' + (isAud ? 'audio' : 'video') + ': ') + title,
+          via: 'page'
+        });
+      }
+      if (hasDirectFile && !items.some(x => x.url === directSrc)) {
+        items.push({ url: directSrc, ext: isAud ? '.M4A' : '.MP4', name: title });
+      }
+      (window.__shunnoYtStreams || []).forEach(ys => {
+        if (!items.some(x => x.url === ys.url)) items.push(ys);
+      });
+      capturedStreams.forEach(s => {
+        if (!items.some(x => x.url === s.url)) items.push(s);
+      });
+      return items;
+    }
+
+    function mediaIsShowable(m) {
+      const r = m.getBoundingClientRect();
+      if (m.tagName === 'AUDIO') return r.width >= 140 && r.height >= 20;
+      return r.width >= 160 && r.height >= 90 && r.bottom > 0 && r.top < window.innerHeight;
+    }
+
+    function showForMedia(m, holdMs) {
+      const rect = m.getBoundingClientRect();
+      const items = buildMediaItems(m);
+      if (items.length === 0) return false;
+      const isAud = m.tagName === 'AUDIO';
+      // Single item: one click downloads. Several: click opens the quality / stream list.
+      const label = items.length === 1 ? (isAud ? 'Download audio' : 'Download this video') : (isAud ? 'Download audio' : 'Download video');
+      showPillAt(rect.right - 265, Math.max(8, rect.top + 10), label, items, !isAud);
+      if (holdMs) scheduleHide(holdMs);
+      return true;
+    }
+
+    // IDM behaviour: the bar also appears by itself when a video starts playing (once per element).
+    const autoShown = new WeakSet();
+    document.addEventListener('play', (e) => {
+      const m = e.target;
+      if (!m || m.tagName !== 'VIDEO' || autoShown.has(m) || !mediaIsShowable(m)) return;
+      autoShown.add(m);
+      showForMedia(m, 4500);
+    }, true);
+
+    // Coordinate-based hit-testing so transparent overlays on top of <video> never block the floating bar.
     function checkPointForMediaOrLink(clientX, clientY, eventTarget) {
       const mediaEls = Array.from(document.querySelectorAll('video, audio'));
       for (const m of mediaEls) {
         const rect = m.getBoundingClientRect();
-        if (rect.width >= 140 && rect.height >= 50 &&
+        if (mediaIsShowable(m) &&
             clientX >= rect.left && clientX <= rect.right &&
             clientY >= rect.top && clientY <= rect.bottom) {
-          if (isYouTube && window.__shunnoYtStreams.length === 0) {
-            if (window.ytInitialPlayerResponse) stripAdFields(window.ytInitialPlayerResponse);
-            const mp = document.getElementById('movie_player');
-            if (mp && typeof mp.getPlayerResponse === 'function') {
-              stripAdFields(mp.getPlayerResponse());
-            }
-          }
-          const items = [];
-          const directSrc = m.currentSrc || m.src;
-          if (directSrc && directSrc.startsWith('http')) {
-            addCapturedStream(directSrc, m.tagName === 'AUDIO' ? '.m4a' : '.mp4');
-          }
-          m.querySelectorAll('source').forEach(s => {
-            if (s.src && s.src.startsWith('http')) addCapturedStream(s.src);
-          });
-          if (isYouTube && /\/(watch|shorts\/|live\/|embed\/)/.test(location.pathname)) {
-            // Direct googlevideo URLs are signature/PO-token bound and usually 403 outside the player.
-            // The page URL is routed natively to yt-dlp, which resolves and merges the best streams.
-            items.push({
-              url: location.href,
-              ext: '.MP4',
-              name: 'Best quality (yt-dlp): ' + (document.title || 'YouTube Video').replace(' - YouTube', '')
-            });
-          }
-          if (window.__shunnoYtStreams && window.__shunnoYtStreams.length > 0) {
-            window.__shunnoYtStreams.forEach(ys => {
-              if (!items.some(x => x.url === ys.url)) items.push(ys);
-            });
-          }
-          capturedStreams.forEach(s => {
-            if (!items.some(x => x.url === s.url)) items.push(s);
-          });
-          if (items.length > 0) {
-            const isAud = m.tagName === 'AUDIO';
-            showPillAt(rect.right - 265, Math.max(8, rect.top + 12), isAud ? 'Download audio' : 'Download video', items, !isAud);
-            return;
-          }
+          if (showForMedia(m)) return;
         }
       }
 
@@ -906,7 +967,8 @@
         if (foundUrls.size > 0) {
           const items = Array.from(foundUrls).slice(0, 25).map(u => {
             const clean = u.split('?')[0];
-            const seg = decodeURIComponent(clean.split('/').pop() || 'link');
+            let seg = clean.split('/').pop() || 'link';
+            try { seg = decodeURIComponent(seg); } catch (err) {}
             const ext = ALL_EXTS.find(ex => clean.toLowerCase().endsWith(ex)) || '.LINK';
             return { url: u, ext: ext.toUpperCase(), name: seg };
           });
@@ -930,7 +992,7 @@
     if (ADBLOCK_ON || SPONSORBLOCK_ON) {
       styleSheet.textContent = 'ytd-reel-shelf-renderer, ytd-rich-section-renderer, ytd-ad-slot-renderer, ytd-banner-promo-renderer, #masthead-ad, .ad-showing .ytp-ad-player-overlay, .ytp-ad-module, ins.adsbygoogle, [id^="google_ads_"], [class*="taboola"], [class*="outbrain"] { display: none !important; }';
     }
-    (document.head || document.documentElement).appendChild(styleSheet);
+    appendWhenReady(styleSheet);
 
     let domScheduled = false;
     function runCleanPass() {
