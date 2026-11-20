@@ -9,13 +9,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -40,11 +38,8 @@ jobs:
           name: ShunnoBrowser-Rust-Windows-EXE
           path: release-exe/ShunnoBrowser.exe
 
-      # Closed source: keep this repo private and publish the EXE to the public
-      # releases-only repo asanaim/ShunnoBrowser-Windows. Requires secret RELEASES_TOKEN
-      # (fine-grained PAT with Contents: write on that repo). Without it, nothing is published.
       - name: Publish 1-Click Direct Download Release
-        if: github.event_name != 'pull_request' && env.RELEASES_TOKEN != ''
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -53,8 +48,8 @@ jobs:
           body: |
             ### Direct 1-Click Download for Windows 10 & 11 (~6 MB)
             Full Naked Browser Pro alternative built in pure Rust + Edge WebView2 with multi-tab Cupertino bar, background YouTube audio, AdBlock, SponsorBlock, Reader Mode, OLED Force-Dark, and integrated 32-thread Shunno Get Download Manager:
-            - **[Download ShunnoBrowser.exe](https://github.com/asanaim/ShunnoBrowser-Windows/releases/latest/download/ShunnoBrowser.exe)**
+            - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
           files: |
             release-exe/ShunnoBrowser.exe
-          repository: asanaim/ShunnoBrowser-Windows
-          token: ${{ secrets.RELEASES_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

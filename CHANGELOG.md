@@ -6,7 +6,7 @@
 - **Private tabs are actually private:** they shared the normal profile (cookies, logins, storage, cache). They now run in a WebView2 InPrivate session; popups from private tabs stay private.
 - **Password manager:** WebView2's built-in password saving and autofill enabled (DPAPI-encrypted in the profile, off in private tabs), with Save Passwords toggle and Clear Passwords.
 - **Tracking prevention:** Edge tracking prevention set to Balanced, with a Strict toggle.
-- **Closed source:** proprietary `LICENSE`, `THIRD_PARTY_NOTICES.md`, CI publishes releases to the public `ShunnoBrowser-Windows` repo (secret `RELEASES_TOKEN`) so this source repo can be private.
+- **Closed source, public repo:** proprietary `LICENSE` (Copyright Sayed Naim; source visible for transparency, no reuse rights) and `THIRD_PARTY_NOTICES.md`. The repo stays public so GitHub Actions minutes remain free; releases stay in this repo.
 
 ## v2.9.7 (2026-11-20)
 **Download engine (`src/downloader.rs`), rebuilt so the IDM features actually work:**
