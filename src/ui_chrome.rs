@@ -154,12 +154,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .win-btn:hover { background: rgba(128, 128, 128, 0.18); }
   .win-btn.close:hover { background: #FF3B30; color: #FFFFFF; }
 
-  /* 2. Firefox-Inspired Centered Compact Address + Search Capsule */
+  /* 2. Unified Responsive Centered Address + Search Toolbar */
   .nav-bar {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 12px;
+    display: grid;
+    grid-template-columns: minmax(max-content, 1fr) minmax(240px, clamp(320px, 48vw, 640px)) minmax(max-content, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding: 5px 14px;
     height: 46px;
   }
   .nav-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .nav-group.left { justify-self: start; }
+  .nav-group.right { justify-self: end; }
   .nav-btn {
     border: none; background: var(--input-bg); color: var(--text); font-size: 13px; font-weight: 600;
     padding: 6px 10px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
@@ -171,19 +177,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
   .nav-btn.green { background: var(--green-soft); color: #24B44B; }
 
-  /* Firefox-style Unified Search + URL Capsule (compact centered width) */
+  /* Responsive Centered Search + URL Capsule (proportional scaling, balanced margins) */
   .firefox-capsule {
-    flex: 1; max-width: 420px; min-width: 180px; height: 30px;
-    display: flex; align-items: center; gap: 5px;
-    background: var(--input-bg); border-radius: 15px; padding: 2px 9px 2px 4px;
+    width: 100%; min-width: 0; height: 32px;
+    display: flex; align-items: center; gap: 6px;
+    background: var(--input-bg); border-radius: 16px; padding: 2px 10px 2px 4px;
     border: 1.5px solid transparent;
-    transition: background 0.32s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
+    transition: background 0.32s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid);
   }
   .firefox-capsule:focus-within {
     background: var(--surface-solid);
     border-color: var(--blue);
     box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
-    max-width: 480px;
   }
   .engine-logo-btn {
     border: none; background: var(--surface-solid); color: var(--text);
@@ -209,7 +214,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .engine-opt:hover { background: var(--input-bg); }
   .engine-opt.active { background: var(--blue-soft); color: var(--blue); }
   #url-input {
-    border: none; background: transparent; outline: none; flex: 1; min-width: 60px;
+    border: none; background: transparent; outline: none; flex: 1 1 auto; width: 100%; min-width: 140px;
     font-size: 13px; color: var(--text); user-select: text;
   }
   .zoom-pill {
@@ -528,7 +533,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     <!-- 2. Firefox-Inspired Compact Centered Address + Search Bar -->
     <div class="nav-bar">
-      <div class="nav-group">
+      <div class="nav-group left">
         <button class="nav-icon-btn" onclick="send('BACK')" title="Back">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
@@ -552,8 +557,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
       </div>
 
-      <div class="nav-group">
-        <button class="nav-btn green" id="btn-streams" style="display:none" onclick="toggleDrawer('streams')" title="Detected Media">🎯 0</button>
+      <div class="nav-group right">
         <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
@@ -1154,7 +1158,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.9.2';
+    document.getElementById('version-badge').textContent = state.version || 'v2.9.3';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
@@ -1273,13 +1277,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       urlBox.value = isHome ? '' : (state.active_url || '');
     }
 
-    const sBtn = document.getElementById('btn-streams');
-    if (state.streams.length > 0) {
-      sBtn.style.display = 'inline-flex';
-      sBtn.textContent = `🎯 ${state.streams.length}`;
-    } else {
-      sBtn.style.display = 'none';
-    }
+
 
     document.getElementById('btn-downloads').textContent = `⚡ ${state.downloads.length}`;
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);

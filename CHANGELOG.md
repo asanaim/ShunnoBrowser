@@ -1,3 +1,9 @@
+## v2.9.3 (2026-11-20)
+- **Responsive Unified Address Bar (`src/ui_chrome.rs`):** Rebuilt `.nav-bar` with a 3-column CSS Grid and proportional `clamp(320px, 48vw, 640px)` scaling so the centered Address Capsule adjusts smoothly on window resize without collapsing `#url-input` (`min-width: 140px`).
+- **Resolved Intermittent Web Page Freezes (`src/main.rs`):** Eliminated synchronous `ffmpeg -version` subprocess spawns and `list_user_scripts` disk scans from `push_chrome_state` (moved to async startup/on-demand cache), offloaded `save_history` writes to Tokio, skipped `WM_NCHITTEST` border interception when maximized (`IsZoomed`), and explicitly raised the active tab HWND above `chrome_wv` whenever overlays close (`bring_active_tab_above_chrome`).
+- **Cleaner Address Bar (`src/ui_chrome.rs`):** Removed the `🎯` Detected Media button from the address bar.
+- **Full-Bounds Polished Taskbar Icon (`assets/app.ico`):** Regenerated across standard Windows resolutions (`16×16`, `24×24`, `32×32`, `48×48`, and `256×256`) with zero outer padding (`radius = 0.50`), 8×8 SDF anti-aliasing, and stronger optical weight at small sizes.
+
 ## v2.9.2 (2026-11-20)
 - Added native right-click **"Download link with Shunno"** context menu item on all HTTP/HTTPS webpage links (`ICoreWebView2_11::add_ContextMenuRequested`), routing directly into `NativeDownloadEngine` with full `HttpOnly` cookie sync and live `⚡ Downloads` panel tracking.
 - Added **"Download media with Shunno"** context menu item when right-clicking images, videos, or audio sources (`HasSourceUri` / `SourceUri`).

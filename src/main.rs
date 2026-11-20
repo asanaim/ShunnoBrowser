@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tao::dpi::{LogicalPosition, LogicalSize};
@@ -189,7 +189,7 @@ fn load_embedded_window_icon() -> Option<Icon> {
         return None;
     }
     let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-    for target_size in [64u32, 48u32, 32u32] {
+    for target_size in [48u32, 32u32, 24u32] {
         for i in 0..count {
             let off = 6 + i * 16;
             if off + 16 > ICO_BYTES.len() {
@@ -1154,7 +1154,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, CreateIconFromResourceEx, GetClientRect, GetWindowLongW, GetWindowRect, SendMessageW,
+        CallWindowProcW, CreateIconFromResourceEx, GetClientRect, GetWindowLongW, GetWindowRect, IsZoomed, SendMessageW,
         SetClassLongPtrW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON,
         GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, HTBOTTOM, HTBOTTOMLEFT,
         HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG,
@@ -1210,7 +1210,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 if img_off + sz <= ICO_BYTES.len() {
                     let slice = &ICO_BYTES[img_off..img_off + sz];
                     if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                        if w == 64 || w == 48 || w == 32 {
+                        if w == 48 || w == 32 {
                             SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
                             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
                         } else if w == 16 || w == 24 {
@@ -1243,6 +1243,9 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                     }
                 }
                 WM_NCHITTEST => {
+                    if IsZoomed(hwnd).as_bool() {
+                        return LRESULT(HTCLIENT as isize);
+                    }
                     let x = (lparam.0 & 0xFFFF) as i16 as i32;
                     let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
                     let mut rc = RECT::default();
@@ -1312,6 +1315,32 @@ fn bring_chrome_above_tabs(chrome_wv: &WebView, tabs: &[BrowserTab]) {
 
 #[cfg(not(windows))]
 fn bring_chrome_above_tabs(_chrome_wv: &WebView, _tabs: &[BrowserTab]) {}
+
+#[cfg(windows)]
+fn bring_active_tab_above_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use wry::WebViewExtWindows;
+
+    unsafe {
+        let mut tab_hwnd = HWND::default();
+        let mut chrome_hwnd = HWND::default();
+        if tab_wv.controller().ParentWindow(&mut tab_hwnd).is_ok()
+            && chrome_wv.controller().ParentWindow(&mut chrome_hwnd).is_ok()
+            && tab_hwnd.0 != 0
+            && chrome_hwnd.0 != 0
+            && tab_hwnd.0 != chrome_hwnd.0
+        {
+            let _ = SetWindowPos(tab_hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(chrome_hwnd, tab_hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn bring_active_tab_above_chrome(_tab_wv: &WebView, _chrome_wv: &WebView) {}
+
+
 
 fn layout_webviews(
     window: &Window,
@@ -1388,8 +1417,14 @@ fn layout_webviews(
         let _ = tab.webview.set_visible(show_web);
     }
 
-    if !is_fs && overlay_active {
-        bring_chrome_above_tabs(chrome_wv, tabs);
+    if !is_fs {
+        if overlay_active || is_home {
+            bring_chrome_above_tabs(chrome_wv, tabs);
+        } else if let Some(active_tab) = tabs.get(active_idx) {
+            if active_tab.url != "shunno://newtab" {
+                bring_active_tab_above_chrome(&active_tab.webview, chrome_wv);
+            }
+        }
     }
 }
 
@@ -1535,7 +1570,22 @@ fn main() -> wry::Result<()> {
         }
     });
 
+    // Probe FFmpeg once asynchronously on Tokio so push_chrome_state NEVER spawns a blocking subprocess on the UI thread!
+    let ffmpeg_available_flag = Arc::new(AtomicBool::new(false));
+    {
+        let ff_flag = ffmpeg_available_flag.clone();
+        let ff_px = proxy.clone();
+        rt_handle.spawn(async move {
+            let found = BrowserStorage::find_ffmpeg().is_some();
+            ff_flag.store(found, Ordering::Relaxed);
+            if found {
+                let _ = ff_px.send_event(AppEvent::RefreshChrome);
+            }
+        });
+    }
+    let cached_scripts = Arc::new(std::sync::Mutex::new(list_user_scripts(&global_settings.approved_script_hashes)));
     let last_chrome_json = Arc::new(std::sync::Mutex::new(String::new()));
+    let cached_scripts_for_push = cached_scripts.clone();
     let push_chrome_state = move |window: &Window,
                              chrome_wv: &WebView,
                              tabs: &[BrowserTab],
@@ -1559,12 +1609,15 @@ fn main() -> wry::Result<()> {
         let active_host = extract_host(&active_url);
         let site = site_policies.get(&active_host).cloned().unwrap_or_default();
         let downloads = engine.tasks.lock().map(|l| l.clone()).unwrap_or_default();
-        let scripts = list_user_scripts(&global_settings.approved_script_hashes);
+        let scripts = cached_scripts_for_push.lock().map(|s| s.clone()).unwrap_or_default();
 
         let ff_status = engine.ffmpeg_install_status.lock().map(|s| s.clone()).unwrap_or_default();
+        if ff_status == "Installed!" || ff_status == "Ready" {
+            ffmpeg_available_flag.store(true, Ordering::Relaxed);
+        }
         let snap = ChromeSnapshot {
             version: APP_VERSION,
-            ffmpeg_available: BrowserStorage::find_ffmpeg().is_some(),
+            ffmpeg_available: ffmpeg_available_flag.load(Ordering::Relaxed),
             ffmpeg_status: ff_status,
             is_fullscreen: window.fullscreen().is_some(),
             has_closed_tabs,
@@ -2393,7 +2446,10 @@ fn main() -> wry::Result<()> {
                                             visited_at: now,
                                         },
                                     );
-                                    BrowserStorage::save_history(&history);
+                                    let hist_snapshot = history.clone();
+                                    rt_handle.spawn(async move {
+                                        BrowserStorage::save_history(&hist_snapshot);
+                                    });
                                 }
                             }
                         }
@@ -2477,6 +2533,11 @@ fn main() -> wry::Result<()> {
                     let _ = proxy.send_event(AppEvent::ToggleFullscreen);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
                     drawer_open = true;
+                    if cmd == "DRAWER_OPEN:controls" {
+                        if let Ok(mut cs) = cached_scripts.lock() {
+                            *cs = list_user_scripts(&global_settings.approved_script_hashes);
+                        }
+                    }
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if cmd == "DRAWER_CLOSE" {
                     drawer_open = false;
@@ -2500,6 +2561,9 @@ fn main() -> wry::Result<()> {
                     }
                 } else if let Some(raw_nav) = cmd.strip_prefix("NAV:") {
                     site_data_cleared = false;
+                    drawer_open = false;
+                    engine_menu_open = false;
+                    palette_open = false;
                     let clean = sanitize_url(raw_nav, &global_settings);
                     sniffed_streams.clear();
                     if let Some(tab) = tabs.get_mut(active_tab_idx) {
@@ -2574,6 +2638,9 @@ fn main() -> wry::Result<()> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
                             active_tab_idx = idx;
+                            drawer_open = false;
+                            engine_menu_open = false;
+                            palette_open = false;
                             if split_tab_idx == Some(idx) {
                                 split_tab_idx = None;
                             }
