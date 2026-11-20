@@ -41,6 +41,33 @@ const CHROME_BAR_HEIGHT: f64 = 112.0;
 /// shown only on the New Tab page, and the maximized tab strip is taller, so the height varies.
 static CHROME_BAR_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x405C_0000_0000_0000); // 112.0
 
+/// Arc-style Peek: one floating preview web view above the active tab. Lives on the UI thread.
+struct Peek {
+    id: usize,
+    webview: WebView,
+    incognito: bool,
+}
+thread_local! {
+    static PEEK: std::cell::RefCell<Option<Peek>> = const { std::cell::RefCell::new(None) };
+    /// Last laid-out Peek rectangle (x, y, w, h) in logical px, for the chrome UI's frame.
+    static PEEK_RECT: std::cell::Cell<[f64; 4]> = const { std::cell::Cell::new([0.0; 4]) };
+}
+fn peek_open() -> bool {
+    PEEK.with(|p| p.borrow().is_some())
+}
+fn peek_id() -> Option<usize> {
+    PEEK.with(|p| p.borrow().as_ref().map(|k| k.id))
+}
+fn close_peek() -> bool {
+    PEEK.with(|p| p.borrow_mut().take()).is_some()
+}
+
+#[derive(Serialize)]
+struct PeekView {
+    url: String,
+    rect: [f64; 4],
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -154,6 +181,7 @@ struct ChromeSnapshot {
     is_fullscreen: bool,
     is_maximized: bool,
     import_sources: Vec<importer::ImportSource>,
+    peek: Option<PeekView>,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -257,6 +285,7 @@ fn build_content_init_script(
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
+        .replace("__SHUNNO_PEEK__", if global.peek_links { "true" } else { "false" })
         .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
         .replace("__SHUNNO_FP__", if policy.fp_protect { "true" } else { "false" })
         .replace("__SHUNNO_FP_SESSION__", fp_session_key());
@@ -1937,7 +1966,7 @@ fn layout_webviews(
             .map(|t| t.url == "shunno://newtab")
             .unwrap_or(true);
 
-    let overlay_active = drawer_open || engine_menu_open || palette_open;
+    let overlay_active = drawer_open || engine_menu_open || palette_open || (peek_open() && !is_fs);
     let chrome_h = if is_fs {
         if is_home { inner_h } else { 0.0 }
     } else if overlay_active || is_home {
@@ -1992,7 +2021,45 @@ fn layout_webviews(
             }
         }
     }
+
+    // Peek sits above everything, inset in the content area; the chrome draws the frame and backdrop.
+    PEEK.with(|p| {
+        if let Some(peek) = p.borrow().as_ref() {
+            if is_fs {
+                let _ = peek.webview.set_visible(false);
+                return;
+            }
+            let side = (inner_w * 0.07).clamp(24.0, 140.0);
+            let header = 46.0;
+            let x = grip + side;
+            let y = top_bar_h + 14.0 + header;
+            let pw = (inner_w - side * 2.0).max(200.0);
+            let ph = (inner_h - y - 18.0).max(120.0);
+            PEEK_RECT.with(|r| r.set([x, y, pw, ph]));
+            let _ = peek.webview.set_bounds(Rect {
+                position: LogicalPosition::new(x, y).into(),
+                size: LogicalSize::new(pw, ph).into(),
+            });
+            let _ = peek.webview.set_visible(true);
+            bring_webview_to_top(&peek.webview);
+        }
+    });
 }
+
+#[cfg(windows)]
+fn bring_webview_to_top(wv: &WebView) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use wry::WebViewExtWindows;
+    unsafe {
+        let mut h = HWND::default();
+        if wv.controller().ParentWindow(&mut h).is_ok() && h.0 != 0 {
+            let _ = SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn bring_webview_to_top(_wv: &WebView) {}
 
 fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
@@ -2231,6 +2298,12 @@ fn main() -> wry::Result<()> {
             is_fullscreen,
             is_maximized: window.is_maximized(),
             import_sources: importer::ui_snapshot().0,
+            peek: PEEK.with(|p| {
+                p.borrow().as_ref().map(|k| PeekView {
+                    url: k.webview.url().unwrap_or_default(),
+                    rect: PEEK_RECT.with(|r| r.get()),
+                })
+            }),
             import_status: importer::ui_snapshot().1,
             has_closed_tabs,
             find_current,
@@ -2909,7 +2982,13 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::NewWindowBlockedOrOpened(opener_id, popup_url)) => {
-                let opener_private = tabs.iter().find(|t| t.id == opener_id).map(|t| t.incognito).unwrap_or(false);
+                // A pop-up from a private Peek must stay private too.
+                let opener_private = tabs
+                    .iter()
+                    .find(|t| t.id == opener_id)
+                    .map(|t| t.incognito)
+                    .or_else(|| PEEK.with(|p| p.borrow().as_ref().filter(|k| k.id == opener_id).map(|k| k.incognito)))
+                    .unwrap_or(false);
                 let lower = popup_url.to_ascii_lowercase();
                 let is_ad_popup = lower.contains("popads")
                     || lower.contains("popcash")
@@ -2975,7 +3054,38 @@ fn main() -> wry::Result<()> {
                 }
                 let page_url = tabs.iter().find(|t| t.id == tab_id).map(|t| t.url.clone());
 
-                if msg == "AD_BLOCKED" {
+                if let Some(target) = msg.strip_prefix("PEEK:") {
+                    let target = target.trim();
+                    let from_peek = peek_id() == Some(tab_id);
+                    if global_settings.peek_links && (target.starts_with("https://") || target.starts_with("http://")) {
+                        let clean = sanitize_url(target, &global_settings);
+                        if from_peek || peek_open() {
+                            // Shift+click inside a Peek just navigates the Peek.
+                            PEEK.with(|p| {
+                                if let Some(k) = p.borrow().as_ref() {
+                                    let _ = k.webview.load_url(&clean);
+                                }
+                            });
+                        } else if let Some(src) = tabs.iter().find(|t| t.id == tab_id) {
+                            let incognito = src.incognito;
+                            let pol = site_policies.get(&extract_host(&clean)).cloned().unwrap_or_default();
+                            let pid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, pid, &clean, &pol, &global_settings, &ipc_token, proxy.clone(), incognito) {
+                                drawer_open = false;
+                                engine_menu_open = false;
+                                palette_open = false;
+                                PEEK.with(|p| *p.borrow_mut() = Some(Peek { id: pid, webview: wv, incognito }));
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
+                        }
+                    }
+                } else if msg == "KEY_ESC" {
+                    if peek_id() == Some(tab_id) && close_peek() {
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    } else {
+                        return;
+                    }
+                } else if msg == "AD_BLOCKED" {
                     blocked_count += 1;
                 } else if let Some(fc) = msg.strip_prefix("FIND_COUNT:") {
                     if let Some((cur_s, tot_s)) = fc.split_once('|') {
@@ -3267,7 +3377,43 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ChromeIpc(cmd)) => {
-                if cmd == "WIN_DRAG" {
+                // Peek is transient: anything that changes the tab or opens a popover dismisses it.
+                if peek_open()
+                    && ["SWITCH_TAB:", "NAV:", "NAV_NEW_TAB:", "NEW_TAB", "NEW_INCOGNITO", "NEXT_TAB", "PREV_TAB", "CLOSE_TAB:",
+                        "CLOSE_ACTIVE_TAB", "DRAWER_OPEN:", "PALETTE:", "TOGGLE_SPLIT_VIEW", "TOGGLE_FULLSCREEN"]
+                        .iter()
+                        .any(|p| cmd.starts_with(p))
+                {
+                    close_peek();
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                }
+                if cmd == "PEEK_CLOSE" {
+                    if close_peek() {
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
+                } else if cmd == "PEEK_OPEN" {
+                    // Promote the live preview to a real tab (keeps scroll position, logins, form state).
+                    if let Some(peek) = PEEK.with(|p| p.borrow_mut().take()) {
+                        let url = peek.webview.url().unwrap_or_default();
+                        tabs.push(BrowserTab {
+                            id: peek.id,
+                            title: extract_host(&url),
+                            url,
+                            cookie: None,
+                            incognito: peek.incognito,
+                            pinned: false,
+                            playing_audio: false,
+                            muted: false,
+                            reader_active: false,
+                            sleeping: false,
+                            last_active_secs: now_epoch_secs(),
+                            zoom: 1.0,
+                            webview: peek.webview,
+                        });
+                        active_tab_idx = tabs.len() - 1;
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
+                } else if cmd == "WIN_DRAG" {
                     let _ = window.drag_window();
                 } else if cmd == "WIN_MINIMIZE" {
                     window.set_minimized(true);
@@ -3618,6 +3764,13 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "peek_links" => {
+                            global_settings.peek_links = !global_settings.peek_links;
+                            let js = format!("window.__shunnoPeekOn = {};", global_settings.peek_links);
+                            for t in &tabs {
+                                let _ = t.webview.evaluate_script(&js);
+                            }
+                        }
                         "auto_update" => global_settings.auto_update = !global_settings.auto_update,
                         "https_only" => {
                             global_settings.https_only = !global_settings.https_only;

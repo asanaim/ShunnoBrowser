@@ -9,6 +9,7 @@
   const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
   const FP_ON = __SHUNNO_FP__;
   const FP_SESSION = "__SHUNNO_FP_SESSION__";
+  window.__shunnoPeekOn = __SHUNNO_PEEK__;
 
   // 0. Fingerprinting protection ("farbling", the approach Brave uses).
   // Each site sees small, stable-per-site, different-per-launch changes to the values trackers hash
@@ -1469,5 +1470,21 @@
         postSecure('KEY:zoom_reset');
       }
     }
+  }, true);
+
+  // Peek (Arc): Shift+click a link previews it in a floating panel instead of a new window.
+  document.addEventListener('click', (e) => {
+    if (!window.__shunnoPeekOn || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.button !== 0) return;
+    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || a.hasAttribute('download')) return;
+    let href = '';
+    try { href = new URL(a.href, location.href).href; } catch (err) { return; }
+    if (!/^https?:/i.test(href)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    postSecure('PEEK:' + href);
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.fullscreenElement) postSecure('KEY_ESC');
   }, true);
 })();

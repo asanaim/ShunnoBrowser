@@ -372,6 +372,21 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.22s var(--ease-fluid);
   }
   .switch.on { background: var(--blue); }
+
+  /* Peek: dimmed backdrop + a floating sheet whose body is the native preview web view. */
+  #peek-layer { position: fixed; inset: 0; z-index: 80; display: none; }
+  #peek-layer.open { display: block; }
+  #peek-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.28); animation: fadeIn var(--dur) var(--ease-fluid) both; }
+  body.dark #peek-backdrop { background: rgba(0, 0, 0, 0.45); }
+  #peek-frame {
+    position: absolute; border-radius: 14px; background: var(--surface-solid);
+    box-shadow: 0 24px 70px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.12);
+    animation: popoverIn var(--dur) var(--ease-fluid) both; transform-origin: 50% 0;
+  }
+  #peek-head { height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; }
+  #peek-url { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #peek-url b { color: var(--text); font-weight: 600; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   .switch.on > i { transform: translateX(12px); }
   .sheet-scroll .card {
     background: rgba(118, 118, 128, 0.07); border: none; border-radius: 12px; padding: 11px 12px; margin-bottom: 8px;
@@ -967,6 +982,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="peek-layer">
+    <div id="peek-backdrop" onclick="send('PEEK_CLOSE')" title="Close preview (Esc)"></div>
+    <div id="peek-frame">
+      <div id="peek-head">
+        <div id="peek-url"></div>
+        <button class="text-btn" onclick="send('PEEK_OPEN')" title="Keep this page as a tab">Open in New Tab</button>
+        <button class="icon-btn" onclick="send('PEEK_CLOSE')" title="Close (Esc)"><svg width="9" height="9" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>
+      </div>
+    </div>
+  </div>
+
 <script>
   let activeDrawer = null;
   let currentSpeed = 1.0;
@@ -1500,6 +1526,27 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
   })();
 
+  let peekShownUrl = null;
+  function renderPeek(state) {
+    const layer = document.getElementById('peek-layer');
+    const pk = state.peek;
+    if (!pk) { layer.classList.remove('open'); peekShownUrl = null; return; }
+    const [x, y, w, h] = pk.rect;
+    const frame = document.getElementById('peek-frame');
+    frame.style.left = x + 'px';
+    frame.style.top = (y - 46) + 'px';
+    frame.style.width = w + 'px';
+    frame.style.height = (h + 46 + 6) + 'px';
+    let host = '', rest = pk.url || '';
+    try { const u = new URL(pk.url); host = u.host; rest = u.pathname + u.search; } catch (e) {}
+    document.getElementById('peek-url').innerHTML = `<b>${escapeHtml(host)}</b>${escapeHtml(rest === '/' ? '' : rest)}`;
+    if (!layer.classList.contains('open')) layer.classList.add('open');
+    peekShownUrl = pk.url;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('peek-layer').classList.contains('open')) send('PEEK_CLOSE');
+  });
+
   window.renderChromeState = function(state) {
     window.__shunnoLastState = state;
     window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
@@ -1717,7 +1764,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['https_only', '🔒 HTTPS Only', state.global.https_only],
       ['auto_update', '⬆️ Auto Update', state.global.auto_update],
       ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
-      ['strict_tracking', '🛡️ Strict Tracking', state.global.strict_tracking]
+      ['strict_tracking', '🛡️ Strict Tracking', state.global.strict_tracking],
+      ['peek_links', '👁️ Shift-Click Peek', state.global.peek_links]
     ];
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
@@ -1777,6 +1825,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     `).join('');
 
     renderImport(state);
+    renderPeek(state);
 
     const folderBar = document.getElementById('bookmark-folders-bar');
     folderBar.innerHTML = allFolders.map(f => `

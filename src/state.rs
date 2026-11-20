@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.15.1";
+pub const APP_VERSION: &str = "v2.16.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -133,6 +133,9 @@ pub struct GlobalSettings {
     /// Close tabs unused for this many hours (Arc-style auto-archive). 0 = never.
     #[serde(default)]
     pub auto_archive_hours: u32,
+    /// Shift+click a link opens it in a floating Peek preview (Arc-style).
+    #[serde(default = "default_true")]
+    pub peek_links: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -165,6 +168,7 @@ impl Default for GlobalSettings {
             auto_update: true,
             strict_tracking: false,
             auto_archive_hours: 0,
+            peek_links: true,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
