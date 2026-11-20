@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod downloader;
+mod https_guard;
 mod sanitizer;
 mod state;
 mod ui_chrome;
@@ -65,6 +66,12 @@ enum AppEvent {
     },
     /// Raised by the native ad filter. Never derived from page-supplied IPC text.
     AdBlocked,
+    /// HTTPS-Only: load this (upgraded) URL in the tab.
+    NavigateTab(usize, String),
+    /// HTTPS-Only: show the "not secure" warning for this http URL.
+    HttpsInterstitial(usize, String),
+    /// A top-level navigation finished: (tab, success, cancelled).
+    NavigationDone(usize, bool, bool),
     DownloadWithCookies {
         url: String,
         threads: usize,
@@ -692,6 +699,21 @@ fn dispatch_download_with_httponly_cookies(
 }
 
 
+/// Replaces the tab's document with locally generated HTML (warning pages).
+#[cfg(windows)]
+fn show_html_in_tab(webview: &WebView, html: &str) {
+    use windows::core::HSTRING;
+    use wry::WebViewExtWindows;
+    unsafe {
+        if let Ok(core) = webview.controller().CoreWebView2() {
+            let _ = core.NavigateToString(&HSTRING::from(html));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn show_html_in_tab(_webview: &WebView, _html: &str) {}
+
 /// Per-site engine settings that must be real, not cosmetic: JavaScript on/off.
 #[cfg(windows)]
 fn apply_site_settings(webview: &WebView, policy: &SitePolicy) {
@@ -944,6 +966,24 @@ fn attach_native_webview2_hooks(
         let Ok(core) = controller.CoreWebView2() else {
             return;
         };
+
+        // 0a. Navigation outcome (HTTPS-Only needs to know when an upgraded load failed)
+        use webview2_com::NavigationCompletedEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED;
+        let mut nav_done_token = Default::default();
+        let nav_done_proxy = proxy.clone();
+        let nav_done_handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+            if let Some(args) = args {
+                let mut ok = BOOL::default();
+                let _ = args.IsSuccess(&mut ok);
+                let mut status = Default::default();
+                let _ = args.WebErrorStatus(&mut status);
+                let cancelled = status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED;
+                let _ = nav_done_proxy.send_event(AppEvent::NavigationDone(tab_id, ok.as_bool(), cancelled));
+            }
+            Ok(())
+        }));
+        let _ = core.add_NavigationCompleted(&nav_done_handler, &mut nav_done_token);
 
         // 0b. Native Full-URL Synchronization (captures SPA pushState/replaceState, YouTube watch URLs, redirects)
         use webview2_com::SourceChangedEventHandler;
@@ -1472,6 +1512,17 @@ fn create_tab_webview(
             let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
         })
         .with_navigation_handler(move |nav_url| {
+            match https_guard::global().decide(tab_id, &nav_url) {
+                https_guard::Decision::Upgrade(secure) => {
+                    let _ = nav_proxy.send_event(AppEvent::NavigateTab(tab_id, secure));
+                    return false;
+                }
+                https_guard::Decision::Interstitial(insecure) => {
+                    let _ = nav_proxy.send_event(AppEvent::HttpsInterstitial(tab_id, insecure));
+                    return false;
+                }
+                https_guard::Decision::Allow => {}
+            }
             if nav_url.starts_with("http://") || nav_url.starts_with("https://") {
                 let _ = nav_proxy.send_event(AppEvent::TabUrlChanged(tab_id, nav_url));
             }
@@ -1813,6 +1864,7 @@ fn main() -> wry::Result<()> {
 
     let ipc_token = generate_ipc_token();
     let mut global_settings = BrowserStorage::load_global_settings();
+    https_guard::global().set_enabled(global_settings.https_only);
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
     let mut history = BrowserStorage::load_history();
@@ -2520,6 +2572,27 @@ fn main() -> wry::Result<()> {
                 blocked_count += 1;
             }
 
+            Event::UserEvent(AppEvent::NavigateTab(tab_id, target)) => {
+                if let Some(tab) = tabs.iter().find(|t| t.id == tab_id) {
+                    let _ = tab.webview.load_url(&target);
+                }
+            }
+
+            Event::UserEvent(AppEvent::NavigationDone(tab_id, success, cancelled)) => {
+                if let Some(insecure) = https_guard::global().on_navigation_done(tab_id, success, cancelled) {
+                    let _ = proxy.send_event(AppEvent::HttpsInterstitial(tab_id, insecure));
+                }
+            }
+
+            Event::UserEvent(AppEvent::HttpsInterstitial(tab_id, insecure)) => {
+                if let (Some(tab), Some(allow)) = (
+                    tabs.iter().find(|t| t.id == tab_id),
+                    https_guard::global().issue_allow_link(&insecure),
+                ) {
+                    show_html_in_tab(&tab.webview, &https_guard::interstitial_html(&insecure, &allow));
+                }
+            }
+
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
                 let active_tab = tabs.get(active_tab_idx);
                 let (ref_url, cookie_val, wv_opt) = active_tab
@@ -3224,6 +3297,10 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "https_only" => {
+                            global_settings.https_only = !global_settings.https_only;
+                            https_guard::global().set_enabled(global_settings.https_only);
+                        }
                         "save_passwords" | "strict_tracking" => {
                             if gkey == "save_passwords" {
                                 global_settings.save_passwords = !global_settings.save_passwords;

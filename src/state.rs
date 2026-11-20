@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.9";
+pub const APP_VERSION: &str = "v2.10.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -114,6 +114,9 @@ pub struct GlobalSettings {
     /// WebView2 built-in password manager (DPAPI-encrypted in the profile). Never active in private tabs.
     #[serde(default = "default_true")]
     pub save_passwords: bool,
+    /// Upgrade http:// navigations to https:// and warn when a site has no secure version.
+    #[serde(default = "default_true")]
+    pub https_only: bool,
     /// Edge tracking prevention: Strict when true, Balanced when false.
     #[serde(default)]
     pub strict_tracking: bool,
@@ -145,6 +148,7 @@ impl Default for GlobalSettings {
             on_queue_complete: "NONE".to_string(),
             custom_downloads_dir: None,
             save_passwords: true,
+            https_only: true,
             strict_tracking: false,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![

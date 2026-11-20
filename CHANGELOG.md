@@ -1,3 +1,9 @@
+## v2.10.0 (2026-11-20)
+- **HTTPS Only (on by default):** top-level `http://` navigations are upgraded to `https://`. If the secure version fails or redirects back to http, a warning page explains the risk and offers Go back or Continue (not secure).
+- The Continue link carries a one-time random code, so a hostile page cannot link to `http://yourbank` and skip the upgrade. Exceptions last for the session.
+- Never applied to LAN, loopback, intranet (single-label) hosts or non-standard ports, so routers, NAS boxes and dev servers keep working.
+- Toggle: Controls, HTTPS Only.
+
 ## v2.9.9 (2026-11-20)
 - **JavaScript switch is real:** uses WebView2 `IsScriptEnabled` (page scripts no longer run). It used to delete `<script>` tags after they had already executed.
 - **Images switch is real:** image requests are blocked at the network layer, saving data. It used to hide images with CSS after downloading them.
