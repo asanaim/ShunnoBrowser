@@ -3,6 +3,7 @@
 mod blocker;
 mod downloader;
 mod https_guard;
+mod importer;
 mod updater;
 mod sanitizer;
 mod state;
@@ -39,6 +40,7 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     ContentIpc(usize, String),
     DownloadIntercepted(String),
@@ -143,6 +145,8 @@ struct ChromeSnapshot {
     update_label: String,
     is_fullscreen: bool,
     is_maximized: bool,
+    import_sources: Vec<importer::ImportSource>,
+    import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
     find_total: usize,
@@ -2171,6 +2175,8 @@ fn main() -> wry::Result<()> {
             update_label: update_kind_label().1,
             is_fullscreen,
             is_maximized: window.is_maximized(),
+            import_sources: importer::ui_snapshot().0,
+            import_status: importer::ui_snapshot().1,
             has_closed_tabs,
             find_current,
             find_total,
@@ -2706,6 +2712,28 @@ fn main() -> wry::Result<()> {
 
             Event::UserEvent(AppEvent::NativeDownloadPaused { id, reason }) => {
                 engine.set_native_status(id, "PAUSED", reason);
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::ImportDone(result)) => {
+                match result {
+                    Ok((browser, b, h)) => {
+                        let nb = importer::merge_bookmarks(&mut bookmarks, b);
+                        let nh = importer::merge_history(&mut history, h, state::HISTORY_CAP);
+                        if nb > 0 {
+                            BrowserStorage::save_bookmarks(&bookmarks);
+                        }
+                        if nh > 0 {
+                            BrowserStorage::save_history(&history);
+                        }
+                        importer::set_status(format!(
+                            "Imported {nb} bookmark{} and {nh} history entr{} from {browser}.",
+                            if nb == 1 { "" } else { "s" },
+                            if nh == 1 { "y" } else { "ies" }
+                        ));
+                    }
+                    Err(e) => importer::set_status(e),
+                }
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
@@ -3691,6 +3719,23 @@ fn main() -> wry::Result<()> {
                     let _ = BrowserStorage::export_portable_txt_bookmarks(&bookmarks);
                 } else if cmd == "IMPORT_TXT_BOOKMARKS" {
                     let _ = BrowserStorage::import_portable_txt_bookmarks(&mut bookmarks);
+                } else if cmd == "IMPORT_SCAN" {
+                    importer::scan();
+                } else if let Some(arg) = cmd.strip_prefix("IMPORT_BROWSER:") {
+                    // IMPORT_BROWSER:<source index>:<b?><h?>
+                    let mut it = arg.splitn(2, ':');
+                    let idx = it.next().and_then(|x| x.parse::<usize>().ok());
+                    let what = it.next().unwrap_or("");
+                    let (wb, wh) = (what.contains('b'), what.contains('h'));
+                    if let (Some(src), true) = (idx.and_then(importer::source_at), wb || wh) {
+                        importer::set_status(format!("Importing from {}\u{2026}", src.browser));
+                        let px = proxy.clone();
+                        std::thread::spawn(move || {
+                            let r = importer::load(&src, wb, wh, state::HISTORY_CAP)
+                                .map(|(b, h)| (src.browser.clone(), b, h));
+                            let _ = px.send_event(AppEvent::ImportDone(r));
+                        });
+                    }
                 } else if cmd == "CLEAR_HISTORY" {
                     history.clear();
                     BrowserStorage::save_history(&history);

@@ -14,6 +14,8 @@ mod https_guard;
 mod blocker;
 #[path = "../src/updater.rs"]
 mod updater;
+#[path = "../src/importer.rs"]
+mod importer;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -248,4 +250,69 @@ fn test_update_install_swaps_and_keeps_old() {
     assert_eq!(std::fs::read(dir.join("ShunnoBrowser.old.exe")).unwrap(), b"MZ old");
     assert!(!dir.join("ShunnoBrowser.new.exe").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- browser import
+
+fn fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+}
+
+#[test]
+fn import_chromium_bookmarks_flattens_folders_and_filters_schemes() {
+    let json = std::fs::read_to_string(fixture("chromium_bookmarks.json")).unwrap();
+    let got = importer::parse_chromium_bookmarks(&json, "Chrome").unwrap();
+    let urls: Vec<&str> = got.iter().map(|b| b.url.as_str()).collect();
+    assert!(!urls.iter().any(|u| u.starts_with("javascript:")));
+    let rust = got.iter().find(|b| b.url == "https://www.rust-lang.org/").unwrap();
+    assert_eq!(rust.folder, "Chrome");
+    assert_eq!(rust.created_at, 1_600_000_000);
+    let docs = got.iter().find(|b| b.url == "https://docs.rs/").unwrap();
+    assert_eq!(docs.folder, "Chrome/Dev");
+    assert_eq!(docs.title, "https://docs.rs/");
+    // Nested folders collapse to the first level.
+    assert_eq!(got.iter().find(|b| b.url == "https://crates.io/").unwrap().folder, "Chrome/Dev");
+    let mut existing = Vec::new();
+    assert_eq!(importer::merge_bookmarks(&mut existing, got.clone()), 3); // duplicate URL skipped
+    assert_eq!(importer::merge_bookmarks(&mut existing, got), 0); // idempotent
+}
+
+#[test]
+fn import_chromium_history_reads_sqlite_btree_with_overflow() {
+    let db = std::fs::read(fixture("chromium_history.sqlite")).unwrap();
+    let all = importer::parse_chromium_history(&db, usize::MAX).unwrap();
+    // 800 rows, 8 hidden, chrome:// and file:// rejected.
+    assert_eq!(all.len(), 792);
+    assert!(all.windows(2).all(|w| w[0].visited_at >= w[1].visited_at));
+    assert_eq!(all[0].url, "https://site799.example.com/page?q=799");
+    assert_eq!(all[0].visited_at, 1_700_000_799);
+    assert_eq!(all[0].title, "Page 799 \u{2014} টেস্ট");
+    let long = all.iter().find(|h| h.url.len() > 3000 && h.url.ends_with(&"x".repeat(10))).unwrap();
+    assert!(long.url.len() == "https://long.example.com/".len() + 3333 || long.url.len() == "https://long.example.com/".len() + 3777 || long.url.len() == "https://long.example.com/".len() + 3007);
+    assert_eq!(all.iter().filter(|h| h.url.starts_with("https://long.")).count(), 3);
+    let top = importer::parse_chromium_history(&db, 250).unwrap();
+    assert_eq!(top.len(), 250);
+}
+
+#[test]
+fn import_history_rejects_garbage_without_panicking() {
+    assert!(importer::parse_chromium_history(b"not a db", 10).is_err());
+    let mut db = std::fs::read(fixture("chromium_history.sqlite")).unwrap();
+    // Corrupt every page after the schema page; must return Ok/Err, never panic.
+    for i in (512..db.len()).step_by(37) {
+        db[i] = db[i].wrapping_mul(31).wrapping_add(7);
+    }
+    let _ = importer::parse_chromium_history(&db, 250);
+    db.truncate(700);
+    let _ = importer::parse_chromium_history(&db, 250);
+}
+
+#[test]
+fn import_history_merge_dedupes_and_caps() {
+    use state::HistoryEntry;
+    let h = |u: &str, t: u64| HistoryEntry { title: u.into(), url: u.into(), visited_at: t };
+    let mut existing = vec![h("https://a/", 10), h("https://b/", 5)];
+    let added = importer::merge_history(&mut existing, vec![h("https://a/", 99), h("https://c/", 7), h("https://d/", 1)], 3);
+    assert_eq!(added, 2);
+    assert_eq!(existing.iter().map(|x| x.url.as_str()).collect::<Vec<_>>(), ["https://a/", "https://c/", "https://b/"]);
 }
