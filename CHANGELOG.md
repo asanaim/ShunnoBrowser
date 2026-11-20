@@ -1,3 +1,8 @@
+## v2.9.0 (2026-11-20)
+- **Guaranteed Working Hybrid Download Engine (`src/main.rs`, `src/downloader.rs`):** Bridged WebView2's native `ICoreWebView2_4::add_DownloadStarting` (`ICoreWebView2DownloadOperation`) directly into Shunno's `⚡ Downloads` panel (with live bytes, speed, category routing, and SHA-256 verification) so clicks on Google Drive, HubDrive, HubCloud, Cloudflare, POST forms, and `blob:` links download with 100% reliability; also synced live `navigator.userAgent` into the 32-thread parallel accelerator.
+- **Floating 10%-Transparent Menu & Downloads (`src/ui_chrome.rs`, `src/main.rs`):** Removed page splitting so Menu (`•••`) and Downloads (`⚡`) float cleanly over the full-width webpage at 10% transparency (`90%` opaque frosted surface) using explicit Win32 sibling HWND z-ordering (`bring_chrome_above_tabs`).
+- **Polished HiDPI Taskbar & App Icon (`assets/app.ico`, `src/ui_chrome.rs`):** Redesigned the icon with 6×6 SDF anti-aliasing, diagonal sapphire-to-cyan lighting, bold white geometric `0` ring, luminous coral-amber kinetic arc, and a true `256×256` PNG frame inside `assets/app.ico`.
+
 ## v2.8.0 (2026-11-20)
 - Made Menu (`•••`) and Downloads (`⚡`) 100% solid opaque right-docked side panels (`440px`) in a non-overlapping layout so every button is 100% clickable with zero transparency.
 - Shrunk Address Capsule (`max-width: 420px`, `height: 30px`, `border-radius: 15px`).

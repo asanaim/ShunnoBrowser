@@ -296,32 +296,40 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .shortcut-tile:hover .shortcut-del { opacity: 1; }
   .shortcut-del:hover { background: var(--red); color: #fff; }
 
-  /* Solid Opaque Docked Side Panel (Menu & Downloads — zero transparency, non-overlapping!) */
+  /* Floating Overlay Panel over Webpage (10% Transparency = 90% Opaque, Zero Page Splitting!) */
   .overlay-backdrop {
-    position: fixed; top: 112px; right: 0; bottom: 0; width: 440px; max-width: 100vw;
-    display: none; flex-direction: column;
-    background: var(--bg);
-    border-left: 1px solid var(--border);
+    position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
+    display: none; justify-content: flex-end; align-items: flex-start;
+    padding: 12px 14px;
+    background: rgba(15, 15, 20, 0.04);
     z-index: 50;
   }
   .overlay-backdrop.open {
     display: flex;
   }
 
-  @keyframes panelSlideIn {
-    0%   { opacity: 0; transform: translateX(18px); }
-    100% { opacity: 1; transform: translateX(0); }
+  @keyframes panelFloatIn {
+    0%   { opacity: 0; transform: translateY(-10px) scale(0.97); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .floating-sheet {
     position: relative;
-    width: 100%; height: 100%;
-    background: var(--surface-solid);
+    width: 430px; max-width: calc(100vw - 28px); max-height: calc(100vh - 136px);
+    background: rgba(255, 255, 255, 0.90);
+    backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid var(--border);
+    border-radius: 18px;
     padding: 14px;
     overflow-y: auto;
-    animation: panelSlideIn 0.24s var(--ease-fluid) forwards;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+    transform-origin: top right;
+    animation: panelFloatIn 0.24s var(--ease-spring) forwards;
   }
-  .floating-sheet.wide { width: 100%; }
+  body.dark .floating-sheet {
+    background: rgba(28, 28, 32, 0.90);
+  }
+  .floating-sheet.wide { width: 510px; }
 
   .card {
     background: var(--surface); border-radius: 14px; padding: 12px 13px; margin-bottom: 10px;
@@ -478,16 +486,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <defs>
-            <radialGradient id="shunnoCompass" cx="35%" cy="30%" r="70%">
-              <stop offset="0%" stop-color="#38BDF8"/>
-              <stop offset="100%" stop-color="#0055D4"/>
-            </radialGradient>
+            <linearGradient id="shunnoCompass" x1="2" y1="2" x2="26" y2="26" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#38C6FF"/>
+              <stop offset="52%" stop-color="#0A84FF"/>
+              <stop offset="100%" stop-color="#0442D6"/>
+            </linearGradient>
+            <linearGradient id="shunnoArc" x1="15" y1="5" x2="23" y2="13" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#FF4E42"/>
+              <stop offset="100%" stop-color="#FF942E"/>
+            </linearGradient>
           </defs>
-          <circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)" stroke="#E2E8F0" stroke-width="1.5"/>
-          <circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.1" stroke-opacity="0.92"/>
-          <polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/>
-          <polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/>
-          <circle cx="14" cy="14" r="1.3" fill="#1C1C1E"/>
+          <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
+          <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
+          <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
+          <circle cx="14" cy="14" r="1.6" fill="white"/>
         </svg>
       </div>
       <div id="tabs-container"></div>
@@ -564,11 +576,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <div class="home-canvas" id="home-canvas">
     <div class="home-hero">
       <svg width="58" height="58" viewBox="0 0 28 28" fill="none">
-        <circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)" stroke="#CBD5E1" stroke-width="1.2"/>
-        <circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.1"/>
-        <polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/>
-        <polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/>
-        <circle cx="14" cy="14" r="1.3" fill="#1C1C1E"/>
+        <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
+        <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
+        <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
+        <circle cx="14" cy="14" r="1.6" fill="white"/>
       </svg>
       <div class="home-search-box">
         <span style="font-size:16px;opacity:0.65;">🔎</span>
@@ -996,7 +1007,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
         const tabLogoHtml = (!hasAudio && (isNewTab || t.pinned))
-          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
+          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/><path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/><circle cx="14" cy="14" r="1.6" fill="white"/></svg></span>`
           : '';
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
@@ -1143,7 +1154,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.8.0';
+    document.getElementById('version-badge').textContent = state.version || 'v2.9.0';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {

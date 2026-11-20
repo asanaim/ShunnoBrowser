@@ -36,6 +36,25 @@ enum AppEvent {
     ChromeIpc(String),
     ContentIpc(usize, String),
     DownloadIntercepted(String),
+    NativeDownloadStarted {
+        id: u64,
+        url: String,
+        file_name: String,
+        saved_path: String,
+        total_bytes: i64,
+    },
+    NativeDownloadProgress {
+        id: u64,
+        received: u64,
+        total: i64,
+        speed_bps: u64,
+    },
+    NativeDownloadFinished {
+        id: u64,
+        ok: bool,
+        final_path: Option<String>,
+        err_msg: Option<String>,
+    },
     DownloadWithCookies {
         url: String,
         threads: usize,
@@ -170,7 +189,7 @@ fn load_embedded_window_icon() -> Option<Icon> {
         return None;
     }
     let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-    for target_size in [128u32, 64u32, 48u32, 32u32] {
+    for target_size in [64u32, 48u32, 32u32] {
         for i in 0..count {
             let off = 6 + i * 16;
             if off + 16 > ICO_BYTES.len() {
@@ -795,6 +814,138 @@ fn attach_native_webview2_hooks(
         }));
         let _ = core2.add_WebResourceResponseReceived(&resp_handler, &mut resp_token);
 
+
+        // 3. Native WebView2 Download Engine Bridge (ICoreWebView2_4::add_DownloadStarting)
+        // Keeps WebView2's native download stream alive (100% compatible with Cloudflare, GDrive, HubCloud, POST, blob:)
+        // while routing files cleanly into ShunnoBrowser\<Category> and displaying live progress in Shunno's Downloads panel.
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
+            ICoreWebView2_4,
+        };
+        use webview2_com::{
+            BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
+            StateChangedEventHandler,
+        };
+        if let Ok(core4) = core.cast::<ICoreWebView2_4>() {
+            let mut dl_token = Default::default();
+                    let dl_handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+                let Some(args) = args else { return Ok(()); };
+                let Ok(op) = args.DownloadOperation() else { return Ok(()); };
+
+                // Hide Edge's default popup while keeping the native download running
+                let _ = args.SetHandled(true);
+
+                let mut uri_ptr = windows::core::PWSTR::null();
+                let uri = if op.Uri(&mut uri_ptr).is_ok() {
+                    webview2_com::take_pwstr(uri_ptr)
+                } else {
+                    String::new()
+                };
+
+                let mut default_path_ptr = windows::core::PWSTR::null();
+                let default_name = if args.ResultFilePath(&mut default_path_ptr).is_ok() {
+                    let p = webview2_com::take_pwstr(default_path_ptr);
+                    std::path::Path::new(&p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("download.bin")
+                        .to_string()
+                } else {
+                    "download.bin".to_string()
+                };
+
+                let safe_name = downloader::sanitize_download_filename(&default_name);
+                let category = downloader::detect_download_category(&safe_name);
+                let target_dir = BrowserStorage::downloads_root_dir().join(&category);
+                let _ = fs::create_dir_all(&target_dir);
+                let mut dest_path = target_dir.join(&safe_name);
+                if dest_path.exists() {
+                    let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+                    let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("bin");
+                    dest_path = target_dir.join(format!("{}_{}.{}", stem, now_epoch_secs() % 100_000, ext));
+                }
+                let dest_str = dest_path.to_string_lossy().to_string();
+                let wide_dest: Vec<u16> = dest_str.encode_utf16().chain(Some(0)).collect();
+                let _ = args.SetResultFilePath(PCWSTR::from_raw(wide_dest.as_ptr()));
+
+                let mut total_bytes: i64 = -1;
+                let _ = op.TotalBytesToReceive(&mut total_bytes);
+
+                let dl_id = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(1)
+                    + rand::random::<u16>() as u64;
+
+                let _ = dl_proxy.send_event(AppEvent::NativeDownloadStarted {
+                    id: dl_id,
+                    url: uri,
+                    file_name: safe_name,
+                    saved_path: dest_str.clone(),
+                    total_bytes,
+                });
+
+                let mut b_token = Default::default();
+                let b_proxy = dl_proxy.clone();
+                let last_time = std::sync::Mutex::new((std::time::Instant::now(), 0u64));
+                let b_handler = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(dl_op) = sender {
+                        let mut rec: i64 = 0;
+                        let mut tot: i64 = -1;
+                        let _ = dl_op.BytesReceived(&mut rec);
+                        let _ = dl_op.TotalBytesToReceive(&mut tot);
+                        let rec_u = rec.max(0) as u64;
+                        if let Ok(mut guard) = last_time.lock() {
+                            let elapsed_ms = guard.0.elapsed().as_millis() as u64;
+                            if elapsed_ms >= 300 {
+                                let spd = (rec_u.saturating_sub(guard.1) * 1000) / elapsed_ms.max(1);
+                                *guard = (std::time::Instant::now(), rec_u);
+                                let _ = b_proxy.send_event(AppEvent::NativeDownloadProgress {
+                                    id: dl_id,
+                                    received: rec_u,
+                                    total: tot,
+                                    speed_bps: spd,
+                                });
+                            }
+                        }
+                    }
+                    Ok(())
+                }));
+                let _ = op.add_BytesReceivedChanged(&b_handler, &mut b_token);
+
+                let mut s_token = Default::default();
+                let s_proxy = dl_proxy.clone();
+                let final_p = dest_str;
+                let s_handler = StateChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(dl_op) = sender {
+                        let mut st = Default::default();
+                        if dl_op.State(&mut st).is_ok() {
+                            if st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                                let _ = s_proxy.send_event(AppEvent::NativeDownloadFinished {
+                                    id: dl_id,
+                                    ok: true,
+                                    final_path: Some(final_p.clone()),
+                                    err_msg: None,
+                                });
+                            } else if st == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+                                let _ = s_proxy.send_event(AppEvent::NativeDownloadFinished {
+                                    id: dl_id,
+                                    ok: false,
+                                    final_path: None,
+                                    err_msg: Some("Download interrupted".to_string()),
+                                });
+                            }
+                        }
+                    }
+                    Ok(())
+                }));
+                let _ = op.add_StateChanged(&s_handler, &mut s_token);
+
+                Ok(())
+            }));
+            let _ = core4.add_DownloadStarting(&dl_handler, &mut dl_token);
+        }
+
         // 4. Native WebView2 ContextMenuRequested Hook: Replace "Open link in new window" with "Open link in new tab"
         use webview2_com::ContextMenuRequestedEventHandler;
         use webview2_com::CustomItemSelectedEventHandler;
@@ -910,14 +1061,7 @@ fn create_tab_webview(
         .with_ipc_handler(move |req| {
             let _ = ipc_proxy.send_event(AppEvent::ContentIpc(tab_id, req.body().clone()));
         })
-        .with_download_started_handler(move |dl_url, _dest| {
-            if dl_url.starts_with("http://") || dl_url.starts_with("https://") {
-                let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(dl_url));
-                false
-            } else {
-                true
-            }
-        })
+
         .with_new_window_req_handler(move |popup_url| {
             let lower = popup_url.to_ascii_lowercase();
             if popup_url.is_empty()
@@ -1006,12 +1150,13 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 let off = 6 + i * 16;
                 if off + 16 > ICO_BYTES.len() { break; }
                 let w = ICO_BYTES[off] as i32;
+                if w == 0 { continue; }
                 let sz = u32::from_le_bytes([ICO_BYTES[off + 8], ICO_BYTES[off + 9], ICO_BYTES[off + 10], ICO_BYTES[off + 11]]) as usize;
                 let img_off = u32::from_le_bytes([ICO_BYTES[off + 12], ICO_BYTES[off + 13], ICO_BYTES[off + 14], ICO_BYTES[off + 15]]) as usize;
                 if img_off + sz <= ICO_BYTES.len() {
                     let slice = &ICO_BYTES[img_off..img_off + sz];
                     if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                        if w == 128 || w == 64 || w == 48 || w == 32 {
+                        if w == 64 || w == 48 || w == 32 {
                             SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
                             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
                         } else if w == 16 || w == 24 {
@@ -1088,22 +1233,31 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
 fn install_native_win32_window_features(_window: &Window, _chrome_wv: &WebView) {}
 
 #[cfg(windows)]
-fn bring_chrome_above_tabs(chrome_wv: &WebView) {
+fn bring_chrome_above_tabs(chrome_wv: &WebView, tabs: &[BrowserTab]) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
     use wry::WebViewExtWindows;
 
     let ctrl = chrome_wv.controller();
     unsafe {
-        let mut parent = HWND::default();
-        if ctrl.ParentWindow(&mut parent).is_ok() && parent.0 != 0 {
-            let _ = SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let mut chrome_hwnd = HWND::default();
+        if ctrl.ParentWindow(&mut chrome_hwnd).is_ok() && chrome_hwnd.0 != 0 {
+            let _ = SetWindowPos(chrome_hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            for tab in tabs {
+                let mut tab_hwnd = HWND::default();
+                if tab.webview.controller().ParentWindow(&mut tab_hwnd).is_ok()
+                    && tab_hwnd.0 != 0
+                    && tab_hwnd.0 != chrome_hwnd.0
+                {
+                    let _ = SetWindowPos(tab_hwnd, chrome_hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
         }
     }
 }
 
 #[cfg(not(windows))]
-fn bring_chrome_above_tabs(_chrome_wv: &WebView) {}
+fn bring_chrome_above_tabs(_chrome_wv: &WebView, _tabs: &[BrowserTab]) {}
 
 fn layout_webviews(
     window: &Window,
@@ -1149,10 +1303,8 @@ fn layout_webviews(
         size: LogicalSize::new(inner_w, chrome_h).into(),
     });
 
-    // Non-overlapping docked right panel for Menu & Downloads: webpage shrinks cleanly to the left,
-    // so every button inside Menu & Downloads is 100% clickable with zero transparency and zero flicker.
-    let panel_w = if !is_fs && drawer_open { 440.0_f64.min((inner_w - 220.0).max(0.0)) } else { 0.0 };
-    let web_w = (inner_w - panel_w).max(200.0);
+    // Full-width webpage (zero splitting): Menu & Downloads float over the live webpage at 10% transparency.
+    let web_w = inner_w;
 
     for (idx, tab) in tabs.iter().enumerate() {
         if let Some(s_idx) = valid_split {
@@ -1183,7 +1335,7 @@ fn layout_webviews(
     }
 
     if !is_fs && overlay_active {
-        bring_chrome_above_tabs(chrome_wv);
+        bring_chrome_above_tabs(chrome_wv, tabs);
     }
 }
 
@@ -1763,6 +1915,94 @@ fn main() -> wry::Result<()> {
                 }
             }
 
+            Event::UserEvent(AppEvent::NativeDownloadStarted {
+                id,
+                url,
+                file_name,
+                saved_path,
+                total_bytes,
+            }) => {
+                engine.register_native_download(id, url, file_name, saved_path, total_bytes);
+                drawer_open = true;
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                let _ = chrome_wv.evaluate_script("if (window.openDrawer) window.openDrawer('downloads');");
+                push_chrome_state(
+                    &window,
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    split_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
+                    site_data_cleared,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::NativeDownloadProgress {
+                id,
+                received,
+                total,
+                speed_bps,
+            }) => {
+                engine.update_native_download_progress(id, received, total, speed_bps);
+                push_chrome_state(
+                    &window,
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    split_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
+                    site_data_cleared,
+                    &engine,
+                );
+            }
+
+            Event::UserEvent(AppEvent::NativeDownloadFinished {
+                id,
+                ok,
+                final_path,
+                err_msg,
+            }) => {
+                engine.finish_native_download(id, ok, final_path, err_msg);
+                push_chrome_state(
+                    &window,
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    split_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
+                    site_data_cleared,
+                    &engine,
+                );
+            }
+
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
                 let active_tab = tabs.get(active_tab_idx);
                 let (ref_url, cookie_val, wv_opt) = active_tab
@@ -2074,6 +2314,9 @@ fn main() -> wry::Result<()> {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let ck = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                        if let Some(ua_str) = val.get("ua").and_then(|v| v.as_str()) {
+                            engine.set_user_agent(ua_str);
+                        }
                         if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                             if ck.is_some() {
                                 tab.cookie = ck;

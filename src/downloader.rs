@@ -210,6 +210,7 @@ pub struct NativeDownloadEngine {
     pub auto_clean_completed: Arc<AtomicBool>,
     pub max_concurrent: Arc<AtomicUsize>,
     pub ffmpeg_install_status: Arc<Mutex<String>>,
+    pub user_agent: Arc<Mutex<String>>,
 }
 
 impl NativeDownloadEngine {
@@ -230,6 +231,7 @@ impl NativeDownloadEngine {
             auto_clean_completed: Arc::new(AtomicBool::new(initial_auto_clean)),
             max_concurrent: Arc::new(AtomicUsize::new(initial_max_concurrent.clamp(1, 8))),
             ffmpeg_install_status: Arc::new(Mutex::new(String::new())),
+            user_agent: Arc::new(Mutex::new("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0".to_string())),
         }
     }
 
@@ -287,6 +289,106 @@ impl NativeDownloadEngine {
                 }
             }
         });
+    }
+
+    pub fn set_user_agent(&self, ua: &str) {
+        let trimmed = ua.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut guard) = self.user_agent.lock() {
+                *guard = trimmed.to_string();
+            }
+        }
+    }
+
+    pub fn current_user_agent(&self) -> String {
+        self.user_agent
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0".to_string())
+    }
+
+    pub fn register_native_download(&self, id: u64, url: String, file_name: String, saved_path: String, total_bytes: i64) {
+        let safe_name = sanitize_download_filename(&file_name);
+        let category = detect_download_category(&safe_name);
+        let task = DownloadTask {
+            id,
+            url,
+            file_name: safe_name,
+            total_bytes,
+            downloaded_bytes: 0,
+            status: "DOWNLOADING".to_string(),
+            speed_bps: 0,
+            threads: 1,
+            category,
+            supports_ranges: false,
+            referer: None,
+            cookie: None,
+            sha256: None,
+            saved_path: Some(saved_path),
+            error_message: None,
+            segment_map: "[Browser Native]".to_string(),
+            scheduled_start_epoch: None,
+        };
+        if let Ok(mut list) = self.tasks.lock() {
+            list.insert(0, task);
+        }
+        self.save_queue();
+    }
+
+    pub fn update_native_download_progress(&self, id: u64, received: u64, total: i64, speed_bps: u64) {
+        if let Ok(mut list) = self.tasks.lock() {
+            if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+                t.downloaded_bytes = received;
+                if total > 0 {
+                    t.total_bytes = total;
+                }
+                t.speed_bps = speed_bps;
+            }
+        }
+    }
+
+    pub fn finish_native_download(&self, id: u64, ok: bool, final_path: Option<String>, err_msg: Option<String>) {
+        let sha_hex = if ok {
+            final_path.as_ref().and_then(|p| {
+                let mut f = File::open(p).ok()?;
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; 65536];
+                while let Ok(n) = f.read(&mut buf) {
+                    if n == 0 { break; }
+                    hasher.update(&buf[..n]);
+                }
+                Some(hex::encode(hasher.finalize()))
+            })
+        } else {
+            None
+        };
+        let final_size = final_path
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok().map(|m| m.len()));
+        let auto_clean = self.auto_clean_completed.load(Ordering::Relaxed);
+
+        if let Ok(mut list) = self.tasks.lock() {
+            if ok && auto_clean {
+                list.retain(|i| i.id != id);
+            } else if let Some(t) = list.iter_mut().find(|i| i.id == id) {
+                t.speed_bps = 0;
+                if ok {
+                    t.status = "COMPLETED".to_string();
+                    if let Some(sz) = final_size {
+                        t.total_bytes = sz as i64;
+                        t.downloaded_bytes = sz;
+                    }
+                    t.sha256 = sha_hex;
+                    if let Some(p) = final_path {
+                        t.saved_path = Some(p);
+                    }
+                } else {
+                    t.status = "FAILED".to_string();
+                    t.error_message = err_msg.or_else(|| Some("Interrupted".to_string()));
+                }
+            }
+        }
+        self.save_queue();
     }
 
     pub fn export_history_csv(&self) -> Result<PathBuf, String> {
