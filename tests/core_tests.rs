@@ -110,3 +110,15 @@ fn test_hls_playlist_parsing() {
     assert!(pm.encrypted && pm.init_segment.is_some());
     assert_eq!(pm.segments[0].as_str(), "https://cdn.x.com/v/seg1.m4s");
 }
+
+#[test]
+fn test_builtin_ad_matcher() {
+    use sanitizer::is_blocked_ad_url;
+    assert!(is_blocked_ad_url("https://securepubads.g.doubleclick.net/gampad/ads?x=1"));
+    assert!(is_blocked_ad_url("https://www.youtube.com/pagead/viewthroughconversion/1"));
+    assert!(is_blocked_ad_url("https://rr1.googlevideo.com/initplayback?source=youtube&oad=1"));
+    assert!(!is_blocked_ad_url("https://www.youtube.com/watch?v=abc"));
+    assert!(!is_blocked_ad_url("https://rr1.googlevideo.com/videoplayback?itag=22"));
+    assert!(!is_blocked_ad_url("https://notdoubleclick.net.example.com/x"));
+    assert!(!is_blocked_ad_url("https://example.com/img.png"));
+}

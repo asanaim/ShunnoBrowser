@@ -32,6 +32,7 @@ use state::{
 };
 
 const CHROME_BAR_HEIGHT: f64 = 112.0;
+const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
@@ -223,9 +224,7 @@ fn build_content_init_script(
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
-        .replace("__SHUNNO_JS_DISABLED__", if !policy.js_enabled { "true" } else { "false" })
-        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
-        .replace("__SHUNNO_DESKTOP_UA__", if policy.desktop_ua { "true" } else { "false" });
+        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" });
 
     if !user_js.is_empty() {
         script.push('\n');
@@ -693,6 +692,22 @@ fn dispatch_download_with_httponly_cookies(
 }
 
 
+/// Per-site engine settings that must be real, not cosmetic: JavaScript on/off.
+#[cfg(windows)]
+fn apply_site_settings(webview: &WebView, policy: &SitePolicy) {
+    use wry::WebViewExtWindows;
+    unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        if let Ok(settings) = core.Settings() {
+            // Page scripts only; Shunno's injected scripts keep running.
+            let _ = settings.SetIsScriptEnabled(policy.js_enabled);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_site_settings(_webview: &WebView, _policy: &SitePolicy) {}
+
 /// Applies password autosave and tracking prevention to a tab's WebView2 settings/profile.
 #[cfg(windows)]
 fn apply_privacy_settings(webview: &WebView, save_passwords: bool, strict_tracking: bool) {
@@ -895,8 +910,10 @@ fn attach_native_webview2_hooks(
     webview: &WebView,
     tab_id: usize,
     adblock_enabled: bool,
+    block_images: bool,
     proxy: EventLoopProxy<AppEvent>,
 ) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2, ICoreWebView2_8,
         ICoreWebView2WebResourceResponse,
@@ -973,7 +990,9 @@ fn attach_native_webview2_hooks(
         };
 
         // Only intercept known ad/tracker URL patterns so 99% of page traffic runs at full native Chromium speed
-        if adblock_enabled {
+        // One request policy for ad hosts and, when images are off for this site, every image.
+        // Filters from both rules feed the same event, so the handler re-checks each request.
+        if adblock_enabled || block_images {
             let ad_filters = [
                 w!("*://*.doubleclick.net/*"),
                 w!("*://*.googlesyndication.com/*"),
@@ -992,8 +1011,13 @@ fn attach_native_webview2_hooks(
                 w!("*://*.youtube.com/get_midroll_*"),
                 w!("*://*.googlevideo.com/initplayback*oad*"),
             ];
-            for pat in ad_filters {
-                let _ = core.AddWebResourceRequestedFilter(pat, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            if adblock_enabled {
+                for pat in ad_filters {
+                    let _ = core.AddWebResourceRequestedFilter(pat, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+                }
+            }
+            if block_images {
+                let _ = core.AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE);
             }
 
             let mut token = Default::default();
@@ -1003,14 +1027,30 @@ fn attach_native_webview2_hooks(
                 let Some(args) = args else {
                     return Ok(());
                 };
+                let mut uri = String::new();
+                if let Ok(req) = args.Request() {
+                    let mut p = windows::core::PWSTR::null();
+                    if req.Uri(&mut p).is_ok() {
+                        uri = webview2_com::take_pwstr(p);
+                    }
+                }
+                let mut ctx = Default::default();
+                let _ = args.ResourceContext(&mut ctx);
+                let is_ad = adblock_enabled && sanitizer::is_blocked_ad_url(&uri);
+                let is_blocked_image = block_images && ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
+                if !is_ad && !is_blocked_image {
+                    return Ok(()); // no response set: the request continues normally
+                }
                 let empty_resp: ICoreWebView2WebResourceResponse = env_for_ad.CreateWebResourceResponse(
                     None::<&IStream>,
                     403,
-                    w!("Blocked by Shunno AdBlock"),
+                    w!("Blocked by Shunno"),
                     PCWSTR::null(),
                 )?;
                 let _ = args.SetResponse(&empty_resp);
-                let _ = ad_proxy.send_event(AppEvent::AdBlocked);
+                if is_ad {
+                    let _ = ad_proxy.send_event(AppEvent::AdBlocked);
+                }
                 Ok(())
             }));
 
@@ -1386,6 +1426,7 @@ fn attach_native_webview2_hooks(
     _webview: &WebView,
     _tab_id: usize,
     _adblock_enabled: bool,
+    _block_images: bool,
     _proxy: EventLoopProxy<AppEvent>,
 ) {
 }
@@ -1412,7 +1453,12 @@ fn create_tab_webview(
     let title_proxy = proxy.clone();
     let nav_proxy = proxy.clone();
 
-    let wv = WebViewBuilder::new_as_child(window)
+    let mut builder = WebViewBuilder::new_as_child(window);
+    if policy.mobile_ua {
+        // Real HTTP User-Agent (and navigator.userAgent), so servers send their mobile site.
+        builder = builder.with_user_agent(MOBILE_UA);
+    }
+    let wv = builder
         .with_web_context(web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
@@ -1451,8 +1497,9 @@ fn create_tab_webview(
         .build()?;
 
     attach_f11_accelerator_hook(&wv, proxy.clone());
-    attach_native_webview2_hooks(&wv, tab_id, policy.adblock, proxy);
+    attach_native_webview2_hooks(&wv, tab_id, policy.adblock, !policy.images_enabled, proxy);
     apply_privacy_settings(&wv, global.save_passwords && !incognito, global.strict_tracking);
+    apply_site_settings(&wv, policy);
 
     if (policy.zoom - 1.0).abs() > f64::EPSILON {
         apply_tab_zoom(&wv, policy.zoom);
@@ -3206,7 +3253,7 @@ fn main() -> wry::Result<()> {
                             "adblock" => pol.adblock = !pol.adblock,
                             "js_enabled" => pol.js_enabled = !pol.js_enabled,
                             "images_enabled" => pol.images_enabled = !pol.images_enabled,
-                            "desktop_ua" => pol.desktop_ua = !pol.desktop_ua,
+                            "mobile_ua" => pol.mobile_ua = !pol.mobile_ua,
                             "sponsorblock" => pol.sponsorblock = !pol.sponsorblock,
                             "auto_reject_cookies" => pol.auto_reject_cookies = !pol.auto_reject_cookies,
                             _ => {}

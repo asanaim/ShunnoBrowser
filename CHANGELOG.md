@@ -1,3 +1,10 @@
+## v2.9.9 (2026-11-20)
+- **JavaScript switch is real:** uses WebView2 `IsScriptEnabled` (page scripts no longer run). It used to delete `<script>` tags after they had already executed.
+- **Images switch is real:** image requests are blocked at the network layer, saving data. It used to hide images with CSS after downloading them.
+- **Mobile Site replaces Desktop UA:** sends a real mobile HTTP User-Agent so servers return their mobile pages. Desktop UA only changed `navigator.userAgent` and was meaningless on a desktop browser.
+- **Reject Cookie Banners:** renamed to say what it does (clicks common "Reject all" buttons).
+- Ad filter handler now re-checks every request, so the image rule and the ad rule can share one WebView2 event safely.
+
 ## v2.9.8 (2026-11-20)
 - **Floating download bar never appeared (root cause):** `content_guard.js` crashed at document start on every page (`appendChild` on a null `<head>`), which aborted the whole script: floating bar, drop-basket handlers, page metadata (history titles, tab UA/cookies), find counts, audio state and in-page shortcuts never ran. Early DOM writes now wait for a root element.
 - **IDM-style bar:** appears over every visible video/audio player, including `blob:`/MSE streaming players, and pops up once when a video starts playing. "This video" hands the page to yt-dlp (with the tab's session cookies, except on YouTube). Styling uses constructable stylesheets so strict-CSP sites cannot hide it.

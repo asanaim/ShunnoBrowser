@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.8";
+pub const APP_VERSION: &str = "v2.9.9";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -35,7 +35,10 @@ pub struct SitePolicy {
     pub adblock: bool,
     pub js_enabled: bool,
     pub images_enabled: bool,
-    pub desktop_ua: bool,
+    /// Request the mobile version of the site (real HTTP User-Agent). Replaces the old
+    /// desktop_ua switch, which only spoofed navigator.userAgent and did nothing on desktop.
+    #[serde(default)]
+    pub mobile_ua: bool,
     pub sponsorblock: bool,
     pub auto_reject_cookies: bool,
     #[serde(default = "default_site_zoom")]
@@ -48,7 +51,7 @@ impl Default for SitePolicy {
             adblock: true,
             js_enabled: true,
             images_enabled: true,
-            desktop_ua: false,
+            mobile_ua: false,
             sponsorblock: true,
             auto_reject_cookies: true,
             zoom: 1.0,
