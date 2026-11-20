@@ -8,6 +8,8 @@ mod sanitizer;
 mod userscripts;
 #[path = "../src/downloader.rs"]
 mod downloader;
+#[path = "../src/https_guard.rs"]
+mod https_guard;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -121,4 +123,43 @@ fn test_builtin_ad_matcher() {
     assert!(!is_blocked_ad_url("https://rr1.googlevideo.com/videoplayback?itag=22"));
     assert!(!is_blocked_ad_url("https://notdoubleclick.net.example.com/x"));
     assert!(!is_blocked_ad_url("https://example.com/img.png"));
+}
+
+#[test]
+fn test_https_only_guard() {
+    use https_guard::{Decision, HttpsGuard};
+    let g = HttpsGuard::default();
+    assert_eq!(g.decide(1, "http://example.com/a"), Decision::Allow, "disabled guard must not act");
+    g.set_enabled(true);
+
+    // Upgrade public http, keep path and query; drop explicit :80.
+    assert_eq!(g.decide(1, "http://example.com:80/a?b=1"), Decision::Upgrade("https://example.com/a?b=1".into()));
+    // Successful secure load clears in-flight state; a later http link is upgraded again (no false loop).
+    assert_eq!(g.on_navigation_done(1, true, false), None);
+    assert!(matches!(g.decide(1, "http://example.com/b"), Decision::Upgrade(_)));
+    // Secure load redirected straight back to http: warn instead of looping.
+    assert_eq!(g.decide(1, "http://example.com/b"), Decision::Interstitial("http://example.com/b".into()));
+
+    // Never touch LAN, loopback, intranet, custom ports, https.
+    for u in ["http://192.168.1.1/", "http://localhost:3000/", "http://router/", "http://example.org:8080/", "https://example.org/"] {
+        assert_eq!(g.decide(2, u), Decision::Allow, "{}", u);
+    }
+
+    // Failed upgraded load (refused/timeout/cert): our cancel is ignored, the failure yields the http URL.
+    assert!(matches!(g.decide(3, "http://nossl.example.net/x"), Decision::Upgrade(_)));
+    assert_eq!(g.on_navigation_done(3, false, true), None);
+    assert_eq!(g.on_navigation_done(3, false, false), Some("http://nossl.example.net/x".into()));
+
+    // A forged allow mark from a page does not downgrade; the real one-time link does, once per host.
+    assert!(matches!(g.decide(4, "http://bank.example.com/#shunno-allow-http-0123456789abcdef"), Decision::Upgrade(_)));
+    let _ = g.on_navigation_done(4, true, false);
+    let link = g.issue_allow_link("http://nossl.example.net/x").unwrap();
+    assert_eq!(g.decide(5, &link), Decision::Allow);
+    assert_eq!(g.decide(5, "http://nossl.example.net/other"), Decision::Allow, "host stays allowed for the session");
+    // Replaying the same nonce for a different host grants nothing.
+    let other = link.replace("nossl.example.net", "bank.example.com");
+    assert!(matches!(g.decide(6, &other), Decision::Upgrade(_)));
+
+    let html = https_guard::interstitial_html("http://a.example/<x>", "http://a.example/#shunno-allow-http-1");
+    assert!(html.contains("a.example") && !html.contains("<x>"));
 }

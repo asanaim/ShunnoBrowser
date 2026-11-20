@@ -1438,6 +1438,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups],
+      ['https_only', '🔒 HTTPS Only', state.global.https_only],
       ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
       ['strict_tracking', '🛡️ Strict Tracking Block', state.global.strict_tracking]
     ];
