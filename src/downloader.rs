@@ -578,7 +578,12 @@ impl NativeDownloadEngine {
         dup_mode: &str, // "CHECK", "RENAME", "OVERWRITE"
         delay_secs: Option<u64>,
     ) -> EnqueueOutcome {
-        let normalized_url = url.trim().to_string();
+        let trimmed_u = url.trim();
+        let normalized_url = if trimmed_u.starts_with("http://") || trimmed_u.starts_with("https://") {
+            trimmed_u.to_string()
+        } else {
+            format!("https://{}", trimmed_u)
+        };
 
         let mut raw_name = normalized_url
             .split('?')
@@ -1223,12 +1228,63 @@ async fn download_raw_to_path(
             }
         }
         mon.abort();
-        if let Some(err) = first_err {
-            return Err(err);
-        }
-
         for i in 0..threads {
             let _ = fs::remove_file(NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i)));
+        }
+
+        if let Some(err) = first_err {
+            if err == "Paused" || !running.load(Ordering::Relaxed) {
+                return Err("Paused".to_string());
+            }
+            // Fallback cleanly to a single sequential stream if CDN throttles parallel Range workers (e.g. 429/403/503)
+            if let Ok(mut list) = tasks.lock() {
+                if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+                    t.threads = 1;
+                    t.supports_ranges = false;
+                    t.segment_map = "[1T Fallback]".to_string();
+                }
+            }
+            let mut rb = client
+                .get(&task.url)
+                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+                .header("Accept", "*/*");
+            if let Some(ref r) = task.referer {
+                if !r.is_empty() { rb = rb.header(REFERER, r); }
+            }
+            if let Some(ref ck) = task.cookie {
+                if !ck.is_empty() { rb = rb.header(COOKIE, ck); }
+            }
+            let resp = rb.send().await.map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status()));
+            }
+            let mut out = File::create(part_path).map_err(|e| e.to_string())?;
+            let mut stream = resp.bytes_stream();
+            let mut done = 0u64;
+            let mut last_tick = Instant::now();
+            let mut bytes_tick = 0u64;
+            while let Some(chunk_res) = stream.next().await {
+                if !running.load(Ordering::Relaxed) {
+                    return Err("Paused".to_string());
+                }
+                let bytes = chunk_res.map_err(|e| e.to_string())?;
+                std::io::Write::write_all(&mut out, &bytes).map_err(|e| e.to_string())?;
+                done += bytes.len() as u64;
+                bytes_tick += bytes.len() as u64;
+                let elapsed = last_tick.elapsed().as_millis() as u64;
+                if elapsed >= 500 {
+                    let speed = (bytes_tick * 1000) / elapsed.max(1);
+                    last_tick = Instant::now();
+                    bytes_tick = 0;
+                    if let Ok(mut list) = tasks.lock() {
+                        if let Some(t) = list.iter_mut().find(|i| i.id == task.id) {
+                            t.downloaded_bytes = done;
+                            t.speed_bps = speed;
+                        }
+                    }
+                }
+            }
+            return Ok(());
         }
     } else {
         let resp = if let Some(r) = reused_full_resp {

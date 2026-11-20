@@ -1,3 +1,11 @@
+## v2.8.0 (2026-11-20)
+- Made Menu (`•••`) and Downloads (`⚡`) 100% solid opaque right-docked side panels (`440px`) in a non-overlapping layout so every button is 100% clickable with zero transparency.
+- Shrunk Address Capsule (`max-width: 420px`, `height: 30px`, `border-radius: 15px`).
+- Replaced `filter: invert()` interpolation with a smooth ambient cross-dissolve veil for flicker-free Light ↔ Dark transitions.
+- Added native `ICoreWebView2::add_SourceChanged` + `history.pushState`/`replaceState` hooks so the Address Bar always displays the complete URL (including paths & query strings on YouTube and SPAs).
+- Upgraded `assets/app.ico` to full-bleed `16–128px` with zero pale rim so the taskbar icon matches Chrome, Edge, and Firefox in visual size.
+- Hardened `NativeDownloadEngine` with automatic 1-thread fallback on CDN `429`/`403`/`503` throttling, native `blob:`/`data:` passthrough, `openDrawer('downloads')` (never toggles closed), and URL scheme normalization.
+
 ## v2.7.1 (2026-11-20)
 - Fixed `E0433` (`cannot find type PCWSTR`) in `dispatch_download_with_httponly_cookies` and `clear_httponly_cookies_for_url` (`src/main.rs`).
 - Restored `SetCurrentProcessExplicitAppUserModelID` call inside `set_explicit_app_user_model_id()`, eliminating the `unused_unsafe` warning and ensuring proper Windows taskbar icon binding.

@@ -45,31 +45,43 @@
     } catch (e) {}
   }
 
-  // 3. Smooth Live Dark Mode (Zero reload, zero flicker CSS transition)
-  window.__shunnoSetDarkMode = function(enabled) {
+  // 3. Smooth macOS-Style Ambient Cross-Dissolve Dark Mode (Zero grey/rainbow flicker!)
+  window.__shunnoSetDarkMode = function(enabled, instant) {
     const root = document.head || document.documentElement;
     if (!root) return;
-    if (!document.getElementById('shunno-dark-transition')) {
-      const tr = document.createElement('style');
-      tr.id = 'shunno-dark-transition';
-      tr.textContent = 'html { transition: filter 0.36s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.36s ease !important; }';
-      root.appendChild(tr);
-    }
-    let st = document.getElementById('shunno-full-dark');
-    if (enabled) {
-      if (!st) {
-        st = document.createElement('style');
-        st.id = 'shunno-full-dark';
-        st.textContent = 'html { filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
-        root.appendChild(st);
+    const applyTheme = () => {
+      let st = document.getElementById('shunno-full-dark');
+      if (enabled) {
+        if (!st) {
+          st = document.createElement('style');
+          st.id = 'shunno-full-dark';
+          st.textContent = 'html { color-scheme: dark; filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
+          root.appendChild(st);
+        }
+      } else if (st) {
+        st.remove();
       }
-    } else if (st) {
-      st.remove();
+    };
+    if (instant || !document.body) {
+      applyTheme();
+      return;
     }
+    const veil = document.createElement('div');
+    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:' + (enabled ? '#0F0F12' : '#F5F5F7') + ';opacity:0;transition:opacity 0.16s cubic-bezier(0.22,1,0.36,1);';
+    document.documentElement.appendChild(veil);
+    requestAnimationFrame(() => {
+      veil.style.opacity = '0.32';
+      setTimeout(() => {
+        applyTheme();
+        veil.style.transition = 'opacity 0.24s cubic-bezier(0.22,1,0.36,1)';
+        veil.style.opacity = '0';
+        setTimeout(() => veil.remove(), 260);
+      }, 150);
+    });
   };
   if (FULL_DARK_ON) {
-    if (document.documentElement) window.__shunnoSetDarkMode(true);
-    else window.addEventListener('DOMContentLoaded', () => window.__shunnoSetDarkMode(true), { once: true });
+    if (document.documentElement) window.__shunnoSetDarkMode(true, true);
+    else window.addEventListener('DOMContentLoaded', () => window.__shunnoSetDarkMode(true, true), { once: true });
   }
 
   // 4. Image Blocker
@@ -1120,6 +1132,22 @@
     installFloatingOverlay();
   });
   window.addEventListener('load', sendPageMeta);
+  window.addEventListener('popstate', sendPageMeta);
+  window.addEventListener('hashchange', sendPageMeta);
+  try {
+    const _origPush = history.pushState;
+    history.pushState = function() {
+      const r = _origPush.apply(this, arguments);
+      setTimeout(sendPageMeta, 30);
+      return r;
+    };
+    const _origReplace = history.replaceState;
+    history.replaceState = function() {
+      const r = _origReplace.apply(this, arguments);
+      setTimeout(sendPageMeta, 30);
+      return r;
+    };
+  } catch (e) {}
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F11') {

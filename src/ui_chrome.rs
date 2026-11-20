@@ -173,17 +173,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Firefox-style Unified Search + URL Capsule (compact centered width) */
   .firefox-capsule {
-    flex: 1; max-width: 500px; min-width: 200px; height: 32px;
-    display: flex; align-items: center; gap: 6px;
-    background: var(--input-bg); border-radius: 16px; padding: 2px 10px 2px 4px;
+    flex: 1; max-width: 420px; min-width: 180px; height: 30px;
+    display: flex; align-items: center; gap: 5px;
+    background: var(--input-bg); border-radius: 15px; padding: 2px 9px 2px 4px;
     border: 1.5px solid transparent;
-    transition: background 0.34s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
+    transition: background 0.32s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
   }
   .firefox-capsule:focus-within {
     background: var(--surface-solid);
     border-color: var(--blue);
-    box-shadow: 0 0 0 3.5px rgba(10, 132, 255, 0.18);
-    max-width: 560px;
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
+    max-width: 480px;
   }
   .engine-logo-btn {
     border: none; background: var(--surface-solid); color: var(--text);
@@ -296,41 +296,32 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .shortcut-tile:hover .shortcut-del { opacity: 1; }
   .shortcut-del:hover { background: var(--red); color: #fff; }
 
-  /* Translucent Frosted-Glass Floating Overlays (Menu & Downloads float over webpage!) */
+  /* Solid Opaque Docked Side Panel (Menu & Downloads — zero transparency, non-overlapping!) */
   .overlay-backdrop {
-    position: fixed; top: 112px; left: 0; right: 0; bottom: 0;
-    display: none; justify-content: flex-end; align-items: flex-start;
-    padding: 12px 14px;
-    background: rgba(15, 15, 20, 0.08);
-    backdrop-filter: blur(1.5px);
+    position: fixed; top: 112px; right: 0; bottom: 0; width: 440px; max-width: 100vw;
+    display: none; flex-direction: column;
+    background: var(--bg);
+    border-left: 1px solid var(--border);
     z-index: 50;
   }
   .overlay-backdrop.open {
     display: flex;
   }
+
+  @keyframes panelSlideIn {
+    0%   { opacity: 0; transform: translateX(18px); }
+    100% { opacity: 1; transform: translateX(0); }
+  }
+
   .floating-sheet {
     position: relative;
-    z-index: 2;
-  }
-
-  @keyframes glassFloatIn {
-    0%   { opacity: 0; transform: translateY(-12px) scale(0.95); }
-    100% { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
-  .floating-sheet {
-    width: 430px; max-width: calc(100vw - 28px); max-height: calc(100vh - 136px);
-    background: var(--glass);
-    backdrop-filter: blur(32px) saturate(190%);
-    border: 1px solid var(--border);
-    border-radius: 18px;
+    width: 100%; height: 100%;
+    background: var(--surface-solid);
     padding: 14px;
     overflow-y: auto;
-    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.26);
-    transform-origin: top right;
-    animation: glassFloatIn 0.32s var(--ease-spring) forwards;
+    animation: panelSlideIn 0.24s var(--ease-fluid) forwards;
   }
-  .floating-sheet.wide { width: 520px; }
+  .floating-sheet.wide { width: 100%; }
 
   .card {
     background: var(--surface); border-radius: 14px; padding: 12px 13px; margin-bottom: 10px;
@@ -830,6 +821,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('GRAB_PAGE_LINKS');
   }
 
+  function openDrawer(name) {
+    if (activeDrawer === name) return;
+    toggleDrawer(name);
+  }
+
   function toggleDrawer(name) {
     if (activeDrawer === name) {
       closeDrawer();
@@ -1147,7 +1143,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.7.1';
+    document.getElementById('version-badge').textContent = state.version || 'v2.8.0';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {

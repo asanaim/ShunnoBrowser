@@ -170,7 +170,7 @@ fn load_embedded_window_icon() -> Option<Icon> {
         return None;
     }
     let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-    for target_size in [48u32, 32u32, 64u32] {
+    for target_size in [128u32, 64u32, 48u32, 32u32] {
         for i in 0..count {
             let off = 6 + i * 16;
             if off + 16 > ICO_BYTES.len() {
@@ -623,6 +623,24 @@ fn attach_native_webview2_hooks(
             return;
         };
 
+        // 0b. Native Full-URL Synchronization (captures SPA pushState/replaceState, YouTube watch URLs, redirects)
+        use webview2_com::SourceChangedEventHandler;
+        let mut src_token = Default::default();
+        let src_proxy = proxy.clone();
+        let src_handler = SourceChangedEventHandler::create(Box::new(move |sender, _| {
+            if let Some(wv) = sender {
+                let mut uri_ptr = windows::core::PWSTR::null();
+                if wv.Source(&mut uri_ptr).is_ok() {
+                    let uri = webview2_com::take_pwstr(uri_ptr);
+                    if uri.starts_with("http://") || uri.starts_with("https://") {
+                        let _ = src_proxy.send_event(AppEvent::TabUrlChanged(tab_id, uri));
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.add_SourceChanged(&src_handler, &mut src_token);
+
         // 1. Native Tab Audio Playing State Listener (ICoreWebView2_8)
         if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
             let mut audio_token = Default::default();
@@ -893,8 +911,12 @@ fn create_tab_webview(
             let _ = ipc_proxy.send_event(AppEvent::ContentIpc(tab_id, req.body().clone()));
         })
         .with_download_started_handler(move |dl_url, _dest| {
-            let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(dl_url));
-            false
+            if dl_url.starts_with("http://") || dl_url.starts_with("https://") {
+                let _ = dl_proxy.send_event(AppEvent::DownloadIntercepted(dl_url));
+                false
+            } else {
+                true
+            }
         })
         .with_new_window_req_handler(move |popup_url| {
             let lower = popup_url.to_ascii_lowercase();
@@ -989,7 +1011,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 if img_off + sz <= ICO_BYTES.len() {
                     let slice = &ICO_BYTES[img_off..img_off + sz];
                     if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                        if w == 48 || w == 32 {
+                        if w == 128 || w == 64 || w == 48 || w == 32 {
                             SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
                             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
                         } else if w == 16 || w == 24 {
@@ -1127,9 +1149,14 @@ fn layout_webviews(
         size: LogicalSize::new(inner_w, chrome_h).into(),
     });
 
+    // Non-overlapping docked right panel for Menu & Downloads: webpage shrinks cleanly to the left,
+    // so every button inside Menu & Downloads is 100% clickable with zero transparency and zero flicker.
+    let panel_w = if !is_fs && drawer_open { 440.0_f64.min((inner_w - 220.0).max(0.0)) } else { 0.0 };
+    let web_w = (inner_w - panel_w).max(200.0);
+
     for (idx, tab) in tabs.iter().enumerate() {
         if let Some(s_idx) = valid_split {
-            let half_w = ((inner_w - 2.0) / 2.0).max(100.0);
+            let half_w = ((web_w - 2.0) / 2.0).max(100.0);
             if idx == active_idx && tab.url != "shunno://newtab" {
                 let _ = tab.webview.set_bounds(Rect {
                     position: LogicalPosition::new(grip, top_bar_h).into(),
@@ -1149,7 +1176,7 @@ fn layout_webviews(
 
         let _ = tab.webview.set_bounds(Rect {
             position: LogicalPosition::new(grip, top_bar_h).into(),
-            size: LogicalSize::new(inner_w, content_h).into(),
+            size: LogicalSize::new(web_w, content_h).into(),
         });
         let show_web = idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
@@ -1770,7 +1797,7 @@ fn main() -> wry::Result<()> {
                 if open_drawer {
                     drawer_open = true;
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                    let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
+                    let _ = chrome_wv.evaluate_script("if (window.openDrawer) window.openDrawer('downloads');");
                 }
                 push_chrome_state(
                     &window,
@@ -1976,7 +2003,7 @@ fn main() -> wry::Result<()> {
                         "j" => {
                             drawer_open = true;
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            let _ = chrome_wv.evaluate_script("toggleDrawer('downloads');");
+                            let _ = chrome_wv.evaluate_script("if (window.openDrawer) window.openDrawer('downloads');");
                         }
                         _ => {}
                     }
