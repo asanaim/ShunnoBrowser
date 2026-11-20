@@ -977,6 +977,62 @@
     }, { passive: true, capture: true });
   }
 
+  // 7b. Element hiding (cosmetic filtering) from the native adblock engine, top frame only.
+  // Constructable stylesheets are not blocked by page CSP; each rule is inserted separately so an
+  // invalid selector from a filter list cannot disable the others.
+  if (ADBLOCK_ON && window.top === window) {
+    let cosmeticSheet = null;
+    window.__shunnoApplyCosmetic = function(css) {
+      if (typeof css !== 'string' || !css) return;
+      try {
+        if (!cosmeticSheet) {
+          cosmeticSheet = new CSSStyleSheet();
+          document.adoptedStyleSheets = [...document.adoptedStyleSheets, cosmeticSheet];
+        }
+        css.split('\n').forEach(rule => {
+          if (!rule) return;
+          try { cosmeticSheet.insertRule(rule, cosmeticSheet.cssRules.length); } catch (e) {}
+        });
+      } catch (e) {
+        const st = document.createElement('style');
+        st.textContent = css;
+        appendWhenReady(st);
+      }
+    };
+    const sentClasses = new Set();
+    const sentIds = new Set();
+    function collectAndSend(rootEl) {
+      const classes = [];
+      const ids = [];
+      const scope = rootEl && rootEl.querySelectorAll ? rootEl : document;
+      const nodes = scope.querySelectorAll('[class],[id]');
+      for (let i = 0; i < nodes.length && classes.length + ids.length < 3000; i++) {
+        const el = nodes[i];
+        if (el.id && !sentIds.has(el.id)) { sentIds.add(el.id); ids.push(el.id); }
+        const cl = el.classList;
+        if (cl) for (let j = 0; j < cl.length; j++) {
+          if (!sentClasses.has(cl[j])) { sentClasses.add(cl[j]); classes.push(cl[j]); }
+        }
+      }
+      if (classes.length || ids.length) {
+        postSecure('COSMETIC:' + JSON.stringify({ url: location.href, classes: classes, ids: ids }));
+      }
+    }
+    // Page-specific rules as early as possible, generic class/id rules once the DOM exists.
+    postSecure('COSMETIC:' + JSON.stringify({ url: location.href, classes: [], ids: [] }));
+    let cosmeticTimer = null;
+    const cosmeticObserver = new MutationObserver(() => {
+      if (cosmeticTimer) return;
+      cosmeticTimer = setTimeout(() => { cosmeticTimer = null; collectAndSend(document); }, 800);
+    });
+    const startCosmetic = () => {
+      collectAndSend(document);
+      if (document.body) cosmeticObserver.observe(document.body, { childList: true, subtree: true });
+    };
+    if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', startCosmetic, { once: true });
+    else startCosmetic();
+  }
+
   // 8. Debounced MutationObserver + Video Event Listener for YouTube Ad Skipper & Cookie Auto-Rejector
   if (ADBLOCK_ON || SPONSORBLOCK_ON || REJECT_COOKIES_ON) {
     const styleSheet = document.createElement('style');

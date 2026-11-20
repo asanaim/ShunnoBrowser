@@ -692,6 +692,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
             <button class="pill-btn pill-soft" onclick="if (confirm('Delete every saved password and autofill entry?')) send('CLEAR_PASSWORDS')" title="Delete all passwords saved by Shunno">🔑 Clear Passwords</button>
+            <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
         </div>
@@ -1449,7 +1450,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
     `).join('');
 
-    document.getElementById('site-domain-title').textContent = `🌐 ${state.active_host || 'Site Controls'} (${state.blocked_count} blocked)`;
+    const siteTitle = document.getElementById('site-domain-title');
+    siteTitle.textContent = `🌐 ${state.active_host || 'Site Controls'} (${state.blocked_count} blocked)`;
+    siteTitle.title = 'Blocking: ' + (state.adblock_status || 'built-in list');
+    const flBtn = document.getElementById('btn-update-filters');
+    if (flBtn) flBtn.title = 'Filter lists: ' + (state.adblock_status || 'built-in list');
     const siteItems = [
       ['adblock', '🛡️ Ad Blocker', state.site.adblock],
       ['sponsorblock', '🎬 YT Ad Clean', state.site.sponsorblock],

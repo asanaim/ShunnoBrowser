@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod blocker;
 mod downloader;
 mod https_guard;
 mod sanitizer;
@@ -135,6 +136,7 @@ struct ChromeSnapshot {
     ffmpeg_available: bool,
     ffmpeg_status: String,
     ytdlp_status: String,
+    adblock_status: String,
     is_fullscreen: bool,
     has_closed_tabs: bool,
     find_current: usize,
@@ -699,6 +701,18 @@ fn dispatch_download_with_httponly_cookies(
 }
 
 
+/// Downloads and compiles the filter lists; on failure keeps whatever engine is loaded.
+async fn refresh_filter_lists() {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    if let Err(e) = blocker::global().refresh(&client).await {
+        let current = if blocker::global().has_lists() { "previous lists kept" } else { "built-in list in use" };
+        blocker::global().set_status(format!("Update failed ({}): {}", current, e));
+    }
+}
+
 /// Replaces the tab's document with locally generated HTML (warning pages).
 #[cfg(windows)]
 fn show_html_in_tab(webview: &WebView, html: &str) {
@@ -1030,40 +1044,32 @@ fn attach_native_webview2_hooks(
         };
 
         // Only intercept known ad/tracker URL patterns so 99% of page traffic runs at full native Chromium speed
-        // One request policy for ad hosts and, when images are off for this site, every image.
-        // Filters from both rules feed the same event, so the handler re-checks each request.
+        // Request policy: Brave's adblock engine for every request (all frames and workers), plus
+        // image blocking when images are off for this site. One handler re-checks each request.
         if adblock_enabled || block_images {
-            let ad_filters = [
-                w!("*://*.doubleclick.net/*"),
-                w!("*://*.googlesyndication.com/*"),
-                w!("*://*.googleadservices.com/*"),
-                w!("*://*.adnxs.com/*"),
-                w!("*://*.adsrvr.org/*"),
-                w!("*://*.taboola.com/*"),
-                w!("*://*.outbrain.com/*"),
-                w!("*://*.popads.net/*"),
-                w!("*://*.popcash.net/*"),
-                w!("*://*.propellerads.com/*"),
-                w!("*://*.exoclick.com/*"),
-                w!("*://*.youtube.com/pagead/*"),
-                w!("*://*.youtube.com/api/stats/ads*"),
-                w!("*://*.youtube.com/ptracking*"),
-                w!("*://*.youtube.com/get_midroll_*"),
-                w!("*://*.googlevideo.com/initplayback*oad*"),
-            ];
-            if adblock_enabled {
-                for pat in ad_filters {
-                    let _ = core.AddWebResourceRequestedFilter(pat, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
-                }
-            }
-            if block_images {
-                let _ = core.AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE);
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+            };
+            let filter_ctx = if adblock_enabled { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL } else { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE };
+            // ICoreWebView2_22 also delivers requests from iframes and workers, where most ads load.
+            let added = match core.cast::<ICoreWebView2_22>() {
+                Ok(c22) => c22
+                    .AddWebResourceRequestedFilterWithRequestSourceKinds(w!("*"), filter_ctx, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)
+                    .is_ok(),
+                Err(_) => false,
+            };
+            if !added {
+                let _ = core.AddWebResourceRequestedFilter(w!("*"), filter_ctx);
             }
 
             let mut token = Default::default();
             let env_for_ad = env.clone();
             let ad_proxy = proxy.clone();
-            let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| {
                 let Some(args) = args else {
                     return Ok(());
                 };
@@ -1076,8 +1082,38 @@ fn attach_native_webview2_hooks(
                 }
                 let mut ctx = Default::default();
                 let _ = args.ResourceContext(&mut ctx);
-                let is_ad = adblock_enabled && sanitizer::is_blocked_ad_url(&uri);
                 let is_blocked_image = block_images && ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
+
+                let mut is_ad = false;
+                if adblock_enabled && !is_blocked_image && uri.starts_with("http") {
+                    let mut page = String::new();
+                    if let Some(wv) = sender.as_ref() {
+                        let mut p = windows::core::PWSTR::null();
+                        if wv.Source(&mut p).is_ok() {
+                            page = webview2_com::take_pwstr(p);
+                        }
+                    }
+                    let req_type = match ctx {
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT => "subdocument",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT => "script",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE => "image",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET => "stylesheet",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT => "font",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA => "media",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST
+                            || c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH => "xmlhttprequest",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET => "websocket",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING => "ping",
+                        _ => "other",
+                    };
+                    // Never block the page itself (a main-frame document); Brave shows an
+                    // interstitial there, a blank tab would just look broken.
+                    let is_main_document = ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (page.is_empty() || page == uri);
+                    if !is_main_document {
+                        let source = if page.starts_with("http") { page.as_str() } else { uri.as_str() };
+                        is_ad = blocker::global().should_block(&uri, source, req_type);
+                    }
+                }
                 if !is_ad && !is_blocked_image {
                     return Ok(()); // no response set: the request continues normally
                 }
@@ -1999,6 +2035,18 @@ fn main() -> wry::Result<()> {
         }
     });
 
+    // Ad blocking: load the cached engine instantly, refresh the lists in the background when a week old.
+    {
+        let px = proxy.clone();
+        rt_handle.spawn(async move {
+            let _ = tokio::task::spawn_blocking(|| blocker::global().load_cache()).await;
+            if blocker::global().is_stale() {
+                refresh_filter_lists().await;
+            }
+            let _ = px.send_event(AppEvent::RefreshChrome);
+        });
+    }
+
     // Probe FFmpeg once asynchronously on Tokio so push_chrome_state NEVER spawns a blocking subprocess on the UI thread!
     let ffmpeg_available_flag = Arc::new(AtomicBool::new(false));
     {
@@ -2050,6 +2098,7 @@ fn main() -> wry::Result<()> {
             ffmpeg_available: ffmpeg_available_flag.load(Ordering::Relaxed),
             ffmpeg_status: ff_status,
             ytdlp_status: engine.ytdlp_install_status.lock().map(|s| s.clone()).unwrap_or_default(),
+            adblock_status: blocker::global().status(),
             is_fullscreen,
             has_closed_tabs,
             find_current,
@@ -2907,6 +2956,40 @@ fn main() -> wry::Result<()> {
                             sniffed_streams.truncate(25);
                         }
                     }
+                } else if let Some(cos_json) = msg.strip_prefix("COSMETIC:") {
+                    // Element hiding for the top frame: page-specific rules plus generic rules for the
+                    // classes/ids the page actually uses. Page input only narrows which list rules apply.
+                    let tab_url = page_url.clone().unwrap_or_default();
+                    let host = extract_host(&tab_url);
+                    let adblock_on = site_policies.get(&host).map(|p| p.adblock).unwrap_or(true);
+                    if adblock_on && tab_url.starts_with("http") {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(cos_json) {
+                            let take = |k: &str| -> Vec<String> {
+                                val.get(k)
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|x| x.as_str())
+                                            .filter(|x| x.len() <= 120)
+                                            .take(2000)
+                                            .map(|x| x.to_string())
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            };
+                            let claimed = val.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                            let match_url = if extract_host(claimed) == host { claimed.to_string() } else { tab_url.clone() };
+                            let css = blocker::global().cosmetic_css(&match_url, &take("classes"), &take("ids"));
+                            if !css.is_empty() {
+                                if let (Some(tab), Ok(arg)) = (tabs.iter().find(|t| t.id == tab_id), serde_json::to_string(&css)) {
+                                    let _ = tab
+                                        .webview
+                                        .evaluate_script(&format!("window.__shunnoApplyCosmetic && window.__shunnoApplyCosmetic({});", arg));
+                                }
+                            }
+                        }
+                    }
+                    return;
                 } else if let Some(meta_json) = msg.strip_prefix("META:") {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(meta_json) {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -3318,6 +3401,13 @@ fn main() -> wry::Result<()> {
                         _ => {}
                     }
                     BrowserStorage::save_global_settings(&global_settings);
+                } else if cmd == "UPDATE_FILTERS" {
+                    blocker::global().set_status("Updating filter lists...".to_string());
+                    let px = proxy.clone();
+                    rt_handle.spawn(async move {
+                        refresh_filter_lists().await;
+                        let _ = px.send_event(AppEvent::RefreshChrome);
+                    });
                 } else if cmd == "CLEAR_PASSWORDS" {
                     if let Some(tab) = tabs.iter().find(|t| !t.incognito) {
                         clear_saved_passwords(&tab.webview);
