@@ -5,7 +5,20 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.6";
+pub const APP_VERSION: &str = "v2.9.7";
+
+/// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
+pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
@@ -197,23 +210,43 @@ impl BrowserStorage {
         dir
     }
 
+    /// Helper tools (ffmpeg.exe, yt-dlp.exe) live in app data, so changing the
+    /// downloads folder never "loses" them.
     pub fn ffmpeg_bin_dir() -> PathBuf {
-        let dir = Self::downloads_root_dir().join("bin");
+        let dir = Self::app_data_dir().join("bin");
         let _ = fs::create_dir_all(&dir);
         dir
     }
 
-    pub fn find_ffmpeg() -> Option<PathBuf> {
-        let local_exe = Self::ffmpeg_bin_dir().join("ffmpeg.exe");
-        if local_exe.exists() {
+    fn legacy_bin_dir() -> PathBuf {
+        // Versions <= 2.9.6 stored tools under <Downloads>\ShunnoBrowser\bin
+        Self::downloads_root_dir().join("bin")
+    }
+
+    fn find_tool(exe_name: &str, probe_arg: &str) -> Option<PathBuf> {
+        let local_exe = Self::ffmpeg_bin_dir().join(exe_name);
+        if local_exe.is_file() {
             return Some(local_exe);
         }
-        if let Ok(out) = Command::new("ffmpeg").arg("-version").output() {
+        let legacy = Self::legacy_bin_dir().join(exe_name);
+        if legacy.is_file() {
+            return Some(legacy);
+        }
+        let bare = exe_name.trim_end_matches(".exe");
+        if let Ok(out) = hidden_command(bare).arg(probe_arg).output() {
             if out.status.success() {
-                return Some(PathBuf::from("ffmpeg"));
+                return Some(PathBuf::from(bare));
             }
         }
         None
+    }
+
+    pub fn find_ffmpeg() -> Option<PathBuf> {
+        Self::find_tool("ffmpeg.exe", "-version")
+    }
+
+    pub fn find_ytdlp() -> Option<PathBuf> {
+        Self::find_tool("yt-dlp.exe", "--version")
     }
 
     pub fn load_global_settings() -> GlobalSettings {

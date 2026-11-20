@@ -57,6 +57,13 @@ enum AppEvent {
         final_path: Option<String>,
         err_msg: Option<String>,
     },
+    /// WebView2 download paused by the user, or interrupted but resumable.
+    NativeDownloadPaused {
+        id: u64,
+        reason: Option<String>,
+    },
+    /// Raised by the native ad filter. Never derived from page-supplied IPC text.
+    AdBlocked,
     DownloadWithCookies {
         url: String,
         threads: usize,
@@ -118,6 +125,7 @@ struct ChromeSnapshot {
     version: &'static str,
     ffmpeg_available: bool,
     ffmpeg_status: String,
+    ytdlp_status: String,
     is_fullscreen: bool,
     has_closed_tabs: bool,
     find_current: usize,
@@ -146,6 +154,58 @@ fn generate_ipc_token() -> String {
     let a: u64 = rng.gen();
     let b: u64 = rng.gen();
     format!("{:016x}{:016x}", a, b)
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// A page may only make the native engine contact private/LAN hosts when the page itself is on that host.
+fn page_may_target(page_url: Option<&str>, target: &str) -> bool {
+    if sanitizer::is_public_http_url(target) {
+        return true;
+    }
+    let target_host = extract_host(target);
+    !target_host.is_empty() && page_url.map(|p| extract_host(p) == target_host).unwrap_or(false)
+}
+
+// Live WebView2 download operations, keyed by Shunno task id. WebView2 raises all of its
+// events on the UI thread, which is also the event loop thread, so a thread_local is sufficient.
+#[cfg(windows)]
+thread_local! {
+    static NATIVE_OPS: std::cell::RefCell<HashMap<u64, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(windows)]
+fn native_op_call(id: u64, action: &str) -> bool {
+    NATIVE_OPS.with(|ops| {
+        let mut ops = ops.borrow_mut();
+        let Some(op) = ops.get(&id).cloned() else {
+            return false;
+        };
+        let ok = unsafe {
+            match action {
+                "pause" => op.Pause().is_ok(),
+                "resume" => op.Resume().is_ok(),
+                "cancel" => op.Cancel().is_ok(),
+                _ => false,
+            }
+        };
+        if action == "cancel" {
+            ops.remove(&id);
+        }
+        ok
+    })
+}
+
+#[cfg(not(windows))]
+fn native_op_call(_id: u64, _action: &str) -> bool {
+    false
 }
 
 fn build_content_init_script(
@@ -886,7 +946,7 @@ fn attach_native_webview2_hooks(
                     PCWSTR::null(),
                 )?;
                 let _ = args.SetResponse(&empty_resp);
-                let _ = ad_proxy.send_event(AppEvent::ContentIpc(tab_id, "INTERNAL|AD_BLOCKED".to_string()));
+                let _ = ad_proxy.send_event(AppEvent::AdBlocked);
                 Ok(())
             }));
 
@@ -981,8 +1041,8 @@ fn attach_native_webview2_hooks(
         // Keeps WebView2's native download stream alive (100% compatible with Cloudflare, GDrive, HubCloud, POST, blob:)
         // while routing files cleanly into ShunnoBrowser\<Category> and displaying live progress in Shunno's Downloads panel.
         use webview2_com::Microsoft::Web::WebView2::Win32::{
-            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
-            ICoreWebView2_4,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED, ICoreWebView2_4,
         };
         use webview2_com::{
             BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
@@ -1038,7 +1098,12 @@ fn attach_native_webview2_hooks(
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(1)
-                    + rand::random::<u16>() as u64;
+                    .wrapping_mul(1000)
+                    + rand::random::<u16>() as u64 % 1000;
+                // Keep the operation so the Downloads panel can really pause, resume and cancel it.
+                NATIVE_OPS.with(|ops| {
+                    ops.borrow_mut().insert(dl_id, op.clone());
+                });
 
                 let _ = dl_proxy.send_event(AppEvent::NativeDownloadStarted {
                     id: dl_id,
@@ -1084,6 +1149,9 @@ fn attach_native_webview2_hooks(
                         let mut st = Default::default();
                         if dl_op.State(&mut st).is_ok() {
                             if st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                                NATIVE_OPS.with(|ops| {
+                                    ops.borrow_mut().remove(&dl_id);
+                                });
                                 let _ = s_proxy.send_event(AppEvent::NativeDownloadFinished {
                                     id: dl_id,
                                     ok: true,
@@ -1091,12 +1159,34 @@ fn attach_native_webview2_hooks(
                                     err_msg: None,
                                 });
                             } else if st == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
-                                let _ = s_proxy.send_event(AppEvent::NativeDownloadFinished {
-                                    id: dl_id,
-                                    ok: false,
-                                    final_path: None,
-                                    err_msg: Some("Download interrupted".to_string()),
-                                });
+                                let mut reason = Default::default();
+                                let _ = dl_op.InterruptReason(&mut reason);
+                                let mut can_resume = windows::Win32::Foundation::BOOL::default();
+                                let _ = dl_op.CanResume(&mut can_resume);
+                                if reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED {
+                                    // Pause() reports itself as an interruption; it is not a failure.
+                                    let _ = s_proxy.send_event(AppEvent::NativeDownloadPaused { id: dl_id, reason: None });
+                                } else if reason != COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED && can_resume.as_bool() {
+                                    let _ = s_proxy.send_event(AppEvent::NativeDownloadPaused {
+                                        id: dl_id,
+                                        reason: Some(format!("Interrupted (reason {}), press Resume", reason.0)),
+                                    });
+                                } else {
+                                    NATIVE_OPS.with(|ops| {
+                                        ops.borrow_mut().remove(&dl_id);
+                                    });
+                                    let msg = if reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED {
+                                        "Cancelled".to_string()
+                                    } else {
+                                        format!("Download interrupted (reason {})", reason.0)
+                                    };
+                                    let _ = s_proxy.send_event(AppEvent::NativeDownloadFinished {
+                                        id: dl_id,
+                                        ok: false,
+                                        final_path: None,
+                                        err_msg: Some(msg),
+                                    });
+                                }
                             }
                         }
                     }
@@ -1441,7 +1531,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             }
         }
 
-        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, borderless_resize_wndproc as usize as isize);
+        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, borderless_resize_wndproc as *const () as usize as isize);
         if prev != 0 {
             ORIG_WNDPROC.store(prev, Ordering::Relaxed);
         }
@@ -1662,6 +1752,8 @@ fn main() -> wry::Result<()> {
     let mut find_total: usize = 0;
     let mut had_active_downloads = false;
     let mut site_data_cleared = false;
+    // Tabs for which the user asked "Save page"; OFFLINE_HTML from any other tab is ignored.
+    let mut pending_offline_saves: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     let saved_session = BrowserStorage::load_session();
     let initial_urls: Vec<String> = if saved_session.is_empty() {
@@ -1706,6 +1798,7 @@ fn main() -> wry::Result<()> {
     let ticker_rt = rt_handle.clone();
     rt_handle.spawn(async move {
         let mut sleep_ticks: u32 = 0;
+        let mut was_busy = false;
         loop {
             tokio::time::sleep(Duration::from_millis(750)).await;
             sleep_ticks = sleep_ticks.wrapping_add(1);
@@ -1722,14 +1815,20 @@ fn main() -> wry::Result<()> {
                     })
                 })
                 .unwrap_or(false);
-            let ff_busy = ticker_engine
-                .ffmpeg_install_status
-                .lock()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-            if has_active_or_queued || ff_busy {
+            let tool_busy = |m: &std::sync::Mutex<String>| {
+                m.lock()
+                    .map(|s| s.starts_with("Downloading") || s.starts_with("Verifying") || s.starts_with("Extracting"))
+                    .unwrap_or(false)
+            };
+            let busy = has_active_or_queued
+                || tool_busy(&ticker_engine.ffmpeg_install_status)
+                || tool_busy(&ticker_engine.ytdlp_install_status);
+            // Also refresh once on the busy -> idle edge; otherwise the final COMPLETED/FAILED
+            // state never reaches the panel and the "when queue finishes" action never runs.
+            if busy || was_busy {
                 let _ = ticker_proxy.send_event(AppEvent::RefreshChrome);
             }
+            was_busy = busy;
         }
     });
 
@@ -1749,7 +1848,7 @@ fn main() -> wry::Result<()> {
     let cached_scripts = Arc::new(std::sync::Mutex::new(list_user_scripts(&global_settings.approved_script_hashes)));
     let last_chrome_json = Arc::new(std::sync::Mutex::new(String::new()));
     let cached_scripts_for_push = cached_scripts.clone();
-    let push_chrome_state = move |window: &Window,
+    let push_chrome_state = move |_window: &Window,
                              chrome_wv: &WebView,
                              tabs: &[BrowserTab],
                              active_idx: usize,
@@ -1783,6 +1882,7 @@ fn main() -> wry::Result<()> {
             version: APP_VERSION,
             ffmpeg_available: ffmpeg_available_flag.load(Ordering::Relaxed),
             ffmpeg_status: ff_status,
+            ytdlp_status: engine.ytdlp_install_status.lock().map(|s| s.clone()).unwrap_or_default(),
             is_fullscreen,
             has_closed_tabs,
             find_current,
@@ -2296,6 +2396,15 @@ fn main() -> wry::Result<()> {
                 );
             }
 
+            Event::UserEvent(AppEvent::NativeDownloadPaused { id, reason }) => {
+                engine.set_native_status(id, "PAUSED", reason);
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::AdBlocked) => {
+                blocked_count += 1;
+            }
+
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
                 let active_tab = tabs.get(active_tab_idx);
                 let (ref_url, cookie_val, wv_opt) = active_tab
@@ -2324,7 +2433,7 @@ fn main() -> wry::Result<()> {
                 open_drawer,
             }) => {
                 match engine.enqueue(&rt_handle, url, threads, referer, cookie, &dup_mode, delay_secs) {
-                    EnqueueOutcome::Started(_) => { duplicate_alert = None; }
+                    EnqueueOutcome::Started => { duplicate_alert = None; }
                     EnqueueOutcome::DuplicateDetected(existing) => { duplicate_alert = Some(existing); }
                 }
                 if open_drawer {
@@ -2410,17 +2519,15 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ContentIpc(tab_id, raw_msg)) => {
-                // Verify per-launch cryptographic IPC token before processing any message from content WebView
-                let msg = if let Some(inner) = raw_msg.strip_prefix("INTERNAL|") {
-                    inner
-                } else if let Some((tok, body)) = raw_msg.split_once('|') {
-                    if tok != ipc_token {
-                        return;
-                    }
-                    body
-                } else {
+                // Every content message must carry the per-launch token. There is deliberately no
+                // token-free prefix: content IPC is page-reachable, so a bypass prefix is a bypass for every site.
+                let Some((tok, msg)) = raw_msg.split_once('|') else {
                     return;
                 };
+                if !constant_time_eq(tok, &ipc_token) {
+                    return;
+                }
+                let page_url = tabs.iter().find(|t| t.id == tab_id).map(|t| t.url.clone());
 
                 if msg == "AD_BLOCKED" {
                     blocked_count += 1;
@@ -2444,7 +2551,7 @@ fn main() -> wry::Result<()> {
                         let target_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                        if target_url.starts_with("http") {
+                        if target_url.starts_with("http") && page_may_target(page_url.as_deref(), &target_url) {
                             let eng = engine.clone();
                             let px = proxy.clone();
                             rt_handle.spawn(async move {
@@ -2459,7 +2566,7 @@ fn main() -> wry::Result<()> {
                         let threads = val.get("threads").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                        if dl_url.starts_with("http") {
+                        if dl_url.starts_with("http") && page_may_target(page_url.as_deref(), &dl_url) {
                             let wv_opt = tabs.iter().find(|t| t.id == tab_id).map(|t| &t.webview);
                             dispatch_download_with_httponly_cookies(
                                 wv_opt,
@@ -2543,6 +2650,10 @@ fn main() -> wry::Result<()> {
                         _ => {}
                     }
                 } else if let Some(html_payload) = msg.strip_prefix("OFFLINE_HTML:") {
+                    // Only honoured right after the user pressed "Save page" for this tab.
+                    if !pending_offline_saves.remove(&tab_id) {
+                        return;
+                    }
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(html_payload) {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("snapshot");
                         let html = val.get("html").and_then(|v| v.as_str()).unwrap_or("");
@@ -2555,7 +2666,7 @@ fn main() -> wry::Result<()> {
                         for it in items.into_iter().rev() {
                             let u = it.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                             let nm = it.get("name").and_then(|v| v.as_str()).unwrap_or("Media Stream").to_string();
-                            if u.starts_with("http") && !sniffed_streams.iter().any(|s| s.url == u) {
+                            if u.starts_with("http") && page_may_target(page_url.as_deref(), &u) && !sniffed_streams.iter().any(|s| s.url == u) {
                                 sniffed_streams.insert(
                                     0,
                                     SniffedStreamItem {
@@ -3084,6 +3195,8 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "INSTALL_FFMPEG" {
                     engine.install_ffmpeg_bundle(&rt_handle);
+                } else if cmd == "INSTALL_YTDLP" {
+                    engine.install_ytdlp_bundle(&rt_handle);
                 } else if let Some(mc_str) = cmd.strip_prefix("SET_MAX_CONCURRENT:") {
                     if let Ok(mc) = mc_str.parse::<usize>() {
                         global_settings.max_concurrent_downloads = mc.clamp(1, 8);
@@ -3160,6 +3273,7 @@ fn main() -> wry::Result<()> {
                     BrowserStorage::save_history(&history);
                 } else if cmd == "SAVE_OFFLINE_HTML" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
+                        pending_offline_saves.insert(tab.id);
                         let js = format!(
                             "if (window.ipc) window.ipc.postMessage('{}|OFFLINE_HTML:' + JSON.stringify({{ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }}));",
                             ipc_token
@@ -3290,10 +3404,17 @@ fn main() -> wry::Result<()> {
                             .get(active_tab_idx)
                             .map(|t| (Some(t.url.clone()), t.cookie.clone(), Some(&t.webview)))
                             .unwrap_or((None, None, None));
-                        for line in raw_urls.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                        // The Get box advertises batch patterns like track_[01-12].flac, so expand them here too.
+                        let expanded: Vec<String> = raw_urls
+                            .lines()
+                            .map(|l| l.trim())
+                            .filter(|l| !l.is_empty())
+                            .flat_map(|l| expand_wildcard_range(l).unwrap_or_else(|| vec![l.to_string()]))
+                            .collect();
+                        for line in expanded {
                             dispatch_download_with_httponly_cookies(
                                 wv_opt,
-                                line.to_string(),
+                                line,
                                 threads,
                                 ref_url.clone(),
                                 cookie_val.clone(),
@@ -3364,24 +3485,42 @@ fn main() -> wry::Result<()> {
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_PAUSE:") {
                     if let Ok(id) = id_str.parse::<u64>() {
-                        engine.pause(id);
+                        let is_native = engine.task_kind(id).as_deref() == Some(downloader::KIND_NATIVE);
+                        if is_native && native_op_call(id, "pause") {
+                            engine.set_native_status(id, "PAUSED", None);
+                        } else if !is_native {
+                            engine.pause(id);
+                        }
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_RESUME:") {
                     if let Ok(id) = id_str.parse::<u64>() {
-                        engine.resume_or_restart(&rt_handle, id, None);
+                        let is_native = engine.task_kind(id).as_deref() == Some(downloader::KIND_NATIVE);
+                        if is_native && native_op_call(id, "resume") {
+                            engine.set_native_status(id, "DOWNLOADING", None);
+                        } else {
+                            engine.resume_or_restart(&rt_handle, id, None);
+                        }
                     }
                 } else if let Some(payload) = cmd.strip_prefix("DL_FIX:") {
                     if let Some((id_str, new_url)) = payload.split_once('|') {
                         if let Ok(id) = id_str.parse::<u64>() {
+                            native_op_call(id, "cancel");
                             engine.resume_or_restart(&rt_handle, id, Some(new_url.to_string()));
                         }
                     }
                 } else if let Some(id_str) = cmd.strip_prefix("DL_DEL:") {
                     if let Ok(id) = id_str.parse::<u64>() {
+                        native_op_call(id, "cancel");
                         engine.delete(id);
                     }
                 } else if let Some(path) = cmd.strip_prefix("DL_SHOW:") {
-                    if !path.is_empty() {
+                    // Only reveal files that belong to a known download.
+                    let known = engine
+                        .tasks
+                        .lock()
+                        .map(|l| l.iter().any(|t| t.saved_path.as_deref() == Some(path)))
+                        .unwrap_or(false);
+                    if known && std::path::Path::new(path).exists() {
                         let _ = Command::new("explorer.exe").arg(format!("/select,{}", path)).spawn();
                     }
                 }

@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,9 @@ jobs:
 
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Tests
+        run: cargo test --release
 
       - name: Build Native Release EXE
         run: cargo build --release
@@ -39,7 +43,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Shunno Browser v1.0 (Native Rust + Edge WebView2 + 32-Thread Shunno Get)"
+          name: "Shunno Browser (latest build: Native Rust + Edge WebView2 + 32-Thread Shunno Get)"
           make_latest: true
           body: |
             ### Direct 1-Click Download for Windows 10 & 11 (~6 MB)

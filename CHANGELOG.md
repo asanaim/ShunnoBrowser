@@ -1,3 +1,34 @@
+## v2.9.7 (2026-11-20)
+**Download engine (`src/downloader.rs`), rebuilt so the IDM features actually work:**
+- **Pause/Resume fixed:** `.offset` resume files were deleted on every pause, so Resume restarted from zero. They are now removed only after a fully successful transfer. Single-connection downloads also resume (new `_s.offset` sidecar plus `Range: bytes=N-`).
+- **No more silent corruption:** segment requests now require `206 Partial Content` with a matching `Content-Range` start. Previously a server answering a ranged request with `200` had its whole body written at each segment offset.
+- **gzip disabled for the engine:** transparent decompression made Range offsets refer to compressed bytes.
+- **Tab User-Agent is used:** the UA captured from the page was stored and then ignored (every request sent a hardcoded Firefox UA).
+- **Resilience:** a failed segmented pass retries only the missing ranges before falling back to one connection; 429/5xx/timeouts retry with backoff; truncated transfers are detected.
+- **Speed limit** now applies to single-connection, HLS and yt-dlp jobs too.
+- **Correct folder after rename:** `Content-Disposition` (including RFC 5987 `filename*`) renames now also update the category used on finalize; name collisions become `name (1).ext`.
+- **HLS:** uses FFmpeg (auto-installed) for encrypted, byte-ranged and fMP4 streams and writes a real MP4. Fallback path sends UA/Referer/Cookie, resolves relative and absolute URIs, picks the highest-bandwidth variant, includes `#EXT-X-MAP`, retries segments, and saves raw MPEG-TS as `.ts`.
+- **DASH mux:** FFmpeg is installed on demand instead of saving a video-only "MP4"; progress is shown; parts are kept on mux failure so Resume re-muxes without re-downloading; Resume of a DASH task works.
+- **YouTube via yt-dlp:** YouTube watch/shorts/live pages and `.mpd` manifests are routed to yt-dlp (auto-installed), merging best video+audio to MP4 with live progress, pause (kills the process tree) and resume. Direct googlevideo URLs are signature/PO-token bound and usually return 403.
+- **Verified tool installs:** ffmpeg (gyan.dev `.sha256`) and yt-dlp (`SHA2-256SUMS`) are SHA-256 checked before use. Tools now live in `%LOCALAPPDATA%\ShunnoBrowser\bin` (old location still detected) and never flash a console window.
+- Hashing and file moves run off the async workers; queue file is written atomically; CSV export is protected against formula injection.
+
+**Browser integration (`src/main.rs`):**
+- **UI never froze at the last download:** the ticker only refreshed while something was active, so the final COMPLETED state and the "when queue finishes" action were never delivered. It now refreshes on the busy to idle edge.
+- **WebView2 native downloads** can really be paused, resumed and cancelled from the panel (`ICoreWebView2DownloadOperation`), and a user pause is no longer reported as "Download interrupted".
+- The **Get** box now expands batch patterns like `track_[01-12].flac` (only the stream list did before).
+- New **yt-dlp** button and status in the Downloads panel.
+
+**Security:**
+- **Critical:** content IPC accepted any message prefixed `INTERNAL|` without the token, so any website could drive page-level commands. The prefix is gone; native ad-block counts use a dedicated event. Token comparison is constant-time.
+- The content script captures `chrome.webview.postMessage` at document start, so a page replacing it cannot read the IPC token.
+- Pages can no longer make the engine probe or download loopback/LAN/link-local/metadata hosts (probe results were reported back to the page, bypassing CORS), unless the page is on that same host.
+- `OFFLINE_HTML` is accepted only right after the user pressed Save Page for that tab.
+- UI `encodeAttr()` escaped only `'`; page-controlled URLs containing `\` or `"` could break out of `onclick` handlers in the privileged UI. It now JS-escapes and HTML-escapes.
+- `DL_SHOW` only reveals paths that belong to a known download.
+
+**Repository:** dotfiles renamed to `.gitignore` / `.editorconfig` / `.gitattributes` (they were inert), `Cargo.lock` committed for reproducible builds, stale duplicate sources removed, CI runs `cargo test` and builds pull requests, `build.rs` skips the icon resource on non-Windows hosts so `cargo check --target x86_64-pc-windows-msvc` works from Linux.
+
 ## v2.9.6 (2026-11-20)
 - **Clean Windows 11 Snap Layout Flyout (Zero `1`–`9` Numbers):** Replaced synthetic `Win + Z` with a native-styled 6-grid hover flyout under the Maximize button (`□`) backed by `MonitorFromWindow` + `GetMonitorInfoW` (`rcWork`) + `SetWindowPos`.
 - **Classic Incognito Icon:** Updated the New Private Tab button and all Private Tab pills to the clean flat-top hat + round glasses Incognito SVG icon.
