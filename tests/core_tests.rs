@@ -10,6 +10,8 @@ mod userscripts;
 mod downloader;
 #[path = "../src/https_guard.rs"]
 mod https_guard;
+#[path = "../src/blocker.rs"]
+mod blocker;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -162,4 +164,27 @@ fn test_https_only_guard() {
 
     let html = https_guard::interstitial_html("http://a.example/<x>", "http://a.example/#shunno-allow-http-1");
     assert!(html.contains("a.example") && !html.contains("<x>"));
+}
+
+#[test]
+fn test_adblock_engine_network_and_cosmetic() {
+    let list = "[Adblock Plus 2.0]\n||doubleclick.net^\n||tracker.example^$third-party\n@@||tracker.example/consent.js\n##.adsbygoogle\nnews.example##.promo-box\nnews.example#@#.adsbygoogle\n";
+    let (engine, rules) = blocker::build_engine(&[list.to_string()]);
+    assert!(rules >= 5);
+    let check = |u: &str, src: &str, t: &str| {
+        engine
+            .check_network_request(&adblock::request::Request::new(u, src, t, "GET").unwrap())
+            .should_block()
+    };
+    assert!(check("https://securepubads.g.doubleclick.net/gpt.js", "https://site.example/", "script"));
+    assert!(check("https://tracker.example/t.js", "https://site.example/", "script"));
+    assert!(!check("https://tracker.example/t.js", "https://tracker.example/", "script"), "first-party allowed");
+    assert!(!check("https://tracker.example/consent.js", "https://site.example/", "script"), "exception honoured");
+
+    let generic = blocker::cosmetic_css_for(&engine, "https://other.example/", &["adsbygoogle".into(), "article".into()], &[]);
+    assert!(generic.contains(".adsbygoogle{display:none !important}"));
+    assert!(!generic.contains(".article"));
+    let specific = blocker::cosmetic_css_for(&engine, "https://news.example/a", &["adsbygoogle".into()], &[]);
+    assert!(specific.contains(".promo-box"));
+    assert!(!specific.contains(".adsbygoogle"), "site exception removes the generic rule");
 }

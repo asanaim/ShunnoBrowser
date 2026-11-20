@@ -1,3 +1,10 @@
+## v2.11.0 (2026-11-20)
+- **Real ad and tracker blocking:** Brave's `adblock` engine with EasyList + EasyPrivacy (135,151 rules on 2026-11-20) replaces the 16 hard-coded URL patterns. Every request is checked, including those from iframes and workers (`ICoreWebView2_22` source kinds), about 3 µs per request.
+- **Element hiding:** page-specific and generic cosmetic rules hide empty ad containers. Applied with constructable stylesheets (works under strict CSP), one rule at a time so a bad list selector cannot break the rest; new elements are picked up as the page changes.
+- **Lean by design:** lists are downloaded at runtime (EXE carries none), compiled once, cached (5.8 MB file) and loaded in ~6 ms at startup; refreshed weekly in the background; ~13 MB RAM shared by all tabs. Until the first download the built-in list is used.
+- Controls: Update Block Lists button; list status in the site title tooltip.
+- The main page document is never blocked (no blank tabs); only its subresources and frames.
+
 ## v2.10.0 (2026-11-20)
 - **HTTPS Only (on by default):** top-level `http://` navigations are upgraded to `https://`. If the secure version fails or redirects back to http, a warning page explains the risk and offers Go back or Continue (not secure).
 - The Continue link carries a one-time random code, so a hostile page cannot link to `http://yourbank` and skip the upgrade. Exceptions last for the session.
