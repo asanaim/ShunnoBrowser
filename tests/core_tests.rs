@@ -8,6 +8,12 @@ mod sanitizer;
 mod userscripts;
 #[path = "../src/downloader.rs"]
 mod downloader;
+#[path = "../src/https_guard.rs"]
+mod https_guard;
+#[path = "../src/blocker.rs"]
+mod blocker;
+#[path = "../src/updater.rs"]
+mod updater;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -109,4 +115,137 @@ fn test_hls_playlist_parsing() {
     let pm = parse_hls_playlist(media, &base);
     assert!(pm.encrypted && pm.init_segment.is_some());
     assert_eq!(pm.segments[0].as_str(), "https://cdn.x.com/v/seg1.m4s");
+}
+
+#[test]
+fn test_builtin_ad_matcher() {
+    use sanitizer::is_blocked_ad_url;
+    assert!(is_blocked_ad_url("https://securepubads.g.doubleclick.net/gampad/ads?x=1"));
+    assert!(is_blocked_ad_url("https://www.youtube.com/pagead/viewthroughconversion/1"));
+    assert!(is_blocked_ad_url("https://rr1.googlevideo.com/initplayback?source=youtube&oad=1"));
+    assert!(!is_blocked_ad_url("https://www.youtube.com/watch?v=abc"));
+    assert!(!is_blocked_ad_url("https://rr1.googlevideo.com/videoplayback?itag=22"));
+    assert!(!is_blocked_ad_url("https://notdoubleclick.net.example.com/x"));
+    assert!(!is_blocked_ad_url("https://example.com/img.png"));
+}
+
+#[test]
+fn test_https_only_guard() {
+    use https_guard::{Decision, HttpsGuard};
+    let g = HttpsGuard::default();
+    assert_eq!(g.decide(1, "http://example.com/a"), Decision::Allow, "disabled guard must not act");
+    g.set_enabled(true);
+
+    // Upgrade public http, keep path and query; drop explicit :80.
+    assert_eq!(g.decide(1, "http://example.com:80/a?b=1"), Decision::Upgrade("https://example.com/a?b=1".into()));
+    // Successful secure load clears in-flight state; a later http link is upgraded again (no false loop).
+    assert_eq!(g.on_navigation_done(1, true, false), None);
+    assert!(matches!(g.decide(1, "http://example.com/b"), Decision::Upgrade(_)));
+    // Secure load redirected straight back to http: warn instead of looping.
+    assert_eq!(g.decide(1, "http://example.com/b"), Decision::Interstitial("http://example.com/b".into()));
+
+    // Never touch LAN, loopback, intranet, custom ports, https.
+    for u in ["http://192.168.1.1/", "http://localhost:3000/", "http://router/", "http://example.org:8080/", "https://example.org/"] {
+        assert_eq!(g.decide(2, u), Decision::Allow, "{}", u);
+    }
+
+    // Failed upgraded load (refused/timeout/cert): our cancel is ignored, the failure yields the http URL.
+    assert!(matches!(g.decide(3, "http://nossl.example.net/x"), Decision::Upgrade(_)));
+    assert_eq!(g.on_navigation_done(3, false, true), None);
+    assert_eq!(g.on_navigation_done(3, false, false), Some("http://nossl.example.net/x".into()));
+
+    // A forged allow mark from a page does not downgrade; the real one-time link does, once per host.
+    assert!(matches!(g.decide(4, "http://bank.example.com/#shunno-allow-http-0123456789abcdef"), Decision::Upgrade(_)));
+    let _ = g.on_navigation_done(4, true, false);
+    let link = g.issue_allow_link("http://nossl.example.net/x").unwrap();
+    assert_eq!(g.decide(5, &link), Decision::Allow);
+    assert_eq!(g.decide(5, "http://nossl.example.net/other"), Decision::Allow, "host stays allowed for the session");
+    // Replaying the same nonce for a different host grants nothing.
+    let other = link.replace("nossl.example.net", "bank.example.com");
+    assert!(matches!(g.decide(6, &other), Decision::Upgrade(_)));
+
+    let html = https_guard::interstitial_html("http://a.example/<x>", "http://a.example/#shunno-allow-http-1");
+    assert!(html.contains("a.example") && !html.contains("<x>"));
+}
+
+#[test]
+fn test_adblock_engine_network_and_cosmetic() {
+    let list = "[Adblock Plus 2.0]\n||doubleclick.net^\n||tracker.example^$third-party\n@@||tracker.example/consent.js\n##.adsbygoogle\nnews.example##.promo-box\nnews.example#@#.adsbygoogle\n";
+    let (engine, rules) = blocker::build_engine(&[list.to_string()]);
+    assert!(rules >= 5);
+    let check = |u: &str, src: &str, t: &str| {
+        engine
+            .check_network_request(&adblock::request::Request::new(u, src, t, "GET").unwrap())
+            .should_block()
+    };
+    assert!(check("https://securepubads.g.doubleclick.net/gpt.js", "https://site.example/", "script"));
+    assert!(check("https://tracker.example/t.js", "https://site.example/", "script"));
+    assert!(!check("https://tracker.example/t.js", "https://tracker.example/", "script"), "first-party allowed");
+    assert!(!check("https://tracker.example/consent.js", "https://site.example/", "script"), "exception honoured");
+
+    let generic = blocker::cosmetic_css_for(&engine, "https://other.example/", &["adsbygoogle".into(), "article".into()], &[]);
+    assert!(generic.contains(".adsbygoogle{display:none !important}"));
+    assert!(!generic.contains(".article"));
+    let specific = blocker::cosmetic_css_for(&engine, "https://news.example/a", &["adsbygoogle".into()], &[]);
+    assert!(specific.contains(".promo-box"));
+    assert!(!specific.contains(".adsbygoogle"), "site exception removes the generic rule");
+}
+
+#[test]
+fn test_every_content_script_placeholder_is_replaced() {
+    // A placeholder left in the injected script is a ReferenceError that kills every in-page feature.
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/content_guard.js")).unwrap();
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+    let mut rest = js.as_str();
+    let mut found = 0;
+    while let Some(i) = rest.find("__SHUNNO_") {
+        let tail = &rest[i + 9..];
+        let end = tail.find("__").expect("unterminated placeholder");
+        let name = format!("__SHUNNO_{}__", &tail[..end]);
+        assert!(main.contains(&format!(".replace(\"{}\"", name)), "{} is never replaced in build_content_init_script", name);
+        found += 1;
+        rest = &tail[end + 2..];
+    }
+    assert!(found >= 9);
+}
+
+#[test]
+fn test_update_manifest_signature_and_versions() {
+    use updater::{is_newer, verify_manifest, Manifest};
+    // Test-only key pair produced by scripts/sign_update.py (not the release key).
+    let pk = "62d2b1deff4a99ffb134ccec895afbcb821cb4a6b8b9e8284c51e5ecd40f2c6b";
+    let good = || Manifest {
+        version: "9.9.9".into(),
+        url: "https://github.com/asanaim/ShunnoBrowser/releases/download/latest/ShunnoBrowser.exe".into(),
+        sha256: "a56c5875d765a618180353e49e08ae1625b30116c13e422dbc324e58ece4de85".into(),
+        signature: "18ee4ca67592f107f1caed94fbe1307abce3a59080968da29026b7ba6b9c940390b17984e3e801a6e56b6081ad5f082c830bcb5945ee071165e3139f84f00a04".into(),
+    };
+    assert!(verify_manifest(&good(), pk), "signature from the Python CI signer must verify in Rust");
+    let mut m = good(); m.version = "9.9.10".into(); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.sha256 = m.sha256.replace('a', "b"); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.url = "https://evil.example/ShunnoBrowser.exe".into(); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.signature = m.signature.replace('1', "2"); assert!(!verify_manifest(&m, pk));
+    let mut m = good(); m.signature.clear(); assert!(!verify_manifest(&m, pk));
+    assert!(!verify_manifest(&good(), "00".repeat(32).as_str()), "wrong key");
+    assert!(!verify_manifest(&good(), ""), "no key configured");
+
+    assert!(is_newer("2.12.1", "v2.12.0"));
+    assert!(is_newer("v2.13.0", "v2.12.9"));
+    assert!(is_newer("3.0.0", "v2.99.99"));
+    assert!(!is_newer("2.12.0", "v2.12.0"));
+    assert!(!is_newer("2.9.10", "v2.10.0"), "numeric, not string, comparison");
+}
+
+#[test]
+fn test_update_install_swaps_and_keeps_old() {
+    let dir = std::env::temp_dir().join(format!("shunno_upd_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("ShunnoBrowser.exe");
+    std::fs::write(&exe, b"MZ old").unwrap();
+    updater::install(&exe, b"MZ new").unwrap();
+    assert_eq!(std::fs::read(&exe).unwrap(), b"MZ new");
+    assert_eq!(std::fs::read(dir.join("ShunnoBrowser.old.exe")).unwrap(), b"MZ old");
+    assert!(!dir.join("ShunnoBrowser.new.exe").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }

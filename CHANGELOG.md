@@ -1,3 +1,46 @@
+## v2.13.1
+
+### UI
+* Menu and Downloads open as popovers anchored under their buttons, with a pointer; no detached gap.
+* Motion follows one deceleration curve without bounce; popovers fade out on close instead of vanishing.
+* Light and dark switch as a single cross-fade (View Transitions), in the toolbar and in pages.
+* Maximized windows keep a top margin, use square corners, and show a Restore Down icon.
+* Snap Layouts flyout waits 600 ms on hover, matching Windows.
+* Respects the system Reduce Motion setting.
+
+## v2.13.0 (2026-11-20)
+- **Auto-update with signed manifests:** CI publishes `latest.json` (version, URL, SHA-256, Ed25519 signature) beside the EXE. The browser checks 20 s after start and daily, verifies the signature against the compiled-in public key and the EXE hash, swaps the EXE (old one kept until next start) and offers **Restart to update**. Tampered manifests, files or links are rejected; downloads are only accepted from this repository's releases.
+- **Notify-only until configured:** with no signing key set, it only shows "Update available" linking to the release page. Setup in `docs/RELEASING.md` (free, one time).
+- **Code signing in CI:** optional Authenticode step (runs when certificate secrets exist), ordered before the manifest so the signed hash matches.
+- Controls: update button (Check / Update available / Restart to update) and Auto Update toggle.
+
+## v2.12.0 (2026-11-20)
+- **Fingerprint Shield (per site, on by default):** canvas exports and pixel reads, WebGL readPixels, audio samples and `hardwareConcurrency` get small changes that are stable per site within a session and different across sites and launches (Brave-style farbling). WebGL GPU vendor/renderer strings are generalised when a page asks for them. Trackers can no longer match one canvas/audio fingerprint across sites.
+- Changes are invisible in practice: at most 48 pixels flip one colour bit; audio varies by under one part in ten million.
+- Wrappers are Proxies over native functions, so `Function.prototype.toString` still reports native code.
+- Known limits: Web Workers and some sandboxed blank frames are not covered (Brave does this in the engine).
+- New test fails the build if any content-script placeholder is left unreplaced (a missing one silently disables every in-page feature).
+
+## v2.11.0 (2026-11-20)
+- **Real ad and tracker blocking:** Brave's `adblock` engine with EasyList + EasyPrivacy (135,151 rules on 2026-11-20) replaces the 16 hard-coded URL patterns. Every request is checked, including those from iframes and workers (`ICoreWebView2_22` source kinds), about 3 µs per request.
+- **Element hiding:** page-specific and generic cosmetic rules hide empty ad containers. Applied with constructable stylesheets (works under strict CSP), one rule at a time so a bad list selector cannot break the rest; new elements are picked up as the page changes.
+- **Lean by design:** lists are downloaded at runtime (EXE carries none), compiled once, cached (5.8 MB file) and loaded in ~6 ms at startup; refreshed weekly in the background; ~13 MB RAM shared by all tabs. Until the first download the built-in list is used.
+- Controls: Update Block Lists button; list status in the site title tooltip.
+- The main page document is never blocked (no blank tabs); only its subresources and frames.
+
+## v2.10.0 (2026-11-20)
+- **HTTPS Only (on by default):** top-level `http://` navigations are upgraded to `https://`. If the secure version fails or redirects back to http, a warning page explains the risk and offers Go back or Continue (not secure).
+- The Continue link carries a one-time random code, so a hostile page cannot link to `http://yourbank` and skip the upgrade. Exceptions last for the session.
+- Never applied to LAN, loopback, intranet (single-label) hosts or non-standard ports, so routers, NAS boxes and dev servers keep working.
+- Toggle: Controls, HTTPS Only.
+
+## v2.9.9 (2026-11-20)
+- **JavaScript switch is real:** uses WebView2 `IsScriptEnabled` (page scripts no longer run). It used to delete `<script>` tags after they had already executed.
+- **Images switch is real:** image requests are blocked at the network layer, saving data. It used to hide images with CSS after downloading them.
+- **Mobile Site replaces Desktop UA:** sends a real mobile HTTP User-Agent so servers return their mobile pages. Desktop UA only changed `navigator.userAgent` and was meaningless on a desktop browser.
+- **Reject Cookie Banners:** renamed to say what it does (clicks common "Reject all" buttons).
+- Ad filter handler now re-checks every request, so the image rule and the ad rule can share one WebView2 event safely.
+
 ## v2.9.8 (2026-11-20)
 - **Floating download bar never appeared (root cause):** `content_guard.js` crashed at document start on every page (`appendChild` on a null `<head>`), which aborted the whole script: floating bar, drop-basket handlers, page metadata (history titles, tab UA/cookies), find counts, audio state and in-page shortcuts never ran. Early DOM writes now wait for a root element.
 - **IDM-style bar:** appears over every visible video/audio player, including `blob:`/MSE streaming players, and pops up once when a video starts playing. "This video" hands the page to yt-dlp (with the tab's session cookies, except on YouTube). Styling uses constructable stylesheets so strict-CSP sites cannot hide it.

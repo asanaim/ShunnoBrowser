@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.8";
+pub const APP_VERSION: &str = "v2.13.1";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -35,9 +35,15 @@ pub struct SitePolicy {
     pub adblock: bool,
     pub js_enabled: bool,
     pub images_enabled: bool,
-    pub desktop_ua: bool,
+    /// Request the mobile version of the site (real HTTP User-Agent). Replaces the old
+    /// desktop_ua switch, which only spoofed navigator.userAgent and did nothing on desktop.
+    #[serde(default)]
+    pub mobile_ua: bool,
     pub sponsorblock: bool,
     pub auto_reject_cookies: bool,
+    /// Fingerprinting protection (per-site farbling of canvas, WebGL, audio, CPU count).
+    #[serde(default = "default_true")]
+    pub fp_protect: bool,
     #[serde(default = "default_site_zoom")]
     pub zoom: f64,
 }
@@ -48,9 +54,10 @@ impl Default for SitePolicy {
             adblock: true,
             js_enabled: true,
             images_enabled: true,
-            desktop_ua: false,
+            mobile_ua: false,
             sponsorblock: true,
             auto_reject_cookies: true,
+            fp_protect: true,
             zoom: 1.0,
         }
     }
@@ -111,6 +118,12 @@ pub struct GlobalSettings {
     /// WebView2 built-in password manager (DPAPI-encrypted in the profile). Never active in private tabs.
     #[serde(default = "default_true")]
     pub save_passwords: bool,
+    /// Check for signed updates daily.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
+    /// Upgrade http:// navigations to https:// and warn when a site has no secure version.
+    #[serde(default = "default_true")]
+    pub https_only: bool,
     /// Edge tracking prevention: Strict when true, Balanced when false.
     #[serde(default)]
     pub strict_tracking: bool,
@@ -142,6 +155,8 @@ impl Default for GlobalSettings {
             on_queue_complete: "NONE".to_string(),
             custom_downloads_dir: None,
             save_passwords: true,
+            https_only: true,
+            auto_update: true,
             strict_tracking: false,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![

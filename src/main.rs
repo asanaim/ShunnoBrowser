@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod blocker;
 mod downloader;
+mod https_guard;
+mod updater;
 mod sanitizer;
 mod state;
 mod ui_chrome;
@@ -32,6 +35,7 @@ use state::{
 };
 
 const CHROME_BAR_HEIGHT: f64 = 112.0;
+const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
@@ -64,6 +68,12 @@ enum AppEvent {
     },
     /// Raised by the native ad filter. Never derived from page-supplied IPC text.
     AdBlocked,
+    /// HTTPS-Only: load this (upgraded) URL in the tab.
+    NavigateTab(usize, String),
+    /// HTTPS-Only: show the "not secure" warning for this http URL.
+    HttpsInterstitial(usize, String),
+    /// A top-level navigation finished: (tab, success, cancelled).
+    NavigationDone(usize, bool, bool),
     DownloadWithCookies {
         url: String,
         threads: usize,
@@ -127,7 +137,12 @@ struct ChromeSnapshot {
     ffmpeg_available: bool,
     ffmpeg_status: String,
     ytdlp_status: String,
+    adblock_status: String,
+    /// "", "uptodate", "available", "ready", "failed"
+    update_kind: String,
+    update_label: String,
     is_fullscreen: bool,
+    is_maximized: bool,
     has_closed_tabs: bool,
     find_current: usize,
     find_total: usize,
@@ -155,6 +170,13 @@ fn generate_ipc_token() -> String {
     let a: u64 = rng.gen();
     let b: u64 = rng.gen();
     format!("{:016x}{:016x}", a, b)
+}
+
+/// Per-launch secret mixed into fingerprint farbling: values are stable per site within a session
+/// and change on every restart.
+fn fp_session_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| format!("{:016x}", rand::random::<u64>()))
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -223,9 +245,9 @@ fn build_content_init_script(
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
-        .replace("__SHUNNO_JS_DISABLED__", if !policy.js_enabled { "true" } else { "false" })
         .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
-        .replace("__SHUNNO_DESKTOP_UA__", if policy.desktop_ua { "true" } else { "false" });
+        .replace("__SHUNNO_FP__", if policy.fp_protect { "true" } else { "false" })
+        .replace("__SHUNNO_FP_SESSION__", fp_session_key());
 
     if !user_js.is_empty() {
         script.push('\n');
@@ -693,6 +715,68 @@ fn dispatch_download_with_httponly_cookies(
 }
 
 
+async fn check_for_updates() {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("ShunnoBrowser/{}", APP_VERSION))
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    updater::global().check(&client).await;
+}
+
+fn update_kind_label() -> (&'static str, String) {
+    match updater::global().state() {
+        updater::UpdateState::Idle => ("", String::new()),
+        updater::UpdateState::UpToDate => ("uptodate", "Up to date".to_string()),
+        updater::UpdateState::Available { version, reason } => ("available", format!("v{} available ({})", version, reason)),
+        updater::UpdateState::Ready { version } => ("ready", format!("v{} installed, restart to use it", version)),
+        updater::UpdateState::Failed(e) => ("failed", format!("Update check failed: {}", e)),
+    }
+}
+
+/// Downloads and compiles the filter lists; on failure keeps whatever engine is loaded.
+async fn refresh_filter_lists() {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    if let Err(e) = blocker::global().refresh(&client).await {
+        let current = if blocker::global().has_lists() { "previous lists kept" } else { "built-in list in use" };
+        blocker::global().set_status(format!("Update failed ({}): {}", current, e));
+    }
+}
+
+/// Replaces the tab's document with locally generated HTML (warning pages).
+#[cfg(windows)]
+fn show_html_in_tab(webview: &WebView, html: &str) {
+    use windows::core::HSTRING;
+    use wry::WebViewExtWindows;
+    unsafe {
+        if let Ok(core) = webview.controller().CoreWebView2() {
+            let _ = core.NavigateToString(&HSTRING::from(html));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn show_html_in_tab(_webview: &WebView, _html: &str) {}
+
+/// Per-site engine settings that must be real, not cosmetic: JavaScript on/off.
+#[cfg(windows)]
+fn apply_site_settings(webview: &WebView, policy: &SitePolicy) {
+    use wry::WebViewExtWindows;
+    unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        if let Ok(settings) = core.Settings() {
+            // Page scripts only; Shunno's injected scripts keep running.
+            let _ = settings.SetIsScriptEnabled(policy.js_enabled);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_site_settings(_webview: &WebView, _policy: &SitePolicy) {}
+
 /// Applies password autosave and tracking prevention to a tab's WebView2 settings/profile.
 #[cfg(windows)]
 fn apply_privacy_settings(webview: &WebView, save_passwords: bool, strict_tracking: bool) {
@@ -895,8 +979,10 @@ fn attach_native_webview2_hooks(
     webview: &WebView,
     tab_id: usize,
     adblock_enabled: bool,
+    block_images: bool,
     proxy: EventLoopProxy<AppEvent>,
 ) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2_2, ICoreWebView2_8,
         ICoreWebView2WebResourceResponse,
@@ -927,6 +1013,24 @@ fn attach_native_webview2_hooks(
         let Ok(core) = controller.CoreWebView2() else {
             return;
         };
+
+        // 0a. Navigation outcome (HTTPS-Only needs to know when an upgraded load failed)
+        use webview2_com::NavigationCompletedEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED;
+        let mut nav_done_token = Default::default();
+        let nav_done_proxy = proxy.clone();
+        let nav_done_handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+            if let Some(args) = args {
+                let mut ok = BOOL::default();
+                let _ = args.IsSuccess(&mut ok);
+                let mut status = Default::default();
+                let _ = args.WebErrorStatus(&mut status);
+                let cancelled = status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED;
+                let _ = nav_done_proxy.send_event(AppEvent::NavigationDone(tab_id, ok.as_bool(), cancelled));
+            }
+            Ok(())
+        }));
+        let _ = core.add_NavigationCompleted(&nav_done_handler, &mut nav_done_token);
 
         // 0b. Native Full-URL Synchronization (captures SPA pushState/replaceState, YouTube watch URLs, redirects)
         use webview2_com::SourceChangedEventHandler;
@@ -973,44 +1077,89 @@ fn attach_native_webview2_hooks(
         };
 
         // Only intercept known ad/tracker URL patterns so 99% of page traffic runs at full native Chromium speed
-        if adblock_enabled {
-            let ad_filters = [
-                w!("*://*.doubleclick.net/*"),
-                w!("*://*.googlesyndication.com/*"),
-                w!("*://*.googleadservices.com/*"),
-                w!("*://*.adnxs.com/*"),
-                w!("*://*.adsrvr.org/*"),
-                w!("*://*.taboola.com/*"),
-                w!("*://*.outbrain.com/*"),
-                w!("*://*.popads.net/*"),
-                w!("*://*.popcash.net/*"),
-                w!("*://*.propellerads.com/*"),
-                w!("*://*.exoclick.com/*"),
-                w!("*://*.youtube.com/pagead/*"),
-                w!("*://*.youtube.com/api/stats/ads*"),
-                w!("*://*.youtube.com/ptracking*"),
-                w!("*://*.youtube.com/get_midroll_*"),
-                w!("*://*.googlevideo.com/initplayback*oad*"),
-            ];
-            for pat in ad_filters {
-                let _ = core.AddWebResourceRequestedFilter(pat, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+        // Request policy: Brave's adblock engine for every request (all frames and workers), plus
+        // image blocking when images are off for this site. One handler re-checks each request.
+        if adblock_enabled || block_images {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+            };
+            let filter_ctx = if adblock_enabled { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL } else { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE };
+            // ICoreWebView2_22 also delivers requests from iframes and workers, where most ads load.
+            let added = match core.cast::<ICoreWebView2_22>() {
+                Ok(c22) => c22
+                    .AddWebResourceRequestedFilterWithRequestSourceKinds(w!("*"), filter_ctx, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)
+                    .is_ok(),
+                Err(_) => false,
+            };
+            if !added {
+                let _ = core.AddWebResourceRequestedFilter(w!("*"), filter_ctx);
             }
 
             let mut token = Default::default();
             let env_for_ad = env.clone();
             let ad_proxy = proxy.clone();
-            let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| {
                 let Some(args) = args else {
                     return Ok(());
                 };
+                let mut uri = String::new();
+                if let Ok(req) = args.Request() {
+                    let mut p = windows::core::PWSTR::null();
+                    if req.Uri(&mut p).is_ok() {
+                        uri = webview2_com::take_pwstr(p);
+                    }
+                }
+                let mut ctx = Default::default();
+                let _ = args.ResourceContext(&mut ctx);
+                let is_blocked_image = block_images && ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
+
+                let mut is_ad = false;
+                if adblock_enabled && !is_blocked_image && uri.starts_with("http") {
+                    let mut page = String::new();
+                    if let Some(wv) = sender.as_ref() {
+                        let mut p = windows::core::PWSTR::null();
+                        if wv.Source(&mut p).is_ok() {
+                            page = webview2_com::take_pwstr(p);
+                        }
+                    }
+                    let req_type = match ctx {
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT => "subdocument",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT => "script",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE => "image",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET => "stylesheet",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT => "font",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA => "media",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST
+                            || c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH => "xmlhttprequest",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET => "websocket",
+                        c if c == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING => "ping",
+                        _ => "other",
+                    };
+                    // Never block the page itself (a main-frame document); Brave shows an
+                    // interstitial there, a blank tab would just look broken.
+                    let is_main_document = ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (page.is_empty() || page == uri);
+                    if !is_main_document {
+                        let source = if page.starts_with("http") { page.as_str() } else { uri.as_str() };
+                        is_ad = blocker::global().should_block(&uri, source, req_type);
+                    }
+                }
+                if !is_ad && !is_blocked_image {
+                    return Ok(()); // no response set: the request continues normally
+                }
                 let empty_resp: ICoreWebView2WebResourceResponse = env_for_ad.CreateWebResourceResponse(
                     None::<&IStream>,
                     403,
-                    w!("Blocked by Shunno AdBlock"),
+                    w!("Blocked by Shunno"),
                     PCWSTR::null(),
                 )?;
                 let _ = args.SetResponse(&empty_resp);
-                let _ = ad_proxy.send_event(AppEvent::AdBlocked);
+                if is_ad {
+                    let _ = ad_proxy.send_event(AppEvent::AdBlocked);
+                }
                 Ok(())
             }));
 
@@ -1386,6 +1535,7 @@ fn attach_native_webview2_hooks(
     _webview: &WebView,
     _tab_id: usize,
     _adblock_enabled: bool,
+    _block_images: bool,
     _proxy: EventLoopProxy<AppEvent>,
 ) {
 }
@@ -1412,7 +1562,12 @@ fn create_tab_webview(
     let title_proxy = proxy.clone();
     let nav_proxy = proxy.clone();
 
-    let wv = WebViewBuilder::new_as_child(window)
+    let mut builder = WebViewBuilder::new_as_child(window);
+    if policy.mobile_ua {
+        // Real HTTP User-Agent (and navigator.userAgent), so servers send their mobile site.
+        builder = builder.with_user_agent(MOBILE_UA);
+    }
+    let wv = builder
         .with_web_context(web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
@@ -1426,6 +1581,17 @@ fn create_tab_webview(
             let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
         })
         .with_navigation_handler(move |nav_url| {
+            match https_guard::global().decide(tab_id, &nav_url) {
+                https_guard::Decision::Upgrade(secure) => {
+                    let _ = nav_proxy.send_event(AppEvent::NavigateTab(tab_id, secure));
+                    return false;
+                }
+                https_guard::Decision::Interstitial(insecure) => {
+                    let _ = nav_proxy.send_event(AppEvent::HttpsInterstitial(tab_id, insecure));
+                    return false;
+                }
+                https_guard::Decision::Allow => {}
+            }
             if nav_url.starts_with("http://") || nav_url.starts_with("https://") {
                 let _ = nav_proxy.send_event(AppEvent::TabUrlChanged(tab_id, nav_url));
             }
@@ -1451,8 +1617,9 @@ fn create_tab_webview(
         .build()?;
 
     attach_f11_accelerator_hook(&wv, proxy.clone());
-    attach_native_webview2_hooks(&wv, tab_id, policy.adblock, proxy);
+    attach_native_webview2_hooks(&wv, tab_id, policy.adblock, !policy.images_enabled, proxy);
     apply_privacy_settings(&wv, global.save_passwords && !incognito, global.strict_tracking);
+    apply_site_settings(&wv, policy);
 
     if (policy.zoom - 1.0).abs() > f64::EPSILON {
         apply_tab_zoom(&wv, policy.zoom);
@@ -1559,6 +1726,27 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             match msg {
                 WM_NCCALCSIZE => {
                     if wparam.0 != 0 {
+                        // Client area = whole window (custom frame). When maximized, Windows places a
+                        // WS_THICKFRAME window ~8 px beyond every monitor edge; inset by the real frame size
+                        // for this window's DPI, or the top of the tab strip and the window buttons are clipped.
+                        if IsZoomed(hwnd).as_bool() {
+                            use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+                            use windows::Win32::UI::WindowsAndMessaging::{
+                                NCCALCSIZE_PARAMS, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
+                            };
+                            let dpi = GetDpiForWindow(hwnd).max(96);
+                            let pad = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                            let fx = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + pad;
+                            let fy = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + pad;
+                            let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+                            if !params.is_null() {
+                                let r = &mut (*params).rgrc[0];
+                                r.left += fx;
+                                r.right -= fx;
+                                r.top += fy;
+                                r.bottom -= fy;
+                            }
+                        }
                         return LRESULT(0);
                     }
                 }
@@ -1766,6 +1954,7 @@ fn main() -> wry::Result<()> {
 
     let ipc_token = generate_ipc_token();
     let mut global_settings = BrowserStorage::load_global_settings();
+    https_guard::global().set_enabled(global_settings.https_only);
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
     let mut history = BrowserStorage::load_history();
@@ -1900,6 +2089,32 @@ fn main() -> wry::Result<()> {
         }
     });
 
+    // Updates: remove the EXE left by a previous update, then check shortly after start and daily.
+    updater::global().cleanup_previous();
+    if global_settings.auto_update {
+        let px = proxy.clone();
+        rt_handle.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            loop {
+                check_for_updates().await;
+                let _ = px.send_event(AppEvent::RefreshChrome);
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+            }
+        });
+    }
+
+    // Ad blocking: load the cached engine instantly, refresh the lists in the background when a week old.
+    {
+        let px = proxy.clone();
+        rt_handle.spawn(async move {
+            let _ = tokio::task::spawn_blocking(|| blocker::global().load_cache()).await;
+            if blocker::global().is_stale() {
+                refresh_filter_lists().await;
+            }
+            let _ = px.send_event(AppEvent::RefreshChrome);
+        });
+    }
+
     // Probe FFmpeg once asynchronously on Tokio so push_chrome_state NEVER spawns a blocking subprocess on the UI thread!
     let ffmpeg_available_flag = Arc::new(AtomicBool::new(false));
     {
@@ -1916,7 +2131,7 @@ fn main() -> wry::Result<()> {
     let cached_scripts = Arc::new(std::sync::Mutex::new(list_user_scripts(&global_settings.approved_script_hashes)));
     let last_chrome_json = Arc::new(std::sync::Mutex::new(String::new()));
     let cached_scripts_for_push = cached_scripts.clone();
-    let push_chrome_state = move |_window: &Window,
+    let push_chrome_state = move |window: &Window,
                              chrome_wv: &WebView,
                              tabs: &[BrowserTab],
                              active_idx: usize,
@@ -1951,7 +2166,11 @@ fn main() -> wry::Result<()> {
             ffmpeg_available: ffmpeg_available_flag.load(Ordering::Relaxed),
             ffmpeg_status: ff_status,
             ytdlp_status: engine.ytdlp_install_status.lock().map(|s| s.clone()).unwrap_or_default(),
+            adblock_status: blocker::global().status(),
+            update_kind: update_kind_label().0.to_string(),
+            update_label: update_kind_label().1,
             is_fullscreen,
+            is_maximized: window.is_maximized(),
             has_closed_tabs,
             find_current,
             find_total,
@@ -2009,6 +2228,27 @@ fn main() -> wry::Result<()> {
                 ..
             } => {
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                // Keeps the maximize/restore icon and corner radius in sync (state push is de-duplicated).
+                push_chrome_state(
+                    &window,
+                    &chrome_wv,
+                    &tabs,
+                    active_tab_idx,
+                    split_tab_idx,
+                    &site_policies,
+                    &global_settings,
+                    blocked_count,
+                    &sniffed_streams,
+                    &bookmarks,
+                    &history,
+                    &duplicate_alert,
+                    !closed_tabs.is_empty(),
+                    find_current,
+                    find_total,
+                    site_data_cleared,
+                    is_fullscreen,
+                    &engine,
+                );
             }
 
             Event::WindowEvent {
@@ -2473,6 +2713,27 @@ fn main() -> wry::Result<()> {
                 blocked_count += 1;
             }
 
+            Event::UserEvent(AppEvent::NavigateTab(tab_id, target)) => {
+                if let Some(tab) = tabs.iter().find(|t| t.id == tab_id) {
+                    let _ = tab.webview.load_url(&target);
+                }
+            }
+
+            Event::UserEvent(AppEvent::NavigationDone(tab_id, success, cancelled)) => {
+                if let Some(insecure) = https_guard::global().on_navigation_done(tab_id, success, cancelled) {
+                    let _ = proxy.send_event(AppEvent::HttpsInterstitial(tab_id, insecure));
+                }
+            }
+
+            Event::UserEvent(AppEvent::HttpsInterstitial(tab_id, insecure)) => {
+                if let (Some(tab), Some(allow)) = (
+                    tabs.iter().find(|t| t.id == tab_id),
+                    https_guard::global().issue_allow_link(&insecure),
+                ) {
+                    show_html_in_tab(&tab.webview, &https_guard::interstitial_html(&insecure, &allow));
+                }
+            }
+
             Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
                 let active_tab = tabs.get(active_tab_idx);
                 let (ref_url, cookie_val, wv_opt) = active_tab
@@ -2787,6 +3048,40 @@ fn main() -> wry::Result<()> {
                             sniffed_streams.truncate(25);
                         }
                     }
+                } else if let Some(cos_json) = msg.strip_prefix("COSMETIC:") {
+                    // Element hiding for the top frame: page-specific rules plus generic rules for the
+                    // classes/ids the page actually uses. Page input only narrows which list rules apply.
+                    let tab_url = page_url.clone().unwrap_or_default();
+                    let host = extract_host(&tab_url);
+                    let adblock_on = site_policies.get(&host).map(|p| p.adblock).unwrap_or(true);
+                    if adblock_on && tab_url.starts_with("http") {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(cos_json) {
+                            let take = |k: &str| -> Vec<String> {
+                                val.get(k)
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|x| x.as_str())
+                                            .filter(|x| x.len() <= 120)
+                                            .take(2000)
+                                            .map(|x| x.to_string())
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            };
+                            let claimed = val.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                            let match_url = if extract_host(claimed) == host { claimed.to_string() } else { tab_url.clone() };
+                            let css = blocker::global().cosmetic_css(&match_url, &take("classes"), &take("ids"));
+                            if !css.is_empty() {
+                                if let (Some(tab), Ok(arg)) = (tabs.iter().find(|t| t.id == tab_id), serde_json::to_string(&css)) {
+                                    let _ = tab
+                                        .webview
+                                        .evaluate_script(&format!("window.__shunnoApplyCosmetic && window.__shunnoApplyCosmetic({});", arg));
+                                }
+                            }
+                        }
+                    }
+                    return;
                 } else if let Some(meta_json) = msg.strip_prefix("META:") {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(meta_json) {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -3177,6 +3472,11 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "auto_update" => global_settings.auto_update = !global_settings.auto_update,
+                        "https_only" => {
+                            global_settings.https_only = !global_settings.https_only;
+                            https_guard::global().set_enabled(global_settings.https_only);
+                        }
                         "save_passwords" | "strict_tracking" => {
                             if gkey == "save_passwords" {
                                 global_settings.save_passwords = !global_settings.save_passwords;
@@ -3194,6 +3494,38 @@ fn main() -> wry::Result<()> {
                         _ => {}
                     }
                     BrowserStorage::save_global_settings(&global_settings);
+                } else if cmd == "CHECK_UPDATES" {
+                    let px = proxy.clone();
+                    rt_handle.spawn(async move {
+                        check_for_updates().await;
+                        let _ = px.send_event(AppEvent::RefreshChrome);
+                    });
+                } else if cmd == "OPEN_RELEASES" {
+                    let opener = tabs.get(active_tab_idx).map(|t| t.id).unwrap_or(0);
+                    let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(opener, updater::RELEASES_PAGE.to_string()));
+                } else if cmd == "RESTART_FOR_UPDATE" {
+                    if matches!(updater::global().state(), updater::UpdateState::Ready { .. }) {
+                        let to_save: Vec<SavedTab> = tabs
+                            .iter()
+                            .filter(|t| !t.incognito)
+                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone() })
+                            .collect();
+                        BrowserStorage::save_session(&to_save);
+                        engine.save_queue();
+                        if let Ok(exe) = std::env::current_exe() {
+                            if Command::new(exe).spawn().is_ok() {
+                                *control_flow = ControlFlow::Exit;
+                                return;
+                            }
+                        }
+                    }
+                } else if cmd == "UPDATE_FILTERS" {
+                    blocker::global().set_status("Updating filter lists...".to_string());
+                    let px = proxy.clone();
+                    rt_handle.spawn(async move {
+                        refresh_filter_lists().await;
+                        let _ = px.send_event(AppEvent::RefreshChrome);
+                    });
                 } else if cmd == "CLEAR_PASSWORDS" {
                     if let Some(tab) = tabs.iter().find(|t| !t.incognito) {
                         clear_saved_passwords(&tab.webview);
@@ -3206,9 +3538,10 @@ fn main() -> wry::Result<()> {
                             "adblock" => pol.adblock = !pol.adblock,
                             "js_enabled" => pol.js_enabled = !pol.js_enabled,
                             "images_enabled" => pol.images_enabled = !pol.images_enabled,
-                            "desktop_ua" => pol.desktop_ua = !pol.desktop_ua,
+                            "mobile_ua" => pol.mobile_ua = !pol.mobile_ua,
                             "sponsorblock" => pol.sponsorblock = !pol.sponsorblock,
                             "auto_reject_cookies" => pol.auto_reject_cookies = !pol.auto_reject_cookies,
+                            "fp_protect" => pol.fp_protect = !pol.fp_protect,
                             _ => {}
                         }
                         let updated_pol = pol.clone();
