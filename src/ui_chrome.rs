@@ -94,13 +94,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Chrome/Safari-inspired Compass-Ring Logo */
   .brand-emblem {
-    width: 28px; height: 28px; border-radius: 50%;
+    width: 28px; height: 28px; border-radius: 7px;
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0; cursor: pointer;
     box-shadow: 0 2px 6px rgba(10, 132, 255, 0.28);
     transition: transform 0.28s var(--ease-spring);
   }
-  .brand-emblem:hover { transform: scale(1.08) rotate(12deg); }
+  .brand-emblem:hover { transform: scale(1.06); }
 
   #tabs-container {
     display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
@@ -613,23 +613,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <!-- 1. Borderless Tab Strip (No redundant top title bar!) -->
     <div class="tab-bar" id="tab-bar">
       <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-          <defs>
-            <linearGradient id="shunnoCompass" x1="2" y1="2" x2="26" y2="26" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#38C6FF"/>
-              <stop offset="52%" stop-color="#0A84FF"/>
-              <stop offset="100%" stop-color="#0442D6"/>
-            </linearGradient>
-            <linearGradient id="shunnoArc" x1="15" y1="5" x2="23" y2="13" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#FF4E42"/>
-              <stop offset="100%" stop-color="#FF942E"/>
-            </linearGradient>
-          </defs>
-          <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
-          <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
-          <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
-          <circle cx="14" cy="14" r="1.6" fill="white"/>
-        </svg>
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><defs><linearGradient id="shunnoTile" x1="0" y1="1.5" x2="0" y2="26.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#48B2FF"/><stop offset="100%" stop-color="#0062EB"/></linearGradient></defs><rect x="1.5" y="1.5" width="25" height="25" rx="7" fill="url(#shunnoTile)"/><path d="M20.72 12.45A6.9 6.9 0 1 1 15.55 7.28" stroke="white" stroke-width="2.9" stroke-linecap="round" fill="none"/><circle cx="18.88" cy="9.12" r="1.55" fill="#FFC43D"/></svg>
       </div>
       <div id="tabs-container"></div>
       <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">
@@ -740,12 +724,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
   <div class="home-canvas" id="home-canvas">
     <div class="home-hero">
-      <svg width="58" height="58" viewBox="0 0 28 28" fill="none">
-        <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
-        <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
-        <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
-        <circle cx="14" cy="14" r="1.6" fill="white"/>
-      </svg>
+      <svg width="58" height="58" viewBox="0 0 28 28" fill="none"><rect x="1.5" y="1.5" width="25" height="25" rx="7" fill="url(#shunnoTile)"/><path d="M20.72 12.45A6.9 6.9 0 1 1 15.55 7.28" stroke="white" stroke-width="2.9" stroke-linecap="round" fill="none"/><circle cx="18.88" cy="9.12" r="1.55" fill="#FFC43D"/></svg>
       <div class="home-search-box">
         <span style="font-size:16px;opacity:0.65;">🔎</span>
         <input class="home-search-input" id="home-search-input" placeholder="Search the web or enter website address..."
@@ -1344,7 +1323,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         const tabLogoHtml = t.incognito
           ? anonSvg
           : ((!hasAudio && (isNewTab || t.pinned))
-              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/><path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/><circle cx="14" cy="14" r="1.6" fill="white"/></svg></span>`
+              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="1.5" y="1.5" width="25" height="25" rx="7" fill="url(#shunnoTile)"/><path d="M20.72 12.45A6.9 6.9 0 1 1 15.55 7.28" stroke="white" stroke-width="2.9" stroke-linecap="round" fill="none"/><circle cx="18.88" cy="9.12" r="1.55" fill="#FFC43D"/></svg></span>`
               : '');
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
@@ -1503,6 +1482,24 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('IMPORT_BROWSER:' + i + ':' + what);
   }
 
+  // Report the toolbar's real height so the native layer places web pages flush beneath it.
+  (function reportChromeHeight() {
+    let last = 0;
+    const measure = () => {
+      const shell = document.querySelector('.chrome-shell');
+      if (!shell) return;
+      const h = Math.ceil(shell.getBoundingClientRect().bottom);
+      if (h > 0 && h !== last) { last = h; send('CHROME_H:' + h); }
+    };
+    const start = () => {
+      const shell = document.querySelector('.chrome-shell');
+      if (!shell) return;
+      if (window.ResizeObserver) new ResizeObserver(measure).observe(shell);
+      measure();
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  })();
+
   window.renderChromeState = function(state) {
     window.__shunnoLastState = state;
     window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
@@ -1597,6 +1594,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     // Home page canvas visibility when on shunno://newtab
     const isHome = state.active_url === 'shunno://newtab';
+    // Favorites bar only on the New Tab page (Safari); web pages get the full height.
+    document.getElementById('bookmarks-strip').style.display = isHome ? '' : 'none';
     const homeCanvas = document.getElementById('home-canvas');
     if (isHome) {
       homeCanvas.classList.add('active');
@@ -1712,7 +1711,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
-      ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
+      ['auto_clean', '🧹 Tidy Finished on Start', state.global.auto_clean_completed],
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups],
       ['https_only', '🔒 HTTPS Only', state.global.https_only],
@@ -1859,7 +1858,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     const statusBar = document.getElementById('dl-status-bar');
-    statusBar.style.display = state.downloads.length ? '' : 'none';
     statusBar.innerHTML = DL_STATUS_GROUPS.map(([k, label, f]) => {
       const n = state.downloads.filter(f).length;
       return `<button class="${activeDlStatus === k ? 'on' : ''}" onclick="setDlStatus('${k}')">${label}${k !== 'all' && n ? `<span class="n">${n}</span>` : ''}</button>`;

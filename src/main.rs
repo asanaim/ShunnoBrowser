@@ -36,6 +36,14 @@ use state::{
 };
 
 const CHROME_BAR_HEIGHT: f64 = 112.0;
+
+/// Actual toolbar height reported by the chrome UI (`CHROME_H:`), as f64 bits. The bookmarks bar is
+/// shown only on the New Tab page, and the maximized tab strip is taller, so the height varies.
+static CHROME_BAR_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x405C_0000_0000_0000); // 112.0
+
+fn chrome_bar_height() -> f64 {
+    f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
 const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
@@ -1709,27 +1717,38 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
 
-        // 2. Apply full-brightness embedded icon directly onto Window & Class (GCLP_HICON / WM_SETICON)
-        const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
-        if ICO_BYTES.len() >= 22 {
-            let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-            for i in 0..count {
-                let off = 6 + i * 16;
-                if off + 16 > ICO_BYTES.len() { break; }
-                let w = ICO_BYTES[off] as i32;
-                if w == 0 { continue; }
-                let sz = u32::from_le_bytes([ICO_BYTES[off + 8], ICO_BYTES[off + 9], ICO_BYTES[off + 10], ICO_BYTES[off + 11]]) as usize;
-                let img_off = u32::from_le_bytes([ICO_BYTES[off + 12], ICO_BYTES[off + 13], ICO_BYTES[off + 14], ICO_BYTES[off + 15]]) as usize;
-                if img_off + sz <= ICO_BYTES.len() {
-                    let slice = &ICO_BYTES[img_off..img_off + sz];
-                    if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                        if w == 48 || w == 32 {
-                            SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
-                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
-                        } else if w == 16 || w == 24 {
-                            SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon.0);
-                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0));
-                        }
+        // 2. Window/taskbar icons at the exact sizes Windows asks for at this DPI (32 px at 100%, 40 at
+        //    125%, 48 at 150%...). Handing Windows a 48 px icon at 100% made it downscale to a blurry 32.
+        {
+            use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+            use windows::Win32::UI::WindowsAndMessaging::{SM_CXICON, SM_CXSMICON};
+            const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+            let dpi = GetDpiForWindow(hwnd).max(96);
+            let entries: Vec<(i32, &[u8])> = (|| {
+                let count = u16::from_le_bytes([*ICO_BYTES.get(4)?, *ICO_BYTES.get(5)?]) as usize;
+                let mut v = Vec::new();
+                for i in 0..count {
+                    let e = ICO_BYTES.get(6 + i * 16..6 + i * 16 + 16)?;
+                    let w = if e[0] == 0 { 256 } else { e[0] as i32 };
+                    let sz = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+                    let off = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+                    v.push((w, ICO_BYTES.get(off..off + sz)?));
+                }
+                Some(v)
+            })()
+            .unwrap_or_default();
+            // Exact size if present, else the smallest larger one, else the largest.
+            let pick = |want: i32| -> Option<(i32, &[u8])> {
+                entries.iter().filter(|(w, _)| *w >= want).min_by_key(|(w, _)| *w)
+                    .or_else(|| entries.iter().max_by_key(|(w, _)| *w))
+                    .map(|(w, b)| (*w, *b))
+            };
+            for (metric, class_slot, which) in [(SM_CXICON, GCLP_HICON, ICON_BIG), (SM_CXSMICON, GCLP_HICONSM, ICON_SMALL)] {
+                let want = GetSystemMetricsForDpi(metric, dpi).max(16);
+                if let Some((_, bytes)) = pick(want) {
+                    if let Ok(hicon) = CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR) {
+                        SetClassLongPtrW(hwnd, class_slot, hicon.0);
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(hicon.0));
                     }
                 }
             }
@@ -1906,7 +1925,7 @@ fn layout_webviews(
     let is_max = window.is_maximized() || is_fs;
     let grip = if is_max { 0.0 } else { 3.0 };
 
-    let top_bar_h = if is_fs { 0.0 } else { CHROME_BAR_HEIGHT };
+    let top_bar_h = if is_fs { 0.0 } else { chrome_bar_height() };
     let inner_w = (w - grip * 2.0).max(200.0);
     let inner_h = (h - grip).max(200.0);
     let content_h = (inner_h - top_bar_h).max(80.0);
@@ -3823,6 +3842,15 @@ fn main() -> wry::Result<()> {
                     let _ = BrowserStorage::export_portable_txt_bookmarks(&bookmarks);
                 } else if cmd == "IMPORT_TXT_BOOKMARKS" {
                     let _ = BrowserStorage::import_portable_txt_bookmarks(&mut bookmarks);
+                } else if let Some(h) = cmd.strip_prefix("CHROME_H:") {
+                    if let Ok(h) = h.trim().parse::<f64>() {
+                        let h = h.clamp(40.0, 200.0).round();
+                        if (h - chrome_bar_height()).abs() >= 1.0 {
+                            CHROME_BAR_H_BITS.store(h.to_bits(), Ordering::Relaxed);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                    return;
                 } else if cmd == "IMPORT_SCAN" {
                     importer::scan();
                 } else if let Some(arg) = cmd.strip_prefix("IMPORT_BROWSER:") {
