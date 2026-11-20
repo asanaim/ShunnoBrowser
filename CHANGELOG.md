@@ -1,3 +1,11 @@
+## v2.16.1
+
+### Context menu
+* Select text, right-click: **Search <your default engine> for “…”** at the top of the menu. Opens in a new tab; from a private tab, a private tab. Always searches, even when the selection looks like a web address. Line breaks are collapsed; long selections are cut to 300 characters.
+
+### Fixes
+* The pop-up blocker matched ad-network names anywhere in a URL (so a search for one of them was blocked); it now matches the host only.
+
 ## v2.16.0
 
 ### Peek (from Arc)
