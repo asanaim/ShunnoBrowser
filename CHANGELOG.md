@@ -1,3 +1,13 @@
+## v2.17.0
+
+### Password manager
+* **Saves** after you sign in: a small prompt in the toolbar, "Save password for github.com?", with Save, Never (this site) and Not now. It never blocks the page. Changed passwords offer **Update**. Private tabs never save.
+* **Fills** from a menu under the login field listing your accounts for that site; the password goes into the page only when you pick one. Works with React and other script-driven forms.
+* **Passwords panel** (Menu, Passwords): search, show, copy username, copy password, edit, delete. Show and copy ask for Windows Hello.
+* **Import** CSV exports from Chrome, Edge, Brave, Opera, Vivaldi, Firefox and Bitwarden; the panel then offers to delete the plaintext CSV.
+* Encrypted with your Windows account (DPAPI); exact-site matching only. Details in docs/SECURITY.md.
+* WebView2's own password saver is turned off (one prompt, one store). Passwords it saved before cannot be exported; sign in once to save them to Shunno, or import a CSV.
+
 ## v2.16.1
 
 ### Context menu

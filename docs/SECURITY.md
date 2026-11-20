@@ -9,3 +9,13 @@
 7. **Verified helper tools.** ffmpeg and yt-dlp are downloaded over HTTPS and accepted only if their SHA-256 matches the publisher's checksum file. They run without a console window and are killed as a process tree on pause.
 8. **TLS.** `reqwest` uses native Windows TLS (SChannel via `native-tls`).
 9. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
+
+## Password vault (v2.17.0)
+
+* **Storage.** `%LOCALAPPDATA%\ShunnoBrowser\passwords.vault`, encrypted with Windows DPAPI (`CryptProtectData`, current-user scope, app-specific entropy). Another Windows account, or a copy of the file on another PC, cannot decrypt it. Malware running as the same Windows user can, as with every browser's local store.
+* **Matching.** Exact scheme, host and port; a leading `www.` is ignored. There is no cross-subdomain or registrable-domain matching, so `a.com.bd` never sees `b.com.bd` passwords, and `http://` never receives an `https://` password.
+* **Filling.** Focusing a login field sends only usernames to the page, inside a closed shadow root. The password is injected only after the user picks an account, and the site is re-checked at that moment. The page cannot replace the fill entry points (non-writable, non-configurable).
+* **Saving.** A submitted login only creates a pending offer; nothing is stored until the user clicks Save. Private tabs never offer to save. "Never" is remembered per site.
+* **Reveal and copy.** Gated by Windows Hello (PIN, face, fingerprint) with a 2-minute grace period. If Hello is not set up, the action proceeds and the panel recommends setting it up.
+* **CSV import.** Plaintext exports are read once; the panel offers to delete the file afterwards.
+* **WebView2's built-in saver is disabled** so there is one prompt and one store. Passwords it saved earlier cannot be exported through any WebView2 API; "Clear old built-in passwords" removes them.

@@ -4,6 +4,7 @@ mod blocker;
 mod downloader;
 mod https_guard;
 mod importer;
+mod passwords;
 mod updater;
 mod sanitizer;
 mod state;
@@ -74,6 +75,28 @@ fn search_engine_label() -> &'static std::sync::Mutex<String> {
     L.get_or_init(|| std::sync::Mutex::new(String::from("the web")))
 }
 
+/// Run `js` in the content web view with this id (a tab or the Peek).
+fn eval_in_tab(tabs: &[BrowserTab], tab_id: usize, js: &str) {
+    if let Some(t) = tabs.iter().find(|t| t.id == tab_id) {
+        let _ = t.webview.evaluate_script(js);
+    } else {
+        PEEK.with(|p| {
+            if let Some(k) = p.borrow().as_ref().filter(|k| k.id == tab_id) {
+                let _ = k.webview.evaluate_script(js);
+            }
+        });
+    }
+}
+
+/// Current origin of a content web view (from the engine, not from page-supplied data), and whether it is private.
+fn tab_origin(tabs: &[BrowserTab], tab_id: usize) -> Option<(String, bool)> {
+    let (url, private) = match tabs.iter().find(|t| t.id == tab_id) {
+        Some(t) => (t.webview.url().ok()?, t.incognito),
+        None => PEEK.with(|p| p.borrow().as_ref().filter(|k| k.id == tab_id).and_then(|k| Some((k.webview.url().ok()?, k.incognito))))?,
+    };
+    Some((passwords::origin_of(&url)?, private))
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -81,6 +104,8 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// Windows Hello answer for a Passwords panel action: (action, credential id, verified, hello unavailable).
+    PwAuthorized(&'static str, u64, bool, bool),
     /// Right-click → Search <engine> for the selected text (source tab id, raw selection).
     SearchSelection(usize, String),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
@@ -190,6 +215,10 @@ struct ChromeSnapshot {
     is_maximized: bool,
     import_sources: Vec<importer::ImportSource>,
     peek: Option<PeekView>,
+    pw_offer: Option<passwords::Offer>,
+    passwords: Vec<passwords::CredentialView>,
+    pw_status: String,
+    pw_csv_pending: bool,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -839,7 +868,9 @@ fn apply_privacy_settings(webview: &WebView, save_passwords: bool, strict_tracki
         let Ok(core) = webview.controller().CoreWebView2() else { return };
         if let Ok(settings) = core.Settings() {
             if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
-                let _ = s4.SetIsPasswordAutosaveEnabled(save_passwords);
+                // Passwords are handled by the Shunno vault (src/passwords.rs); WebView2's own saver
+                // would double-prompt and keep a second, unmanageable store.
+                let _ = s4.SetIsPasswordAutosaveEnabled(false);
                 let _ = s4.SetIsGeneralAutofillEnabled(save_passwords);
             }
         }
@@ -2169,6 +2200,8 @@ fn main() -> wry::Result<()> {
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
     let mut duplicate_alert: Option<DownloadTask> = None;
     let mut closed_tabs: Vec<SavedTab> = Vec::new();
+    // Last imported password CSV, so the Passwords panel can offer to delete it.
+    let mut pw_last_csv: Option<std::path::PathBuf> = None;
     let mut find_current: usize = 0;
     let mut find_total: usize = 0;
     let mut had_active_downloads = false;
@@ -2343,6 +2376,10 @@ fn main() -> wry::Result<()> {
                 }
                 importer::ui_snapshot().0
             },
+            pw_offer: passwords::global().offer.lock().map(|o| o.clone()).unwrap_or(None),
+            passwords: passwords::global().with(|v| (v.views(), false)),
+            pw_status: passwords::global().status.lock().map(|s| s.clone()).unwrap_or_default(),
+            pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
                     url: k.webview.url().unwrap_or_default(),
@@ -2949,6 +2986,24 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(source_tab, url));
             }
 
+            Event::UserEvent(AppEvent::PwAuthorized(action, id, ok, unavailable)) => {
+                let vault = passwords::global();
+                if !ok {
+                    vault.set_status("Not verified.");
+                } else {
+                    vault.unlock_for(120);
+                    if let Some(c) = vault.with(|v| (v.get(id).cloned(), false)) {
+                        if action == "reveal" {
+                            let _ = chrome_wv.evaluate_script(&format!("window.__pwReveal && window.__pwReveal({}, {});", id, serde_json::Value::String(c.password)));
+                            vault.set_status(if unavailable { "Tip: set up Windows Hello (Settings > Accounts > Sign-in options) so passwords need your PIN or face to show." } else { "" });
+                        } else if passwords::set_clipboard(&c.password) {
+                            vault.set_status(if unavailable { "Password copied. Tip: set up Windows Hello to protect this." } else { "Password copied." });
+                        }
+                    }
+                }
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
             Event::UserEvent(AppEvent::AdBlocked) => {
                 blocked_count += 1;
             }
@@ -3131,6 +3186,46 @@ fn main() -> wry::Result<()> {
                             }
                         }
                     }
+                } else if let Some(json) = msg.strip_prefix("PW_OFFER:") {
+                    // Never offer in private tabs or when the manager is off.
+                    if let (true, Some((origin, false))) = (global_settings.save_passwords, tab_origin(&tabs, tab_id)) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                            let user = v.get("u").and_then(|x| x.as_str()).unwrap_or("").chars().take(256).collect::<String>();
+                            let pass = v.get("p").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            if pass.len() <= 1024 {
+                                if let Some(kind) = passwords::global().with(|vd| (vd.offer_kind(&origin, &user, &pass), false)) {
+                                    if let Ok(mut o) = passwords::global().offer.lock() {
+                                        *o = Some(passwords::Offer { origin, username: user, password: pass, kind });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if msg == "PW_QUERY" {
+                    if !global_settings.save_passwords {
+                        return;
+                    }
+                    let Some((origin, _)) = tab_origin(&tabs, tab_id) else { return };
+                    let list = passwords::global().with(|v| (v.accounts_for(&origin), false));
+                    if list.is_empty() {
+                        return;
+                    }
+                    let arr: Vec<serde_json::Value> = list.into_iter().map(|(id, u)| serde_json::json!({ "id": id, "u": u })).collect();
+                    eval_in_tab(&tabs, tab_id, &format!("window.__shunnoPwAccounts && window.__shunnoPwAccounts({});", serde_json::Value::Array(arr)));
+                    return;
+                } else if let Some(id) = msg.strip_prefix("PW_FILL:") {
+                    // Re-check the site at fill time: the page may have navigated since the menu opened.
+                    let (Ok(id), Some((origin, _))) = (id.parse::<u64>(), tab_origin(&tabs, tab_id)) else { return };
+                    let cred = passwords::global().with(|v| (v.get(id).cloned(), false));
+                    if let Some(c) = cred.filter(|c| passwords::same_site(&c.origin, &origin)) {
+                        let js = format!(
+                            "window.__shunnoPwFill && window.__shunnoPwFill({}, {});",
+                            serde_json::Value::String(c.username),
+                            serde_json::Value::String(c.password)
+                        );
+                        eval_in_tab(&tabs, tab_id, &js);
+                    }
+                    return;
                 } else if msg == "KEY_ESC" {
                     if peek_id() == Some(tab_id) && close_peek() {
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
@@ -3877,6 +3972,111 @@ fn main() -> wry::Result<()> {
                         refresh_filter_lists().await;
                         let _ = px.send_event(AppEvent::RefreshChrome);
                     });
+                } else if cmd == "PW_SAVE" || cmd == "PW_NEVER" || cmd == "PW_DISMISS" {
+                    let offer = passwords::global().offer.lock().ok().and_then(|mut o| o.take());
+                    if let Some(o) = offer {
+                        if cmd == "PW_SAVE" {
+                            passwords::global().with(|v| {
+                                v.upsert(&o.origin, &o.username, &o.password);
+                                ((), true)
+                            });
+                        } else if cmd == "PW_NEVER" {
+                            passwords::global().with(|v| {
+                                v.add_never(&o.origin);
+                                ((), true)
+                            });
+                        }
+                    }
+                } else if let Some(id) = cmd.strip_prefix("PW_DELETE:") {
+                    if let Ok(id) = id.parse::<u64>() {
+                        passwords::global().with(|v| {
+                            let changed = v.remove(id);
+                            ((), changed)
+                        });
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("PW_EDIT:") {
+                    // PW_EDIT:<id>|{"u":..,"p":..}
+                    if let Some((id, json)) = arg.split_once('|') {
+                        if let (Ok(id), Ok(v)) = (id.parse::<u64>(), serde_json::from_str::<serde_json::Value>(json)) {
+                            let u = v.get("u").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let p = v.get("p").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let ok = passwords::global().with(|vd| {
+                                let ok = vd.edit(id, &u, &p);
+                                (ok, ok)
+                            });
+                            passwords::global().set_status(if ok { "Saved." } else { "Not saved: empty password, or that username already exists for this site." });
+                        }
+                    }
+                } else if let Some(id) = cmd.strip_prefix("PW_COPY_USER:") {
+                    if let Some(c) = id.parse::<u64>().ok().and_then(|id| passwords::global().with(|v| (v.get(id).cloned(), false))) {
+                        if passwords::set_clipboard(&c.username) {
+                            passwords::global().set_status("Username copied.");
+                        }
+                    }
+                } else if let Some((action, id)) = cmd
+                    .strip_prefix("PW_REVEAL:")
+                    .map(|i| ("reveal", i))
+                    .or_else(|| cmd.strip_prefix("PW_COPY:").map(|i| ("copy", i)))
+                {
+                    if let Ok(id) = id.parse::<u64>() {
+                        if passwords::global().is_unlocked() {
+                            let _ = proxy.send_event(AppEvent::PwAuthorized(action, id, true, false));
+                        } else {
+                            // Windows Hello blocks until answered: ask on a worker thread.
+                            #[cfg(windows)]
+                            let hwnd = {
+                                use tao::platform::windows::WindowExtWindows;
+                                window.hwnd() as isize
+                            };
+                            #[cfg(not(windows))]
+                            let hwnd = 0isize;
+                            let px = proxy.clone();
+                            std::thread::spawn(move || {
+                                let r = passwords::verify_user(hwnd, "Shunno Browser wants to show a saved password.");
+                                let (ok, unavailable) = match r {
+                                    passwords::HelloResult::Verified => (true, false),
+                                    passwords::HelloResult::Unavailable => (true, true),
+                                    passwords::HelloResult::Denied => (false, false),
+                                };
+                                let _ = px.send_event(AppEvent::PwAuthorized(action, id, ok, unavailable));
+                            });
+                        }
+                    }
+                } else if cmd == "PW_IMPORT" {
+                    #[cfg(windows)]
+                    let hwnd = {
+                        use tao::platform::windows::WindowExtWindows;
+                        window.hwnd() as isize
+                    };
+                    #[cfg(not(windows))]
+                    let hwnd = 0isize;
+                    if let Some(path) = passwords::pick_csv(hwnd) {
+                        let msg = match std::fs::read(&path) {
+                            Ok(bytes) => match passwords::global().with(|v| {
+                                let r = v.import_csv(&String::from_utf8_lossy(&bytes));
+                                let dirty = r.as_ref().map(|(a, u, _)| a + u > 0).unwrap_or(false);
+                                (r, dirty)
+                            }) {
+                                Ok((a, u, sk)) => {
+                                    pw_last_csv = Some(path.clone());
+                                    passwords::global().csv_pending.store(true, Ordering::Relaxed);
+                                    format!("Imported {a} new, updated {u}, skipped {sk}. The CSV file holds your passwords in plain text: delete it.")
+                                }
+                                Err(e) => e,
+                            },
+                            Err(e) => format!("Could not read the file: {e}"),
+                        };
+                        passwords::global().set_status(msg);
+                    }
+                } else if cmd == "PW_DELETE_CSV" {
+                    passwords::global().csv_pending.store(false, Ordering::Relaxed);
+                    if let Some(path) = pw_last_csv.take() {
+                        let msg = match std::fs::remove_file(&path) {
+                            Ok(()) => format!("Deleted {}.", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                            Err(e) => format!("Could not delete the CSV: {e}"),
+                        };
+                        passwords::global().set_status(msg);
+                    }
                 } else if cmd == "CLEAR_PASSWORDS" {
                     if let Some(tab) = tabs.iter().find(|t| !t.incognito) {
                         clear_saved_passwords(&tab.webview);

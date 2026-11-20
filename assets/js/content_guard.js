@@ -1487,4 +1487,128 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !document.fullscreenElement) postSecure('KEY_ESC');
   }, true);
+
+  // ---------------------------------------------------------------- Password manager (Shunno vault)
+  // Saves: a submitted login posts PW_OFFER; the browser asks the user before storing anything.
+  // Fills: focusing a login field asks for usernames only; the password reaches the page only after
+  // the user picks an account in the menu.
+  (function passwordManager() {
+    if (!/^https?:$/.test(location.protocol)) return;
+    const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const pwFieldsIn = (scope) => Array.from((scope || document).querySelectorAll('input[type=password]')).filter(shown);
+    const isTextLike = (el) => el instanceof HTMLInputElement && /^(text|email|tel|)$/i.test(el.getAttribute('type') || '');
+    function userFieldFor(pw) {
+      const scope = pw.form || document;
+      const cands = Array.from(scope.querySelectorAll('input')).filter((el) => isTextLike(el) && shown(el));
+      let best = null;
+      for (const c of cands) if (c.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING) best = c;
+      return best || cands[0] || null;
+    }
+    let lastOffer = '';
+    function capture(fromEl) {
+      const scope = (fromEl && (fromEl.form || (fromEl.closest && fromEl.closest('form')))) || null;
+      const filled = pwFieldsIn(scope).filter((p) => p.value);
+      if (!filled.length) return;
+      // Sign-up and change-password forms: the last filled password field is the new one.
+      const pw = filled[filled.length - 1];
+      const u = userFieldFor(pw);
+      const payload = JSON.stringify({ u: u ? u.value.trim() : '', p: pw.value });
+      if (payload === lastOffer) return;
+      lastOffer = payload;
+      postSecure('PW_OFFER:' + payload);
+    }
+    document.addEventListener('submit', (e) => capture(e.target && e.target.querySelector ? e.target.querySelector('input[type=password]') || e.target : null), true);
+    document.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest ? e.target.closest('button, input[type=submit], [role=button]') : null;
+      if (!b) return;
+      const form = b.form || b.closest('form');
+      const pw = (form && form.querySelector('input[type=password]')) || document.querySelector('input[type=password]');
+      if (pw && pw.value) capture(pw);
+    }, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target && e.target.type === 'password' && e.target.value) capture(e.target);
+    }, true);
+
+    // ---- fill menu
+    let field = null, host = null, root = null, hideTimer = 0;
+    function closeMenu() { if (host) host.style.display = 'none'; }
+    function ensureMenu() {
+      if (host) return;
+      host = document.createElement('div');
+      host.style.cssText = 'position:fixed;z-index:2147483647;display:none;';
+      root = host.attachShadow({ mode: 'closed' });
+      const css = new CSSStyleSheet();
+      css.replaceSync(`
+        .m{min-width:220px;max-width:340px;background:#fff;color:#1d1d1f;border-radius:10px;padding:4px;
+           box-shadow:0 10px 30px rgba(0,0,0,.18),0 0 0 .5px rgba(0,0,0,.12);font:13px -apple-system,"Segoe UI",sans-serif}
+        .h{font-size:11px;color:#6e6e73;padding:5px 9px 3px}
+        .i{display:flex;gap:8px;align-items:center;padding:7px 9px;border-radius:7px;cursor:pointer}
+        .i:hover{background:#0a84ff;color:#fff}
+        .k{width:20px;height:20px;border-radius:5px;background:#0a84ff1f;display:flex;align-items:center;justify-content:center;font-size:11px}
+        .u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        @media (prefers-color-scheme: dark){.m{background:#2c2c2e;color:#f5f5f7}}`);
+      root.adoptedStyleSheets = [css];
+      // Created on focus, so the page body exists; <head> children are never rendered.
+      (document.body || document.documentElement).appendChild(host);
+    }
+    function place() {
+      if (!field || !host) return;
+      const r = field.getBoundingClientRect();
+      host.style.left = Math.max(4, r.left) + 'px';
+      host.style.top = (r.bottom + 4) + 'px';
+    }
+    window.addEventListener('scroll', () => { if (host && host.style.display !== 'none') place(); }, true);
+    document.addEventListener('focusin', (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLInputElement)) return;
+      const isPw = t.type === 'password';
+      const hasPwNear = (t.form ? t.form.querySelector('input[type=password]') : document.querySelector('input[type=password]'));
+      if (!isPw && !(isTextLike(t) && hasPwNear)) return;
+      field = t;
+      postSecure('PW_QUERY');
+    }, true);
+    document.addEventListener('focusout', () => { clearTimeout(hideTimer); hideTimer = setTimeout(closeMenu, 180); }, true);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); }, true);
+
+    function setValue(el, v) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const accounts = function (list) {
+      if (!field || !Array.isArray(list) || !list.length || !document.contains(field)) return;
+      ensureMenu();
+      const m = document.createElement('div');
+      m.className = 'm';
+      const h = document.createElement('div');
+      h.className = 'h';
+      h.textContent = 'Shunno Passwords';
+      m.appendChild(h);
+      list.forEach((a) => {
+        const i = document.createElement('div');
+        i.className = 'i';
+        const k = document.createElement('span'); k.className = 'k'; k.textContent = '🔑';
+        const u = document.createElement('span'); u.className = 'u'; u.textContent = a.u || '(no username)';
+        i.appendChild(k); i.appendChild(u);
+        i.addEventListener('mousedown', (ev) => { ev.preventDefault(); postSecure('PW_FILL:' + a.id); closeMenu(); });
+        m.appendChild(i);
+      });
+      root.replaceChildren(m);
+      host.style.display = 'block';
+      place();
+    };
+    const fill = function (u, p) {
+      const pw = (field && field.type === 'password' && field) || (field && field.form && field.form.querySelector('input[type=password]')) || pwFieldsIn(null)[0];
+      if (!pw) return;
+      const uf = (field && field.type !== 'password' && field) || userFieldFor(pw);
+      if (uf && u) setValue(uf, u);
+      setValue(pw, p);
+    };
+    // Fixed entry points the browser calls; pages cannot replace them.
+    try {
+      Object.defineProperty(window, '__shunnoPwAccounts', { value: accounts, writable: false, configurable: false });
+      Object.defineProperty(window, '__shunnoPwFill', { value: fill, writable: false, configurable: false });
+    } catch (e) {}
+  })();
 })();
