@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.9.0";
+pub const APP_VERSION: &str = "v2.9.2";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {

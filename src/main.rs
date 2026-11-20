@@ -828,7 +828,8 @@ fn attach_native_webview2_hooks(
         };
         if let Ok(core4) = core.cast::<ICoreWebView2_4>() {
             let mut dl_token = Default::default();
-                    let dl_handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+            let dl_proxy = proxy.clone();
+            let dl_handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
                 let Some(args) = args else { return Ok(()); };
                 let Ok(op) = args.DownloadOperation() else { return Ok(()); };
 
@@ -946,7 +947,10 @@ fn attach_native_webview2_hooks(
             let _ = core4.add_DownloadStarting(&dl_handler, &mut dl_token);
         }
 
-        // 4. Native WebView2 ContextMenuRequested Hook: Replace "Open link in new window" with "Open link in new tab"
+        // 4. Native WebView2 ContextMenuRequested Hook:
+        //    - Replace "Open link in new window" with "Open link in new tab"
+        //    - Add "Download link with Shunno" on all HTTP(S) webpage links
+        //    - Add "Download media with Shunno" on right-clicked media/image sources
         use webview2_com::ContextMenuRequestedEventHandler;
         use webview2_com::CustomItemSelectedEventHandler;
         use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -958,47 +962,98 @@ fn attach_native_webview2_hooks(
             let ctx_handler = ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
                 let Some(args) = args else { return Ok(()); };
                 let Ok(target) = args.ContextMenuTarget() else { return Ok(()); };
+                let Ok(items) = args.MenuItems() else { return Ok(()); };
+
+                let mut insert_pos = 0u32;
+                let mut added_link_uri = String::new();
+
                 let mut has_link = windows::Win32::Foundation::BOOL::default();
                 let _ = target.HasLinkUri(&mut has_link);
                 if has_link.as_bool() {
                     let mut link_ptr = windows::core::PWSTR::null();
                     if target.LinkUri(&mut link_ptr).is_ok() {
                         let link_uri = webview2_com::take_pwstr(link_ptr);
-                        if link_uri.starts_with("http") {
-                            if let Ok(items) = args.MenuItems() {
-                                let mut count = 0u32;
-                                let _ = items.Count(&mut count);
-                                let mut idx = 0u32;
-                                while idx < count {
-                                    if let Ok(item) = items.GetValueAtIndex(idx) {
-                                        let mut name_ptr = windows::core::PWSTR::null();
-                                        if item.Name(&mut name_ptr).is_ok() {
-                                            let name = webview2_com::take_pwstr(name_ptr);
-                                            if name.eq_ignore_ascii_case("openLinkInNewWindow") {
-                                                let _ = items.RemoveValueAtIndex(idx);
-                                                count -= 1;
-                                                continue;
-                                            }
+                        if link_uri.starts_with("http://") || link_uri.starts_with("https://") {
+                            let mut count = 0u32;
+                            let _ = items.Count(&mut count);
+                            let mut idx = 0u32;
+                            while idx < count {
+                                if let Ok(item) = items.GetValueAtIndex(idx) {
+                                    let mut name_ptr = windows::core::PWSTR::null();
+                                    if item.Name(&mut name_ptr).is_ok() {
+                                        let name = webview2_com::take_pwstr(name_ptr);
+                                        if name.eq_ignore_ascii_case("openLinkInNewWindow") {
+                                            let _ = items.RemoveValueAtIndex(idx);
+                                            count -= 1;
+                                            continue;
                                         }
                                     }
-                                    idx += 1;
                                 }
+                                idx += 1;
+                            }
 
-                                if let Ok(new_tab_item) = env9.CreateContextMenuItem(
-                                    w!("Open link in new tab"),
-                                    None::<&IStream>,
-                                    COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
-                                ) {
-                                    let mut sel_token = Default::default();
-                                    let sel_proxy = ctx_proxy.clone();
-                                    let sel_uri = link_uri.clone();
-                                    let sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
-                                        let _ = sel_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(sel_uri.clone()));
-                                        Ok(())
-                                    }));
-                                    let _ = new_tab_item.add_CustomItemSelected(&sel_handler, &mut sel_token);
-                                    let _ = items.InsertValueAtIndex(0, &new_tab_item);
-                                }
+                            if let Ok(new_tab_item) = env9.CreateContextMenuItem(
+                                w!("Open link in new tab"),
+                                None::<&IStream>,
+                                COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                            ) {
+                                let mut sel_token = Default::default();
+                                let sel_proxy = ctx_proxy.clone();
+                                let sel_uri = link_uri.clone();
+                                let sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = sel_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(sel_uri.clone()));
+                                    Ok(())
+                                }));
+                                let _ = new_tab_item.add_CustomItemSelected(&sel_handler, &mut sel_token);
+                                let _ = items.InsertValueAtIndex(insert_pos, &new_tab_item);
+                                insert_pos += 1;
+                            }
+
+                            if let Ok(dl_link_item) = env9.CreateContextMenuItem(
+                                w!("Download link with Shunno"),
+                                None::<&IStream>,
+                                COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                            ) {
+                                let mut dl_sel_token = Default::default();
+                                let dl_sel_proxy = ctx_proxy.clone();
+                                let dl_sel_uri = link_uri.clone();
+                                let dl_sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = dl_sel_proxy.send_event(AppEvent::DownloadIntercepted(dl_sel_uri.clone()));
+                                    Ok(())
+                                }));
+                                let _ = dl_link_item.add_CustomItemSelected(&dl_sel_handler, &mut dl_sel_token);
+                                let _ = items.InsertValueAtIndex(insert_pos, &dl_link_item);
+                                insert_pos += 1;
+                            }
+
+                            added_link_uri = link_uri;
+                        }
+                    }
+                }
+
+                let mut has_src = windows::Win32::Foundation::BOOL::default();
+                let _ = target.HasSourceUri(&mut has_src);
+                if has_src.as_bool() {
+                    let mut src_ptr = windows::core::PWSTR::null();
+                    if target.SourceUri(&mut src_ptr).is_ok() {
+                        let src_uri = webview2_com::take_pwstr(src_ptr);
+                        if (src_uri.starts_with("http://") || src_uri.starts_with("https://"))
+                            && src_uri != added_link_uri
+                        {
+                            if let Ok(dl_media_item) = env9.CreateContextMenuItem(
+                                w!("Download media with Shunno"),
+                                None::<&IStream>,
+                                COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                            ) {
+                                let mut m_token = Default::default();
+                                let m_proxy = ctx_proxy.clone();
+                                let m_uri = src_uri.clone();
+                                let m_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = m_proxy.send_event(AppEvent::DownloadIntercepted(m_uri.clone()));
+                                    Ok(())
+                                }));
+                                let _ = dl_media_item.add_CustomItemSelected(&m_handler, &mut m_token);
+                                let _ = items.InsertValueAtIndex(insert_pos, &dl_media_item);
                             }
                         }
                     }
@@ -1036,7 +1091,6 @@ fn create_tab_webview(
     let init_script = build_content_init_script(policy, global, ipc_token, &user_js);
 
     let ipc_proxy = proxy.clone();
-    let dl_proxy = proxy.clone();
     let win_proxy = proxy.clone();
     let title_proxy = proxy.clone();
     let nav_proxy = proxy.clone();

@@ -976,8 +976,10 @@ impl NativeDownloadEngine {
         let flags_ref = self.active_flags.clone();
         let limit_ref = self.speed_limit_bps.clone();
         let auto_clean_ref = self.auto_clean_completed.clone();
+        let ua_str = self.current_user_agent();
 
         rt.spawn(async move {
+            let _ = &ua_str;
             let safe_part_name = sanitize_download_filename(&task.file_name);
             let part_path = Self::parts_dir().join(format!("{}_{}.part", task.id, safe_part_name));
             let res = if task.url.to_ascii_lowercase().contains(".m3u8") {

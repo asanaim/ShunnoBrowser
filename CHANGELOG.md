@@ -1,3 +1,11 @@
+## v2.9.2 (2026-11-20)
+- Added native right-click **"Download link with Shunno"** context menu item on all HTTP/HTTPS webpage links (`ICoreWebView2_11::add_ContextMenuRequested`), routing directly into `NativeDownloadEngine` with full `HttpOnly` cookie sync and live `⚡ Downloads` panel tracking.
+- Added **"Download media with Shunno"** context menu item when right-clicking images, videos, or audio sources (`HasSourceUri` / `SourceUri`).
+
+## v2.9.1 (2026-11-20)
+- Fixed the 3 `dl_proxy` scope errors in `attach_native_webview2_hooks` (`src/main.rs:880, 889, 917`) and removed the 1 unused `dl_proxy` variable warning in `create_tab_webview` (`src/main.rs:1039`).
+- Wired `current_user_agent()` in `NativeDownloadEngine::spawn_worker` (`src/downloader.rs`) for zero compiler warnings.
+
 ## v2.9.0 (2026-11-20)
 - **Guaranteed Working Hybrid Download Engine (`src/main.rs`, `src/downloader.rs`):** Bridged WebView2's native `ICoreWebView2_4::add_DownloadStarting` (`ICoreWebView2DownloadOperation`) directly into Shunno's `⚡ Downloads` panel (with live bytes, speed, category routing, and SHA-256 verification) so clicks on Google Drive, HubDrive, HubCloud, Cloudflare, POST forms, and `blob:` links download with 100% reliability; also synced live `navigator.userAgent` into the 32-thread parallel accelerator.
 - **Floating 10%-Transparent Menu & Downloads (`src/ui_chrome.rs`, `src/main.rs`):** Removed page splitting so Menu (`•••`) and Downloads (`⚡`) float cleanly over the full-width webpage at 10% transparency (`90%` opaque frosted surface) using explicit Win32 sibling HWND z-ordering (`bring_chrome_above_tabs`).
