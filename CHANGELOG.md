@@ -1,3 +1,13 @@
+## v2.14.2
+
+### Downloads
+* Audio-only downloads from YouTube and other yt-dlp sites: the floating bar lists **Audio, original quality** (best stream, original codec, no re-encode) and **Audio as FLAC** (lossless re-encode of that stream). Requires FFmpeg, installed automatically.
+* Audio categories split: **Audio** (MP3, M4A, AAC, Opus, Ogg) and **Lossless Audio** (FLAC, ALAC, WAV, AIFF, APE). Previously all audio was labelled lossless.
+* Video and audio of the same page no longer count as duplicates of each other.
+
+### UI
+* Switches are blue when on.
+
 ## v2.14.1
 
 ### Fixes

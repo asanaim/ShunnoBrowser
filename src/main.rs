@@ -624,7 +624,7 @@ fn dispatch_download_with_httponly_cookies(
             if let Ok(core) = controller.CoreWebView2() {
                 if let Ok(core2) = core.cast::<ICoreWebView2_2>() {
                     if let Ok(cookie_mgr) = core2.CookieManager() {
-                        let cookie_uri = url.strip_prefix(downloader::YTDLP_PREFIX).unwrap_or(&url);
+                        let cookie_uri = downloader::split_route_prefix(&url).1;
                         let wide_uri: Vec<u16> = cookie_uri.encode_utf16().chain(Some(0)).collect();
                         let url_cb = url.clone();
                         let ref_cb = referer.clone();
@@ -2959,12 +2959,19 @@ fn main() -> wry::Result<()> {
                         let dl_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let threads = val.get("threads").and_then(|v| v.as_u64()).unwrap_or(16) as usize;
                         // "page": the player streams via blob:/MSE, so let yt-dlp resolve the page URL.
-                        let via_page = val.get("via").and_then(|v| v.as_str()) == Some("page");
+                        // "page-audio" / "page-flac": the same, extracting audio only.
+                        let via = val.get("via").and_then(|v| v.as_str()).unwrap_or("");
+                        let route_prefix = match via {
+                            "page" => Some(downloader::YTDLP_PREFIX),
+                            "page-audio" => Some(downloader::YTDLP_AUDIO_PREFIX),
+                            "page-flac" => Some(downloader::YTDLP_FLAC_PREFIX),
+                            _ => None,
+                        };
                         let referer = val.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let cookie = val.get("cookie").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                         if dl_url.starts_with("http") && page_may_target(page_url.as_deref(), &dl_url) {
                             let wv_opt = tabs.iter().find(|t| t.id == tab_id).map(|t| &t.webview);
-                            let routed = if via_page { format!("{}{}", downloader::YTDLP_PREFIX, dl_url) } else { dl_url };
+                            let routed = match route_prefix { Some(p) => format!("{p}{dl_url}"), None => dl_url };
                             dispatch_download_with_httponly_cookies(
                                 wv_opt,
                                 routed,

@@ -1017,12 +1017,18 @@
       });
       const title = (document.title || (isAud ? 'Audio' : 'Video')).replace(' - YouTube', '').trim();
       if (!hasDirectFile || isYouTube) {
-        items.push({
-          url: location.href,
-          ext: isAud ? '.AUDIO' : '.VIDEO',
-          name: (isYouTube ? 'Best quality: ' : 'This ' + (isAud ? 'audio' : 'video') + ': ') + title,
-          via: 'page'
-        });
+        if (!isAud) {
+          items.push({
+            url: location.href,
+            ext: '.VIDEO',
+            name: (isYouTube ? 'Best quality: ' : 'This video: ') + title,
+            via: 'page'
+          });
+        }
+        // Audio only, resolved by yt-dlp from the page. Original keeps the source codec (no re-encode);
+        // FLAC is a lossless copy of that decoded audio, larger but not higher quality.
+        items.push({ url: location.href, ext: '.AUDIO', name: 'Audio, original quality: ' + title, via: 'page-audio' });
+        items.push({ url: location.href, ext: '.FLAC', name: 'Audio as FLAC: ' + title, via: 'page-flac' });
       }
       if (hasDirectFile && !items.some(x => x.url === directSrc)) {
         items.push({ url: directSrc, ext: isAud ? '.M4A' : '.MP4', name: title });
