@@ -367,7 +367,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.22s var(--ease-fluid);
   }
-  .switch.on { background: var(--green); }
+  .switch.on { background: var(--blue); }
   .switch.on > i { transform: translateX(14px); }
   .floating-sheet[data-panel="bookmarks"] { width: 420px; }
   .sheet-scroll .card {
@@ -404,6 +404,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .dl-icon b { font-size: 7.5px; font-weight: 800; letter-spacing: 0.02em; color: #fff; padding: 1px 3px; border-radius: 3px; background: var(--muted); max-width: 30px; overflow: hidden; }
   .dl-icon.c-video b { background: #AF52DE; } .dl-icon.c-audio b { background: #FF2D55; }
+  .dl-icon.c-lossless b { background: #FF9500; }
   .dl-icon.c-archive b { background: #A2845E; } .dl-icon.c-program b { background: #5856D6; }
   .dl-icon.c-doc b { background: #0A84FF; }
   .dl-main { flex: 1; min-width: 0; }
@@ -1002,6 +1003,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function dlIconClass(cat) {
     const c = String(cat || '').toLowerCase();
     if (c.includes('video')) return 'c-video';
+    if (c.includes('lossless')) return 'c-lossless';
     if (c.includes('audio')) return 'c-audio';
     if (c.includes('archive')) return 'c-archive';
     if (c.includes('program')) return 'c-program';
@@ -1849,7 +1851,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       return `<button class="${activeDlStatus === k ? 'on' : ''}" onclick="setDlStatus('${k}')">${label}${k !== 'all' && n ? `<span class="n">${n}</span>` : ''}</button>`;
     }).join('');
 
-    const dlCats = ['All', 'Videos', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
+    const dlCats = ['All', 'Videos', 'Audio', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
     const catBar = document.getElementById('dl-category-bar');
     catBar.style.display = state.downloads.length >= 6 ? '' : 'none';
     if (catBar.style.display === 'none') activeDlCategory = 'All';
@@ -1880,7 +1882,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             break;
           }
           case 'QUEUED': sub = 'Waiting\u2026'; bar = '<div class="dl-bar paused"><i style="width:0%"></i></div>'; break;
-          case 'MUXING': sub = 'Merging audio and video\u2026'; bar = '<div class="dl-bar"><i style="width:100%"></i></div>'; break;
+          case 'MUXING': sub = /audio\]/i.test(d.segment_map || '') ? 'Converting audio\u2026' : 'Merging audio and video\u2026'; bar = '<div class="dl-bar"><i style="width:100%"></i></div>'; break;
           case 'PAUSED': sub = `Paused \u2014 ${ofTotal}`; bar = `<div class="dl-bar paused"><i style="width:${pct}%"></i></div>`; break;
           case 'FAILED': sub = d.error_message || 'Failed'; subCls = 'err'; break;
           case 'COMPLETED': sub = `${fmtBytes(d.total_bytes > 0 ? d.total_bytes : d.downloaded_bytes)} \u00b7 ${(d.url.match(/^https?:\/\/([^/]+)/) || [])[1] || ''}`; break;

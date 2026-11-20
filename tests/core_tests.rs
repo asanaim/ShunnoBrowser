@@ -58,6 +58,9 @@ fn test_filename_sanitization_and_reserved_names() {
     assert_eq!(sanitize_download_filename("NUL"), "_NUL");
     assert_eq!(sanitize_download_filename("payload.js"), "payload.js.download");
     assert_eq!(detect_download_category("track01.flac"), "Lossless Audio");
+    assert_eq!(detect_download_category("song.mp3"), "Audio");
+    assert_eq!(detect_download_category("talk.opus"), "Audio");
+    assert_eq!(detect_download_category("master.wav"), "Lossless Audio");
     assert_eq!(format_human_size(1048576), "1.0 MB");
     assert_eq!(extract_host("https://github.com/asanaim"), "github.com");
 }
@@ -83,6 +86,35 @@ fn test_download_routing() {
     assert!(!is_ytdlp_url("https://www.youtube.com/feed/subscriptions"));
     assert!(is_hls_url("https://a.b/x/index.m3u8?token=1"));
     assert!(!is_hls_url("https://a.b/x/video.mp4"));
+    use downloader::{split_route_prefix, KIND_YTDLP, KIND_YTDLP_AUDIO, KIND_YTDLP_FLAC};
+    let u = "https://www.youtube.com/watch?v=abc";
+    assert_eq!(split_route_prefix(&format!("ytdlp:{u}")), (Some(KIND_YTDLP), u));
+    assert_eq!(split_route_prefix(&format!("ytdlp-audio:{u}")), (Some(KIND_YTDLP_AUDIO), u));
+    assert_eq!(split_route_prefix(&format!("ytdlp-flac:{u}")), (Some(KIND_YTDLP_FLAC), u));
+    assert_eq!(split_route_prefix(u), (None, u));
+}
+
+#[test]
+fn test_video_and_audio_of_same_page_are_separate_downloads() {
+    use downloader::{EnqueueOutcome, NativeDownloadEngine, KIND_YTDLP, KIND_YTDLP_AUDIO, KIND_YTDLP_FLAC};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let e = NativeDownloadEngine::new(0, false, 3);
+    let u = "https://www.youtube.com/watch?v=shunnoTest1";
+    let later = Some(86_400); // scheduled, so nothing runs
+    let mut go = |raw: String| e.enqueue(rt.handle(), raw, 1, None, None, "CHECK", later);
+    assert!(matches!(go(format!("ytdlp:{u}")), EnqueueOutcome::Started));
+    assert!(matches!(go(format!("ytdlp-audio:{u}")), EnqueueOutcome::Started));
+    assert!(matches!(go(format!("ytdlp-flac:{u}")), EnqueueOutcome::Started));
+    assert!(matches!(go(format!("ytdlp-audio:{u}")), EnqueueOutcome::DuplicateDetected(_)));
+    let tasks = e.tasks.lock().unwrap().clone();
+    let mine: Vec<_> = tasks.iter().filter(|t| t.url == u).collect();
+    let kind_cat = |k: &str| mine.iter().find(|t| t.kind == k).map(|t| (t.category.clone(), t.file_name.clone())).unwrap();
+    assert_eq!(kind_cat(KIND_YTDLP).0, "Videos");
+    assert_eq!(kind_cat(KIND_YTDLP_AUDIO), ("Audio".to_string(), "Audio (resolving title).m4a".to_string()));
+    assert_eq!(kind_cat(KIND_YTDLP_FLAC), ("Lossless Audio".to_string(), "Audio (resolving title).flac".to_string()));
+    for t in mine {
+        e.delete(t.id);
+    }
 }
 
 #[test]
