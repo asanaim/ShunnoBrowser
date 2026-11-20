@@ -3,13 +3,18 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.2.1";
+pub const APP_VERSION: &str = "v2.6.0";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchEngine {
     pub name: String,
     pub query_url: String,
+}
+
+fn default_site_zoom() -> f64 {
+    1.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,6 +25,8 @@ pub struct SitePolicy {
     pub desktop_ua: bool,
     pub sponsorblock: bool,
     pub auto_reject_cookies: bool,
+    #[serde(default = "default_site_zoom")]
+    pub zoom: f64,
 }
 
 impl Default for SitePolicy {
@@ -31,6 +38,7 @@ impl Default for SitePolicy {
             desktop_ua: false,
             sponsorblock: true,
             auto_reject_cookies: true,
+            zoom: 1.0,
         }
     }
 }
@@ -86,6 +94,8 @@ pub struct GlobalSettings {
     #[serde(default = "default_on_complete")]
     pub on_queue_complete: String,
     #[serde(default)]
+    pub custom_downloads_dir: Option<String>,
+    #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
     pub quick_shortcuts: Vec<QuickShortcut>,
@@ -107,6 +117,7 @@ impl Default for GlobalSettings {
             auto_clean_completed: false,
             max_concurrent_downloads: 3,
             on_queue_complete: "NONE".to_string(),
+            custom_downloads_dir: None,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
@@ -155,7 +166,29 @@ impl BrowserStorage {
         dir
     }
 
+    fn custom_dl_lock() -> &'static Mutex<Option<String>> {
+        static CUSTOM_DL_DIR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+        CUSTOM_DL_DIR.get_or_init(|| Mutex::new(None))
+    }
+
+    pub fn set_custom_downloads_dir(dir: Option<String>) {
+        let cleaned = dir
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Ok(mut guard) = Self::custom_dl_lock().lock() {
+            *guard = cleaned;
+        }
+    }
+
     pub fn downloads_root_dir() -> PathBuf {
+        if let Ok(guard) = Self::custom_dl_lock().lock() {
+            if let Some(ref custom) = *guard {
+                let p = PathBuf::from(custom);
+                if fs::create_dir_all(&p).is_ok() {
+                    return p;
+                }
+            }
+        }
         let base = dirs::download_dir()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
@@ -198,10 +231,12 @@ impl BrowserStorage {
         if cfg.quick_shortcuts.is_empty() {
             cfg.quick_shortcuts = GlobalSettings::default().quick_shortcuts;
         }
+        Self::set_custom_downloads_dir(cfg.custom_downloads_dir.clone());
         cfg
     }
 
     pub fn save_global_settings(settings: &GlobalSettings) {
+        Self::set_custom_downloads_dir(settings.custom_downloads_dir.clone());
         let path = Self::app_data_dir().join("global_settings.json");
         if let Ok(json) = serde_json::to_string_pretty(settings) {
             let _ = fs::write(path, json);

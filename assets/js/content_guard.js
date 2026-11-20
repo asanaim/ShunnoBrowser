@@ -1104,7 +1104,7 @@
       postSecure(e.shiftKey ? 'KEY:prev_tab' : 'KEY:next_tab');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
-      if (k === 't' || k === 'w' || k === 'j') {
+      if (k === 't' || k === 'w' || k === 'j' || k === 'k') {
         e.preventDefault();
         postSecure('KEY:' + k);
       } else if (e.code === 'Equal' || e.code === 'NumpadAdd' || k === '=' || k === '+') {

@@ -1,3 +1,22 @@
+## v2.6.0 (2026-11-20)
+- Added **One-Click Page Screenshot (`📸 Capture`)** via WebView2 `CapturePreview`, saving crisp PNG captures directly to `<Downloads>\Screenshots\` and revealing them in File Explorer.
+- Added **Custom Downloads Folder** setting (`custom_downloads_dir` in `GlobalSettings`) so users can route downloads, screenshots, and CSV exports to any drive or directory.
+
+## v2.5.0 (2026-11-20)
+- Added **Per-Site Zoom Memory**: saves each domain's zoom level in `SitePolicy` and restores it automatically across navigations and restarts.
+- Added **Automatic 3× Segment Retry** with exponential backoff (`1s` / `2s` / `4s`) inside `NativeDownloadEngine` so transient network drops resume seamlessly from the saved byte offset.
+- Added **CSV Download History Export (`📄 CSV`)** with SHA-256 checksums (`Downloads\ShunnoBrowser\download_history.csv`) and **Duplicate Current Tab** in the Command Palette.
+
+## v2.4.0 (2026-11-20)
+- Moved WebView2 user profile cleanly into `%LOCALAPPDATA%\ShunnoBrowser\WebView2` via `WebContext::new` + `WEBVIEW2_USER_DATA_FOLDER`, eliminating the `ShunnoBrowser.exe.WebView2` folder beside the executable.
+- Added **Tab Sleeping** (`ICoreWebView2_3::TrySuspend` / `Resume`) with automatic 15-minute idle hibernation and one-click `💤 Sleep Tabs` RAM saver.
+- Added **50/50 Split-View** (`◫ Split`) to display two open tabs side-by-side.
+- Added **`Ctrl + K` Command Palette** for instant keyboard search across tabs, bookmarks, history, and quick actions.
+
+## v2.3.0 (2026-11-20)
+- Added automatic WebView2 `HttpOnly` cookie synchronization via `ICoreWebView2CookieManager::GetCookies` (`GetCookiesCompletedHandler`) so authenticated Google Drive and login-gated downloads pass full session cookies into `NativeDownloadEngine`.
+- Enhanced `🧹 Clear Site Data` to delete `HttpOnly` session cookies via `ICoreWebView2CookieManager::DeleteCookie` alongside `localStorage`, `sessionStorage`, Cache Storage, and IndexedDB.
+
 ## v2.2.1 (2026-11-20)
 - Eliminated the patchy grey shade bleeding through the top toolbar by making `.chrome-shell` (`--surface`) 100% opaque while keeping overlay space transparent.
 - Fixed `F11` fullscreen toggle on/off via native WebView2 `ICoreWebView2Controller::add_AcceleratorKeyPressed` (`VK_F11`) on both the chrome toolbar and all tab WebViews plus explicit `is_fullscreen` state tracking.

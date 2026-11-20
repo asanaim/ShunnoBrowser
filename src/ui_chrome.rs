@@ -418,6 +418,43 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     padding: 4px 6px;
   }
   .tab.pinned .tab-title, .tab.pinned .tab-close { display: none; }
+  .tab.sleeping { opacity: 0.62; }
+  .tab.split-peer { box-shadow: inset 0 0 0 1.5px var(--blue); }
+
+  /* Ctrl+K Command Palette */
+  .palette-backdrop {
+    position: fixed; inset: 0; z-index: 98;
+    display: none; justify-content: center; align-items: flex-start;
+    padding-top: 86px;
+    background: rgba(12, 12, 16, 0.16);
+    backdrop-filter: blur(2px);
+  }
+  .palette-backdrop.open { display: flex; }
+  .palette-box {
+    width: 520px; max-width: calc(100vw - 28px);
+    background: var(--surface-solid); border: 1px solid var(--border);
+    border-radius: 16px; padding: 10px;
+    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.28);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .palette-input {
+    width: 100%; border: 1.5px solid var(--blue); border-radius: 11px;
+    background: var(--input-bg); color: var(--text);
+    padding: 9px 12px; font-size: 13.5px; outline: none; user-select: text;
+  }
+  .palette-list {
+    max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px;
+  }
+  .palette-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 10px; border-radius: 9px; border: none; background: transparent;
+    color: var(--text); cursor: pointer; text-align: left; font-size: 12.5px;
+  }
+  .palette-item:hover, .palette-item.sel { background: var(--blue-soft); color: var(--blue); }
+  .palette-kind {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 6px; background: var(--input-bg); color: var(--muted); flex-shrink: 0;
+  }
 
   /* Larger Top-Left Navigation Hit Areas (34x34px) */
   .nav-icon-btn {
@@ -524,6 +561,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   </div>
   <div class="engine-menu" id="engine-menu"></div>
   <button class="fs-exit-pill" onclick="send('TOGGLE_FULLSCREEN')">Exit Full Screen (F11)</button>
+  <div class="palette-backdrop" id="cmd-palette" onclick="if(event.target===this) closePalette()">
+    <div class="palette-box">
+      <input class="palette-input" id="palette-input" placeholder="Search tabs, bookmarks, history, or actions... (Esc to close)"
+             oninput="renderPaletteItems()" onkeydown="handlePaletteKey(event)" />
+      <div class="palette-list" id="palette-list"></div>
+    </div>
+  </div>
 
   <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
   <div class="home-canvas" id="home-canvas">
@@ -567,6 +611,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('find')">🔍 Find</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('bookmarks')">⭐ Library</button>
             <button class="pill-btn pill-soft" id="btn-reader-toggle" onclick="send('READER_MODE');">📖 Reader</button>
+          <button class="pill-btn pill-soft" id="btn-split-toggle" onclick="send('TOGGLE_SPLIT_VIEW');" title="View 2 tabs side-by-side">◫ Split</button>
+          <button class="pill-btn pill-soft" onclick="closeDrawer(); send('CAPTURE_SCREENSHOT');" title="Save PNG screenshot of current page">📸 Capture</button>
+          <button class="pill-btn pill-soft" onclick="send('SLEEP_INACTIVE_TABS');" title="Hibernate idle background tabs to save RAM">💤 Sleep Tabs</button>
+          <button class="pill-btn pill-soft" onclick="closeDrawer(); openPalette();" title="Command Palette (Ctrl+K)">⌘ Palette</button>
             <button class="pill-btn pill-soft" onclick="send('TRIGGER_PIP'); closeDrawer();">📺 PiP</button>
             <button class="pill-btn pill-soft" id="menu-speed-btn" onclick="cycleSpeed()">⏩ 1.0×</button>
             <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
@@ -669,6 +717,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <button class="pill-btn pill-soft" id="btn-ffmpeg-setup" onclick="send('INSTALL_FFMPEG')" title="Auto-download & extract ffmpeg.exe">🎬 FFmpeg</button>
               <button class="pill-btn pill-soft" onclick="triggerGrabPage()" title="Site Grabber: Scan all links & media on active page">🕸️ Grab</button>
               <button class="pill-btn pill-soft" onclick="send('CLEAR_COMPLETED_DL')" title="Clean completed, failed & missing files">🧹 Clean</button>
+              <button class="pill-btn pill-soft" onclick="send('EXPORT_DL_CSV')" title="Export download history with SHA-256 checksums to CSV">📄 CSV</button>
               <button class="pill-btn pill-soft" onclick="send('OPEN_DOWNLOADS_FOLDER')" title="Open Downloads Folder">📂</button>
               <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
             </div>
@@ -726,10 +775,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               <option value="EXIT_APP">Done: Exit Browser</option>
             </select>
           </div>
-          <div class="input-row" style="margin-bottom:0;">
+          <div class="input-row">
             <input class="text-box" id="mux-video-input" placeholder="DASH Video URL..." />
             <input class="text-box" id="mux-audio-input" placeholder="DASH Audio URL..." />
             <button class="pill-btn pill-green" onclick="startDashMux()">🎬 Mux</button>
+          </div>
+          <div class="input-row" style="margin-bottom:0;">
+            <input class="text-box" id="custom-dl-dir-input" placeholder="Custom Downloads Folder (e.g., D:\Downloads)..." />
+            <button class="pill-btn pill-soft" onclick="applyCustomDlDir()">Set</button>
+            <button class="pill-btn pill-soft" onclick="send('SET_DOWNLOAD_DIR:'); document.getElementById('custom-dl-dir-input').value='';" title="Reset to default Downloads\ShunnoBrowser">Reset</button>
           </div>
         </div>
 
@@ -815,6 +869,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('SET_PLAYBACK_SPEED:' + currentSpeed);
   }
 
+  function applyCustomDlDir() {
+    const inp = document.getElementById('custom-dl-dir-input');
+    if (!inp) return;
+    send('SET_DOWNLOAD_DIR:' + inp.value.trim());
+  }
+
   function startManualDownload() {
     const input = document.getElementById('dl-url-input');
     const threads = document.getElementById('dl-threads-select').value;
@@ -886,7 +946,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         knownTabIds.add(idStr);
       }
 
-      const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''} ${t.pinned ? 'pinned' : ''}`;
+      const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''} ${t.pinned ? 'pinned' : ''} ${t.sleeping ? 'sleeping' : ''} ${idx === window.__shunnoSplitTabIdx ? 'split-peer' : ''}`;
       if (el.className !== wantClass && !el.classList.contains('is-new')) {
         el.className = wantClass;
       } else if (el.classList.contains('is-new')) {
@@ -930,7 +990,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       el.oncontextmenu = (ev) => { ev.preventDefault(); send('TOGGLE_PIN_TAB:' + idx); };
       el.title = t.title || 'New Tab';
 
-      const displayTitle = (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
+      const displayTitle = (t.sleeping ? '💤 ' : '') + (t.incognito ? '🕵 ' : '') + (t.title || 'New Tab');
       const hasAudio = !!(t.playing_audio || t.muted);
       const audioKey = hasAudio ? (t.muted ? 'M' : 'P') : 'N';
 
@@ -959,14 +1019,135 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
   };
 
+  window.__shunnoLastState = null;
+  window.__shunnoSplitTabIdx = -1;
+  let paletteItems = [];
+  let paletteSel = 0;
+
+  window.openPalette = function() {
+    const el = document.getElementById('cmd-palette');
+    const inp = document.getElementById('palette-input');
+    if (!el || !inp) return;
+    el.classList.add('open');
+    inp.value = '';
+    paletteSel = 0;
+    renderPaletteItems();
+    send('PALETTE:1');
+    setTimeout(() => inp.focus(), 20);
+  };
+
+  window.closePalette = function() {
+    const el = document.getElementById('cmd-palette');
+    if (el && el.classList.contains('open')) {
+      el.classList.remove('open');
+      send('PALETTE:0');
+    }
+  };
+
+  function renderPaletteItems() {
+    const inp = document.getElementById('palette-input');
+    const listEl = document.getElementById('palette-list');
+    if (!inp || !listEl) return;
+    const q = inp.value.trim().toLowerCase();
+    const st = window.__shunnoLastState;
+    const items = [];
+
+    const actions = [
+      { kind: 'Action', title: 'Toggle Split-View (50/50 Dual Pane)', run: () => send('TOGGLE_SPLIT_VIEW') },
+      { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
+      { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
+      { kind: 'Action', title: 'Export Download History to CSV (with SHA-256)', run: () => send('EXPORT_DL_CSV') },
+      { kind: 'Action', title: 'Sleep Inactive Background Tabs (Save RAM)', run: () => send('SLEEP_INACTIVE_TABS') },
+      { kind: 'Action', title: 'Toggle Dark Mode', run: () => send('TOGGLE_GLOBAL:full_dark') },
+      { kind: 'Action', title: 'Toggle Reader Mode', run: () => send('READER_MODE') },
+      { kind: 'Action', title: 'Clear Current Site Cookies & Storage', run: () => send('CLEAR_SITE_DATA') },
+      { kind: 'Action', title: 'Open Downloads Manager (Ctrl+J)', run: () => toggleDrawer('downloads') },
+      { kind: 'Action', title: 'New Private Tab', run: () => send('NEW_INCOGNITO') },
+      { kind: 'Action', title: 'Toggle Fullscreen (F11)', run: () => send('TOGGLE_FULLSCREEN') },
+    ];
+    actions.forEach(a => items.push(a));
+
+    if (st) {
+      (st.tabs || []).forEach((t, idx) => {
+        items.push({
+          kind: 'Tab',
+          title: (t.title || 'New Tab') + (t.url && t.url !== 'shunno://newtab' ? (' — ' + t.url) : ''),
+          run: () => send('SWITCH_TAB:' + idx),
+        });
+      });
+      (st.bookmarks || []).slice(0, 25).forEach(b => {
+        items.push({
+          kind: 'Bookmark',
+          title: b.title + ' — ' + b.url,
+          run: () => send('NAV:' + b.url),
+        });
+      });
+      (st.history || []).slice(0, 20).forEach(h => {
+        items.push({
+          kind: 'History',
+          title: h.title + ' — ' + h.url,
+          run: () => send('NAV:' + h.url),
+        });
+      });
+    }
+
+    paletteItems = q ? items.filter(it => it.title.toLowerCase().includes(q) || it.kind.toLowerCase().includes(q)) : items.slice(0, 18);
+    if (paletteSel >= paletteItems.length) paletteSel = 0;
+
+    listEl.innerHTML = paletteItems.length === 0
+      ? '<div class="meta" style="padding:8px;">No matching commands, tabs, or bookmarks.</div>'
+      : paletteItems.map((it, i) => `
+          <button class="palette-item ${i === paletteSel ? 'sel' : ''}" onclick="execPaletteItem(${i})">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${escapeHtml(it.title)}</span>
+            <span class="palette-kind">${escapeHtml(it.kind)}</span>
+          </button>
+        `).join('');
+  }
+
+  function execPaletteItem(i) {
+    const it = paletteItems[i];
+    closePalette();
+    if (it && it.run) it.run();
+  }
+
+  function handlePaletteKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closePalette();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (paletteItems.length > 0) {
+        paletteSel = (paletteSel + 1) % paletteItems.length;
+        renderPaletteItems();
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (paletteItems.length > 0) {
+        paletteSel = paletteSel <= 0 ? paletteItems.length - 1 : paletteSel - 1;
+        renderPaletteItems();
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      execPaletteItem(paletteSel);
+    }
+  }
+
   window.renderChromeState = function(state) {
+    window.__shunnoLastState = state;
+    window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
+    const spBtn = document.getElementById('btn-split-toggle');
+    if (spBtn) {
+      const splitOn = window.__shunnoSplitTabIdx >= 0;
+      spBtn.className = 'pill-btn ' + (splitOn ? 'pill-blue' : 'pill-soft');
+      spBtn.textContent = splitOn ? '◫ Split: ON' : '◫ Split';
+    }
     if (state.global.full_dark_mode) {
       document.body.classList.add('dark');
     } else {
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.2.1';
+    document.getElementById('version-badge').textContent = state.version || 'v2.6.0';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {
@@ -993,6 +1174,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (maxConcEl) maxConcEl.value = String(state.global.max_concurrent_downloads || 3);
     const onCompEl = document.getElementById('on-complete-select');
     if (onCompEl) onCompEl.value = state.global.on_queue_complete || 'NONE';
+    const dlDirInp = document.getElementById('custom-dl-dir-input');
+    if (dlDirInp && document.activeElement !== dlDirInp) {
+      dlDirInp.value = state.global.custom_downloads_dir || '';
+    }
 
     const findBadge = document.getElementById('find-count-badge');
     if (findBadge) {
@@ -1384,6 +1569,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 't') { e.preventDefault(); send('NEW_TAB'); }
+      else if (k === 'k') { e.preventDefault(); openPalette(); }
       else if (k === 'w') { e.preventDefault(); send('CLOSE_ACTIVE_TAB'); }
       else if (k === 'l') { e.preventDefault(); const u = document.getElementById('url-input'); u.focus(); u.select(); }
       else if (k === 'f') { e.preventDefault(); toggleDrawer('find'); setTimeout(() => document.getElementById('find-input').focus(), 50); }

@@ -289,6 +289,30 @@ impl NativeDownloadEngine {
         });
     }
 
+    pub fn export_history_csv(&self) -> Result<PathBuf, String> {
+        let out_path = BrowserStorage::downloads_root_dir().join("download_history.csv");
+        let list = self.tasks.lock().map_err(|e| e.to_string())?;
+        let mut csv = String::from("ID,FileName,Category,Status,TotalBytes,SHA256,SavedPath,URL
+");
+        let esc = |s: &str| format!(""{}"", s.replace('"', """"));
+        for t in list.iter() {
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{}
+",
+                t.id,
+                esc(&t.file_name),
+                esc(&t.category),
+                esc(&t.status),
+                t.total_bytes,
+                esc(t.sha256.as_deref().unwrap_or("")),
+                esc(t.saved_path.as_deref().unwrap_or("")),
+                esc(&t.url),
+            ));
+        }
+        fs::write(&out_path, csv).map_err(|e| e.to_string())?;
+        Ok(out_path)
+    }
+
     pub fn clean_stale_and_completed(&self) -> usize {
         let removed = if let Ok(mut list) = self.tasks.lock() {
             let before = list.len();
@@ -1092,55 +1116,99 @@ async fn download_raw_to_path(
             let offset_path = NativeDownloadEngine::parts_dir().join(format!("{}_t{}.offset", task.id, i));
 
             workers.push(tokio::spawn(async move {
-                if offset > end {
-                    return Ok::<(), String>(());
-                }
-                let mut rb = c
-                    .get(&u)
-                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
-            .header("Accept", "*/*")
-                    .header(RANGE, format!("bytes={}-{}", offset, end));
-                if let Some(ref r) = r_hdr {
-                    if !r.is_empty() { rb = rb.header(REFERER, r); }
-                }
-                if let Some(ref ck) = c_hdr {
-                    if !ck.is_empty() { rb = rb.header(COOKIE, ck); }
-                }
-
-                let resp = rb.send().await.map_err(|e| e.to_string())?;
-                if !resp.status().is_success() {
-                    return Err(format!("HTTP {}", resp.status()));
-                }
-
-                let mut stream = resp.bytes_stream();
-                let mut since_save = 0usize;
-                while let Some(chunk_res) = stream.next().await {
+                let mut last_err = String::new();
+                for attempt in 0..3u32 {
+                    if offset > end {
+                        return Ok::<(), String>(());
+                    }
                     if !run.load(Ordering::Relaxed) {
                         let _ = fs::write(&offset_path, offset.to_string());
                         return Err("Paused".to_string());
                     }
-                    let bytes = chunk_res.map_err(|e| e.to_string())?;
-                    write_positioned(&f, &bytes, offset).map_err(|e| e.to_string())?;
-                    offset += bytes.len() as u64;
-                    prog[i].fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                    since_save += bytes.len();
 
-                    if since_save >= 128 * 1024 {
-                        let _ = fs::write(&offset_path, offset.to_string());
-                        since_save = 0;
+                    let mut rb = c
+                        .get(&u)
+                        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+                        .header("Accept", "*/*")
+                        .header(RANGE, format!("bytes={}-{}", offset, end));
+                    if let Some(ref r) = r_hdr {
+                        if !r.is_empty() { rb = rb.header(REFERER, r); }
+                    }
+                    if let Some(ref ck) = c_hdr {
+                        if !ck.is_empty() { rb = rb.header(COOKIE, ck); }
                     }
 
-                    let max_bps = lim.load(Ordering::Relaxed);
-                    if max_bps > 0 {
-                        let per_t = (max_bps / (threads as u64)).max(4096);
-                        let sleep_ms = ((bytes.len() as u64) * 1000) / per_t;
-                        if sleep_ms > 5 {
-                            tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                    let resp = match rb.send().await {
+                        Ok(r) if r.status().is_success() => r,
+                        Ok(r) => {
+                            last_err = format!("HTTP {}", r.status());
+                            if attempt < 2 && run.load(Ordering::Relaxed) {
+                                tokio::time::sleep(Duration::from_secs(1u64 << attempt)).await;
+                                continue;
+                            }
+                            return Err(last_err);
+                        }
+                        Err(e) => {
+                            last_err = e.to_string();
+                            if attempt < 2 && run.load(Ordering::Relaxed) {
+                                tokio::time::sleep(Duration::from_secs(1u64 << attempt)).await;
+                                continue;
+                            }
+                            return Err(last_err);
+                        }
+                    };
+
+                    let mut stream = resp.bytes_stream();
+                    let mut since_save = 0usize;
+                    let mut stream_err: Option<String> = None;
+
+                    while let Some(chunk_res) = stream.next().await {
+                        if !run.load(Ordering::Relaxed) {
+                            let _ = fs::write(&offset_path, offset.to_string());
+                            return Err("Paused".to_string());
+                        }
+                        match chunk_res {
+                            Ok(bytes) => {
+                                write_positioned(&f, &bytes, offset).map_err(|e| e.to_string())?;
+                                offset += bytes.len() as u64;
+                                prog[i].fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                                since_save += bytes.len();
+
+                                if since_save >= 128 * 1024 {
+                                    let _ = fs::write(&offset_path, offset.to_string());
+                                    since_save = 0;
+                                }
+
+                                let max_bps = lim.load(Ordering::Relaxed);
+                                if max_bps > 0 {
+                                    let per_t = (max_bps / (threads as u64)).max(4096);
+                                    let sleep_ms = ((bytes.len() as u64) * 1000) / per_t;
+                                    if sleep_ms > 5 {
+                                        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = fs::write(&offset_path, offset.to_string());
+                                stream_err = Some(e.to_string());
+                                break;
+                            }
                         }
                     }
+
+                    if let Some(err_msg) = stream_err {
+                        last_err = err_msg;
+                        if attempt < 2 && run.load(Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_secs(1u64 << attempt)).await;
+                            continue;
+                        }
+                        return Err(last_err);
+                    }
+
+                    let _ = fs::write(&offset_path, offset.to_string());
+                    return Ok(());
                 }
-                let _ = fs::write(&offset_path, offset.to_string());
-                Ok(())
+                Err(last_err)
             }));
         }
 
