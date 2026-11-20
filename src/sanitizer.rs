@@ -163,3 +163,43 @@ pub fn is_public_http_url(url_str: &str) -> bool {
         None => false,
     }
 }
+
+/// Hosts and paths blocked by the built-in ad filter (replaced by full filter lists later).
+pub fn is_blocked_ad_url(url_str: &str) -> bool {
+    let Ok(u) = Url::parse(url_str) else {
+        return false;
+    };
+    let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+    let on = |d: &str| host == d || host.ends_with(&format!(".{}", d));
+    const AD_HOSTS: [&str; 11] = [
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googleadservices.com",
+        "adnxs.com",
+        "adsrvr.org",
+        "taboola.com",
+        "outbrain.com",
+        "popads.net",
+        "popcash.net",
+        "propellerads.com",
+        "exoclick.com",
+    ];
+    if AD_HOSTS.iter().any(|d| on(d)) {
+        return true;
+    }
+    let path = u.path();
+    if on("youtube.com")
+        && (path.starts_with("/pagead/")
+            || path.starts_with("/api/stats/ads")
+            || path.starts_with("/ptracking")
+            || path.starts_with("/get_midroll_"))
+    {
+        return true;
+    }
+    if on("googlevideo.com") {
+        if let Some(i) = url_str.find("/initplayback") {
+            return url_str[i..].contains("oad");
+        }
+    }
+    false
+}

@@ -6,9 +6,7 @@
   const BASKET_ON = __SHUNNO_BASKET__;
   const BG_MEDIA_ON = __SHUNNO_BG_MEDIA__;
   const FULL_DARK_ON = __SHUNNO_FULL_DARK__;
-  const JS_DISABLED = __SHUNNO_JS_DISABLED__;
   const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
-  const DESKTOP_UA_ON = __SHUNNO_DESKTOP_UA__;
 
   // Capture the native channel at document start, before any page script runs.
   // window.ipc forwards to window.chrome.webview.postMessage, which a page could replace later
@@ -69,14 +67,7 @@
     } catch (e) {}
   }
 
-  // 2. Desktop User-Agent override
-  if (DESKTOP_UA_ON) {
-    try {
-      Object.defineProperty(navigator, 'userAgent', {
-        get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0'
-      });
-    } catch (e) {}
-  }
+  // 2. (Mobile site is now a real HTTP User-Agent set natively; no JS spoofing here.)
 
   // 3. Smooth macOS-Style Ambient Cross-Dissolve Dark Mode (Zero grey/rainbow flicker!)
   window.__shunnoSetDarkMode = function(enabled, instant) {
@@ -1201,9 +1192,6 @@
 
   if (document.documentElement) installFloatingOverlay();
   window.addEventListener('DOMContentLoaded', () => {
-    if (JS_DISABLED) {
-      document.querySelectorAll('script').forEach(s => s.remove());
-    }
     if (isYouTube && window.ytInitialPlayerResponse) {
       stripAdFields(window.ytInitialPlayerResponse);
     }

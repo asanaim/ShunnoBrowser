@@ -1454,8 +1454,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['sponsorblock', '🎬 YT Ad Clean', state.site.sponsorblock],
       ['js_enabled', '⚙️ JavaScript', state.site.js_enabled],
       ['images_enabled', '🖼️ Images', state.site.images_enabled],
-      ['desktop_ua', '💻 Desktop UA', state.site.desktop_ua],
-      ['auto_reject_cookies', '🍪 Reject Cookies', state.site.auto_reject_cookies]
+      ['mobile_ua', '📱 Mobile Site', state.site.mobile_ua],
+      ['auto_reject_cookies', '🍪 Reject Cookie Banners', state.site.auto_reject_cookies]
     ];
     document.getElementById('site-toggles-grid').innerHTML = siteItems.map(([key, label, val]) => `
       <div class="toggle-tile">
