@@ -167,6 +167,13 @@ fn generate_ipc_token() -> String {
     format!("{:016x}{:016x}", a, b)
 }
 
+/// Per-launch secret mixed into fingerprint farbling: values are stable per site within a session
+/// and change on every restart.
+fn fp_session_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| format!("{:016x}", rand::random::<u64>()))
+}
+
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -233,7 +240,9 @@ fn build_content_init_script(
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
-        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" });
+        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
+        .replace("__SHUNNO_FP__", if policy.fp_protect { "true" } else { "false" })
+        .replace("__SHUNNO_FP_SESSION__", fp_session_key());
 
     if !user_js.is_empty() {
         script.push('\n');
@@ -3423,6 +3432,7 @@ fn main() -> wry::Result<()> {
                             "mobile_ua" => pol.mobile_ua = !pol.mobile_ua,
                             "sponsorblock" => pol.sponsorblock = !pol.sponsorblock,
                             "auto_reject_cookies" => pol.auto_reject_cookies = !pol.auto_reject_cookies,
+                            "fp_protect" => pol.fp_protect = !pol.fp_protect,
                             _ => {}
                         }
                         let updated_pol = pol.clone();

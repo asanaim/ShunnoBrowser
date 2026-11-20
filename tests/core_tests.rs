@@ -188,3 +188,21 @@ fn test_adblock_engine_network_and_cosmetic() {
     assert!(specific.contains(".promo-box"));
     assert!(!specific.contains(".adsbygoogle"), "site exception removes the generic rule");
 }
+
+#[test]
+fn test_every_content_script_placeholder_is_replaced() {
+    // A placeholder left in the injected script is a ReferenceError that kills every in-page feature.
+    let js = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/content_guard.js")).unwrap();
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+    let mut rest = js.as_str();
+    let mut found = 0;
+    while let Some(i) = rest.find("__SHUNNO_") {
+        let tail = &rest[i + 9..];
+        let end = tail.find("__").expect("unterminated placeholder");
+        let name = format!("__SHUNNO_{}__", &tail[..end]);
+        assert!(main.contains(&format!(".replace(\"{}\"", name)), "{} is never replaced in build_content_init_script", name);
+        found += 1;
+        rest = &tail[end + 2..];
+    }
+    assert!(found >= 9);
+}

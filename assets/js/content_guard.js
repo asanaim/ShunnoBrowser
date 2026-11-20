@@ -7,6 +7,160 @@
   const BG_MEDIA_ON = __SHUNNO_BG_MEDIA__;
   const FULL_DARK_ON = __SHUNNO_FULL_DARK__;
   const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
+  const FP_ON = __SHUNNO_FP__;
+  const FP_SESSION = "__SHUNNO_FP_SESSION__";
+
+  // 0. Fingerprinting protection ("farbling", the approach Brave uses).
+  // Each site sees small, stable-per-site, different-per-launch changes to the values trackers hash
+  // (canvas pixels, WebGL GPU strings, audio samples, CPU core count). Pages work normally, but a
+  // fingerprint taken on one site cannot be matched on another or after a restart.
+  // Wrappers are Proxies around the native functions, so Function.prototype.toString still reports
+  // native code. Limits: Web Workers and some sandboxed about:blank frames are not covered.
+  if (FP_ON) {
+    try {
+      const siteKey = (() => {
+        try {
+          const anc = location.ancestorOrigins;
+          const topOrigin = anc && anc.length ? anc[anc.length - 1] : location.origin;
+          const host = new URL(topOrigin).hostname;
+          const parts = host.split('.');
+          return parts.length > 2 ? parts.slice(-2).join('.') : host;
+        } catch (e) { return location.hostname || 'local'; }
+      })();
+      let h = 2166136261 >>> 0;
+      const keyStr = FP_SESSION + '|' + siteKey;
+      for (let i = 0; i < keyStr.length; i++) { h ^= keyStr.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+      const seed = h;
+      const rnd = (n) => {
+        let t = (seed + Math.imul(n >>> 0, 0x6D2B79F5)) >>> 0;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const replaceMethod = (proto, name, makeImpl) => {
+        if (!proto) return;
+        const desc = Object.getOwnPropertyDescriptor(proto, name);
+        if (!desc || typeof desc.value !== 'function') return;
+        const orig = desc.value;
+        const impl = makeImpl(orig);
+        Object.defineProperty(proto, name, {
+          value: new Proxy(orig, { apply: (target, thisArg, args) => impl(thisArg, args) }),
+          configurable: desc.configurable, enumerable: desc.enumerable, writable: desc.writable
+        });
+      };
+      const replaceGetter = (proto, name, makeGet) => {
+        if (!proto) return;
+        const desc = Object.getOwnPropertyDescriptor(proto, name);
+        if (!desc || typeof desc.get !== 'function') return;
+        const origGet = desc.get;
+        const impl = makeGet(origGet);
+        Object.defineProperty(proto, name, {
+          get: new Proxy(origGet, { apply: (target, thisArg) => impl(thisArg) }),
+          set: desc.set, configurable: desc.configurable, enumerable: desc.enumerable
+        });
+      };
+
+      // Canvas: flip the lowest bit of one channel in a few seeded pixel positions.
+      const farblePixels = (data, w, hgt) => {
+        const total = w * hgt;
+        if (!total || data.length < total * 4) return;
+        const n = Math.max(1, Math.min(48, total >>> 6));
+        for (let i = 0; i < n; i++) {
+          const px = Math.floor(rnd(i * 2 + 1) * total);
+          const ch = Math.floor(rnd(i * 2 + 2) * 3);
+          data[px * 4 + ch] ^= 1;
+        }
+      };
+      const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+      replaceMethod(CanvasRenderingContext2D.prototype, 'getImageData', (orig) => (ctx, args) => {
+        const img = Reflect.apply(orig, ctx, args);
+        try { farblePixels(img.data, img.width, img.height); } catch (e) {}
+        return img;
+      });
+      // Exports go through a farbled copy; the visible canvas is never modified.
+      const farbledCopy = (canvas) => {
+        const w = canvas.width, hgt = canvas.height;
+        if (!w || !hgt || w * hgt > 4000000) return null;
+        const copy = document.createElement('canvas');
+        copy.width = w; copy.height = hgt;
+        const cctx = copy.getContext('2d');
+        if (!cctx) return null;
+        cctx.drawImage(canvas, 0, 0);
+        const img = Reflect.apply(origGetImageData, cctx, [0, 0, w, hgt]);
+        farblePixels(img.data, w, hgt);
+        cctx.putImageData(img, 0, 0);
+        return copy;
+      };
+      replaceMethod(HTMLCanvasElement.prototype, 'toDataURL', (orig) => (canvas, args) => {
+        let copy = null;
+        try { copy = farbledCopy(canvas); } catch (e) {}
+        return Reflect.apply(orig, copy || canvas, args);
+      });
+      replaceMethod(HTMLCanvasElement.prototype, 'toBlob', (orig) => (canvas, args) => {
+        let copy = null;
+        try { copy = farbledCopy(canvas); } catch (e) {}
+        return Reflect.apply(orig, copy || canvas, args);
+      });
+
+      // WebGL: hide the exact GPU model, add pixel noise to readPixels.
+      const glVendor = 'Google Inc.';
+      const glRenderer = 'ANGLE (Generic GPU, Direct3D11)';
+      [window.WebGLRenderingContext, window.WebGL2RenderingContext].forEach((Ctx) => {
+        if (!Ctx) return;
+        replaceMethod(Ctx.prototype, 'getParameter', (orig) => (gl, args) => {
+          const real = Reflect.apply(orig, gl, args);
+          // Mask only real answers: inventing a value where the browser returns null is itself a tell.
+          if (real == null) return real;
+          if (args[0] === 0x9245) return glVendor;   // UNMASKED_VENDOR_WEBGL
+          if (args[0] === 0x9246) return glRenderer; // UNMASKED_RENDERER_WEBGL
+          return real;
+        });
+        replaceMethod(Ctx.prototype, 'readPixels', (orig) => (gl, args) => {
+          const r = Reflect.apply(orig, gl, args);
+          try {
+            const out = args[6];
+            if (out && out.length && args[2] * args[3] * 4 <= out.length) farblePixels(out, args[2], args[3]);
+          } catch (e) {}
+          return r;
+        });
+      });
+
+      // Audio: multiply samples by a factor within 1e-7 of 1 (inaudible), once per buffer channel.
+      const farbledAudio = new WeakMap();
+      replaceMethod(window.AudioBuffer && AudioBuffer.prototype, 'getChannelData', (orig) => (buf, args) => {
+        const data = Reflect.apply(orig, buf, args);
+        try {
+          if (data.length <= 500000) {
+            let done = farbledAudio.get(buf);
+            if (!done) { done = new Set(); farbledAudio.set(buf, done); }
+            const ch = args[0] | 0;
+            if (!done.has(ch)) {
+              done.add(ch);
+              const f = 1 + (rnd(9001 + ch) - 0.5) * 2e-7;
+              for (let i = 0; i < data.length; i++) data[i] *= f;
+            }
+          }
+        } catch (e) {}
+        return data;
+      });
+      replaceMethod(window.AnalyserNode && AnalyserNode.prototype, 'getFloatFrequencyData', (orig) => (node, args) => {
+        const r = Reflect.apply(orig, node, args);
+        try {
+          const arr = args[0];
+          const f = 1 + (rnd(9100) - 0.5) * 2e-7;
+          for (let i = 0; i < arr.length; i++) arr[i] *= f;
+        } catch (e) {}
+        return r;
+      });
+
+      // CPU cores: a stable per-site value between 2 and the real count.
+      replaceGetter(window.Navigator && Navigator.prototype, 'hardwareConcurrency', (origGet) => (nav) => {
+        const real = Reflect.apply(origGet, nav, []) || 4;
+        if (real <= 2) return real;
+        return 2 + Math.floor(rnd(4242) * (real - 1));
+      });
+    } catch (e) {}
+  }
 
   // Capture the native channel at document start, before any page script runs.
   // window.ipc forwards to window.chrome.webview.postMessage, which a page could replace later

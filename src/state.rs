@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-pub const APP_VERSION: &str = "v2.11.0";
+pub const APP_VERSION: &str = "v2.12.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -41,6 +41,9 @@ pub struct SitePolicy {
     pub mobile_ua: bool,
     pub sponsorblock: bool,
     pub auto_reject_cookies: bool,
+    /// Fingerprinting protection (per-site farbling of canvas, WebGL, audio, CPU count).
+    #[serde(default = "default_true")]
+    pub fp_protect: bool,
     #[serde(default = "default_site_zoom")]
     pub zoom: f64,
 }
@@ -54,6 +57,7 @@ impl Default for SitePolicy {
             mobile_ua: false,
             sponsorblock: true,
             auto_reject_cookies: true,
+            fp_protect: true,
             zoom: 1.0,
         }
     }
