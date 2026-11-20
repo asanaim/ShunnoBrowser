@@ -1,3 +1,15 @@
+## v2.2.1 (2026-11-20)
+- Eliminated the patchy grey shade bleeding through the top toolbar by making `.chrome-shell` (`--surface`) 100% opaque while keeping overlay space transparent.
+- Fixed `F11` fullscreen toggle on/off via native WebView2 `ICoreWebView2Controller::add_AcceleratorKeyPressed` (`VK_F11`) on both the chrome toolbar and all tab WebViews plus explicit `is_fullscreen` state tracking.
+- Reduced compiled `.exe` binary size by ~40–55%: removed the `regex` crate, switched `reqwest` to Windows-native `native-tls` (Schannel), trimmed unused `tokio` features, and enabled `opt-level = "z"`, `lto = true`, `panic = "abort"`, `strip = "symbols"`.
+
+## v2.2.0 (2026-11-20)
+- Eliminated Dark Mode toggle flicker: replaced full WebView recreation with smooth `0.36s` live CSS transitions across the UI shell and all open tabs.
+- Enlarged taskbar `.ico` (full-bleed `0.495` radius), top-left tab bar logo (`28×28px`), and tab pill icons (`18×18px`).
+- Refined the centered Address Capsule (`max-width: 500px`, `height: 32px`, `border-radius: 16px`).
+- Added native Windows 11 rounded window corners (`DwmSetWindowAttribute` + `DWMWCP_ROUND`).
+- Fixed download engine & site button reliability: removed duplicate `DownloadStarting` COM hook, upgraded `reqwest` to standard Edge/Chrome User-Agent + `Accept: */*` + 20-hop redirects + safe non-range fallback, and allowed `about:blank` / OAuth popups so download/login buttons on sites like `hubdrive.blog` work properly.
+
 ## v2.1.3 (2026-11-20)
 - Fixed `E0061` argument mismatch on `push_chrome_state(...)` inside `TabTitleChanged` (`src/main.rs`).
 - Added `move` to `push_chrome_state` closure so `last_chrome_json` moves cleanly into `event_loop.run` (`E0373`).

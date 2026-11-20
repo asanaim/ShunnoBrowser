@@ -45,17 +45,31 @@
     } catch (e) {}
   }
 
-  // 3. Full Dark Mode (Luminance inversion exempting media)
+  // 3. Smooth Live Dark Mode (Zero reload, zero flicker CSS transition)
+  window.__shunnoSetDarkMode = function(enabled) {
+    const root = document.head || document.documentElement;
+    if (!root) return;
+    if (!document.getElementById('shunno-dark-transition')) {
+      const tr = document.createElement('style');
+      tr.id = 'shunno-dark-transition';
+      tr.textContent = 'html { transition: filter 0.36s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.36s ease !important; }';
+      root.appendChild(tr);
+    }
+    let st = document.getElementById('shunno-full-dark');
+    if (enabled) {
+      if (!st) {
+        st = document.createElement('style');
+        st.id = 'shunno-full-dark';
+        st.textContent = 'html { filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
+        root.appendChild(st);
+      }
+    } else if (st) {
+      st.remove();
+    }
+  };
   if (FULL_DARK_ON) {
-    const injectDark = () => {
-      if (document.getElementById('shunno-full-dark')) return;
-      const st = document.createElement('style');
-      st.id = 'shunno-full-dark';
-      st.textContent = 'html { filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
-      (document.head || document.documentElement).appendChild(st);
-    };
-    if (document.documentElement) injectDark();
-    else window.addEventListener('DOMContentLoaded', injectDark, { once: true });
+    if (document.documentElement) window.__shunnoSetDarkMode(true);
+    else window.addEventListener('DOMContentLoaded', () => window.__shunnoSetDarkMode(true), { once: true });
   }
 
   // 4. Image Blocker
@@ -568,6 +582,7 @@
     shadow.appendChild(menu);
     shadow.appendChild(basket);
     document.documentElement.appendChild(host);
+    window.__shunnoSetDropBasket = function(enabled) { basket.style.display = enabled ? 'flex' : 'none'; };
 
     let activeItems = [];
     let activeBaseLabel = 'Download';

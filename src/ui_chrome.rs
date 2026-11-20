@@ -6,7 +6,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   :root {
     --bg: #F5F5F7;
     --tab-bg: #E8E8ED;
-    --surface: rgba(255, 255, 255, 0.88);
+    --surface: #FFFFFF;
     --surface-solid: #FFFFFF;
     --glass: rgba(255, 255, 255, 0.78);
     --border: rgba(0, 0, 0, 0.09);
@@ -25,7 +25,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   body.dark {
     --bg: #0D0D10;
     --tab-bg: #161619;
-    --surface: rgba(28, 28, 32, 0.88);
+    --surface: #1C1C1E;
     --surface-solid: #1C1C1E;
     --glass: rgba(30, 30, 34, 0.80);
     --border: rgba(255, 255, 255, 0.11);
@@ -52,12 +52,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     flex-direction: column;
     height: 100vh;
     border-radius: 12px;
+    transition: color 0.36s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .chrome-shell, .floating-sheet, .card, .home-canvas, .home-search-box, .shortcut-tile, .engine-menu, .nav-icon-btn, .tab, .bookmarks-strip {
+    transition: background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1), color 0.36s ease, border-color 0.36s ease, box-shadow 0.36s ease;
   }
 
   /* Unified Top Chrome Shell (112px total: 36px Tab Strip + 46px Firefox-Style Address Bar + 30px Bookmarks Bar) */
   .chrome-shell {
     background: var(--surface);
-    backdrop-filter: blur(24px) saturate(180%);
     border-bottom: 1px solid var(--border);
     border-top-left-radius: 12px;
     border-top-right-radius: 12px;
@@ -74,7 +77,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Chrome/Safari-inspired Compass-Ring Logo */
   .brand-emblem {
-    width: 24px; height: 24px; border-radius: 50%;
+    width: 28px; height: 28px; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0; cursor: pointer;
     box-shadow: 0 2px 6px rgba(10, 132, 255, 0.28);
@@ -170,17 +173,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Firefox-style Unified Search + URL Capsule (compact centered width) */
   .firefox-capsule {
-    flex: 1; max-width: 660px; min-width: 200px; height: 34px;
+    flex: 1; max-width: 500px; min-width: 200px; height: 32px;
     display: flex; align-items: center; gap: 6px;
-    background: var(--input-bg); border-radius: 12px; padding: 3px 8px 3px 4px;
+    background: var(--input-bg); border-radius: 16px; padding: 2px 10px 2px 4px;
     border: 1.5px solid transparent;
-    transition: background 0.25s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
+    transition: background 0.34s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid), max-width 0.3s var(--ease-fluid);
   }
   .firefox-capsule:focus-within {
     background: var(--surface-solid);
     border-color: var(--blue);
     box-shadow: 0 0 0 3.5px rgba(10, 132, 255, 0.18);
-    max-width: 740px;
+    max-width: 560px;
   }
   .engine-logo-btn {
     border: none; background: var(--surface-solid); color: var(--text);
@@ -445,7 +448,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <!-- 1. Borderless Tab Strip (No redundant top title bar!) -->
     <div class="tab-bar" id="tab-bar">
       <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
-        <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <defs>
             <radialGradient id="shunnoCompass" cx="35%" cy="30%" r="70%">
               <stop offset="0%" stop-color="#38BDF8"/>
@@ -937,7 +940,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
         const tabLogoHtml = (!hasAudio && (isNewTab || t.pinned))
-          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="14" height="14" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
+          ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.5" stroke="white" stroke-width="2.2"/><polygon points="18.8,9.2 15.6,15.6 12.4,12.4" fill="#FF453A"/><polygon points="9.2,18.8 15.6,15.6 12.4,12.4" fill="#F8FAFC"/></svg></span>`
           : '';
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
@@ -963,7 +966,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       document.body.classList.remove('dark');
     }
 
-    document.getElementById('version-badge').textContent = state.version || 'v2.1.3';
+    document.getElementById('version-badge').textContent = state.version || 'v2.2.1';
     if (state.is_fullscreen) {
       document.body.classList.add('fullscreen');
     } else {

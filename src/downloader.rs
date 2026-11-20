@@ -215,7 +215,8 @@ pub struct NativeDownloadEngine {
 impl NativeDownloadEngine {
     pub fn new(initial_speed_limit_bps: u64, initial_auto_clean: bool, initial_max_concurrent: usize) -> Self {
         let client = Client::builder()
-            .connect_timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(25))
+            .redirect(reqwest::redirect::Policy::limited(20))
             .pool_max_idle_per_host(64)
             .build()
             .unwrap_or_else(|_| Client::new());
@@ -252,7 +253,8 @@ impl NativeDownloadEngine {
             let res = async {
                 let resp = client
                     .get(zip_url)
-                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/2.0")
+                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*")
                     .send()
                     .await
                     .map_err(|e| e.to_string())?;
@@ -367,7 +369,8 @@ impl NativeDownloadEngine {
         let mut req = self
             .client
             .head(&url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1");
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*");
         if let Some(ref r) = referer {
             if !r.is_empty() {
                 req = req.header(REFERER, r);
@@ -399,7 +402,8 @@ impl NativeDownloadEngine {
             let mut range_req = self
                 .client
                 .get(&url)
-                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
+                .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*")
                 .header(RANGE, "bytes=0-0");
             if let Some(ref r) = referer {
                 if !r.is_empty() {
@@ -915,7 +919,8 @@ async fn download_raw_to_path(
 ) -> Result<(), String> {
     let mut req = client
         .get(&task.url)
-        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
+        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*")
         .header(RANGE, "bytes=0-0");
     if let Some(ref r) = task.referer {
         if !r.is_empty() {
@@ -930,7 +935,13 @@ async fn download_raw_to_path(
 
     let mut total_len = 0u64;
     let mut supports_range = false;
-    if let Ok(resp) = req.send().await {
+    let mut probe_resp_opt = req.send().await.ok();
+    if let Some(ref r) = probe_resp_opt {
+        if !r.status().is_success() && r.status() != StatusCode::PARTIAL_CONTENT {
+            probe_resp_opt = None;
+        }
+    }
+    if let Some(resp) = probe_resp_opt {
         let mut resolved_from_header = false;
         if let Some(cd) = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()) {
             if let Some(clean_cd_name) = parse_content_disposition_filename(cd) {
@@ -1086,7 +1097,8 @@ async fn download_raw_to_path(
                 }
                 let mut rb = c
                     .get(&u)
-                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1")
+                    .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*")
                     .header(RANGE, format!("bytes={}-{}", offset, end));
                 if let Some(ref r) = r_hdr {
                     if !r.is_empty() { rb = rb.header(REFERER, r); }
@@ -1151,7 +1163,8 @@ async fn download_raw_to_path(
     } else {
         let mut rb = client
             .get(&task.url)
-            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShunnoBrowser/1.1");
+            .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0")
+            .header("Accept", "*/*");
         if let Some(ref r) = task.referer {
             if !r.is_empty() { rb = rb.header(REFERER, r); }
         }
