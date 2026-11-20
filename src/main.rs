@@ -2332,6 +2332,39 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(AppEvent::SleepCheck) => {
                 let now = now_epoch_secs();
                 let mut changed = false;
+                // Visible tabs are "in use": keep their clock fresh so switching away starts the idle timer.
+                for (idx, tab) in tabs.iter_mut().enumerate() {
+                    if idx == active_tab_idx || split_tab_idx == Some(idx) {
+                        tab.last_active_secs = now;
+                    }
+                }
+                // Arc-style auto-archive: close long-unused tabs; they stay reopenable (Ctrl+Shift+T) and in history.
+                let probes: Vec<state::ArchiveProbe> = tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, t)| state::ArchiveProbe {
+                        last_active_secs: t.last_active_secs,
+                        pinned: t.pinned,
+                        playing_audio: t.playing_audio,
+                        visible: idx == active_tab_idx || split_tab_idx == Some(idx),
+                        incognito: t.incognito,
+                    })
+                    .collect();
+                let doomed = state::tabs_to_archive(now, global_settings.auto_archive_hours, &probes);
+                if !doomed.is_empty() {
+                    let active_id = tabs.get(active_tab_idx).map(|t| t.id);
+                    let split_id = split_tab_idx.and_then(|i| tabs.get(i)).map(|t| t.id);
+                    for idx in doomed {
+                        let removed = tabs.remove(idx);
+                        if removed.url != "shunno://newtab" {
+                            closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
+                        }
+                    }
+                    active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(0);
+                    split_tab_idx = split_id.and_then(|id| tabs.iter().position(|t| t.id == id));
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    changed = true;
+                }
                 for (idx, tab) in tabs.iter_mut().enumerate() {
                     let is_visible_pane = idx == active_tab_idx || split_tab_idx == Some(idx);
                     if !is_visible_pane
@@ -3436,6 +3469,15 @@ fn main() -> wry::Result<()> {
                             if !removed.incognito && removed.url != "shunno://newtab" {
                                 closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
                             }
+                            // Keep the same tab active when a tab to its left closes.
+                            if idx < active_tab_idx {
+                                active_tab_idx -= 1;
+                            }
+                            split_tab_idx = match split_tab_idx {
+                                Some(sp) if sp == idx => None,
+                                Some(sp) if sp > idx => Some(sp - 1),
+                                other => other,
+                            };
                             if active_tab_idx >= tabs.len() {
                                 active_tab_idx = tabs.len() - 1;
                             }
@@ -3705,6 +3747,11 @@ fn main() -> wry::Result<()> {
                     engine.install_ffmpeg_bundle(&rt_handle);
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
+                } else if let Some(h) = cmd.strip_prefix("SET_AUTO_ARCHIVE:") {
+                    if let Ok(h) = h.trim().parse::<u32>() {
+                        global_settings.auto_archive_hours = h.min(24 * 30);
+                        BrowserStorage::save_global_settings(&global_settings);
+                    }
                 } else if let Some(mc_str) = cmd.strip_prefix("SET_MAX_CONCURRENT:") {
                     if let Ok(mc) = mc_str.parse::<usize>() {
                         global_settings.max_concurrent_downloads = mc.clamp(1, 8);

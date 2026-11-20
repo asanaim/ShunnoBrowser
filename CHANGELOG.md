@@ -1,3 +1,13 @@
+## v2.15.0
+
+### Tabs (from Arc)
+* **Close unused tabs after** Never / 12 hours / 1 day / 7 days (Menu). Unpinned tabs not viewed for that long close themselves and stay reopenable (Ctrl+Shift+T) and in History. Pinned, playing, visible and private tabs are kept; the last tab is never closed. Default: Never.
+* Closing a tab to the left of the current one no longer switches you to a different tab; split view follows correctly.
+
+### UI
+* Menu settings in two compact columns with smaller switches.
+* Menu, Downloads and Library popovers share one width (400 px).
+
 ## v2.14.2
 
 ### Downloads

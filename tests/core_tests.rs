@@ -348,3 +348,27 @@ fn import_history_merge_dedupes_and_caps() {
     assert_eq!(added, 2);
     assert_eq!(existing.iter().map(|x| x.url.as_str()).collect::<Vec<_>>(), ["https://a/", "https://c/", "https://b/"]);
 }
+
+#[test]
+fn test_auto_archive_selection() {
+    use state::{tabs_to_archive, ArchiveProbe};
+    let p = |last: u64, pinned: bool, audio: bool, visible: bool, incognito: bool| ArchiveProbe {
+        last_active_secs: last, pinned, playing_audio: audio, visible, incognito,
+    };
+    let now = 100_000;
+    let old = now - 13 * 3600;
+    let tabs = [
+        p(old, false, false, false, false), // 0: archive
+        p(old, true, false, false, false),  // 1: pinned
+        p(old, false, true, false, false),  // 2: audible
+        p(old, false, false, true, false),  // 3: visible
+        p(old, false, false, false, true),  // 4: private
+        p(now - 3600, false, false, false, false), // 5: recent
+        p(old, false, false, false, false), // 6: archive
+    ];
+    assert_eq!(tabs_to_archive(now, 12, &tabs), vec![6, 0]); // highest index first
+    assert!(tabs_to_archive(now, 0, &tabs).is_empty()); // off
+    assert!(tabs_to_archive(now, 24, &tabs).is_empty());
+    // Never archives every tab.
+    assert!(tabs_to_archive(now, 12, &[p(old, false, false, false, false)]).is_empty());
+}
