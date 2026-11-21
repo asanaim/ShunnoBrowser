@@ -415,6 +415,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .pw-offer .t { overflow: hidden; text-overflow: ellipsis; }
   .pw-offer .t b { font-weight: 600; }
   .pw-offer .save { border: none; background: var(--blue); color: #fff; border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .perm-offer .deny { border: none; background: rgba(118,118,128,.16); color: var(--text); border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .perm-site { font-size: 12px; font-weight: 600; padding: 8px 10px 2px; display: flex; align-items: center; justify-content: space-between; }
+  .perm-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; }
+  .perm-row .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .perm-seg { display: inline-flex; background: rgba(118,118,128,.14); border-radius: 8px; padding: 2px; }
+  .perm-seg button { border: none; background: transparent; color: var(--text-dim, inherit); font-size: 11px; padding: 2px 9px; border-radius: 6px; cursor: pointer; }
+  .perm-seg button.on { background: var(--surface, #fff); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
   .pw-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; position: relative; }
   .pw-row + .pw-row::before { content: ""; position: absolute; top: 0; left: 44px; right: 0; border-top: 1px solid var(--border); }
   .pw-av { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
@@ -732,6 +739,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div class="nav-group right">
+        <div id="perm-offer" class="pw-offer perm-offer" style="display:none"></div>
         <div id="pw-offer" class="pw-offer" style="display:none"></div>
         <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
@@ -866,6 +874,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('permissions', document.getElementById('btn-controls'))" title="Camera, microphone, location and more, per site">🛡️ Permissions</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
@@ -1005,6 +1014,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Stored only on this PC, encrypted with your Windows account. Showing or copying a password asks for Windows Hello.
           <a href="#" onclick="event.preventDefault(); if (confirm('Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.')) send('CLEAR_PASSWORDS');" style="color:var(--blue);">Clear old built-in passwords</a>
+        </div>
+      </div>
+
+      <div id="panel-permissions" style="display:none">
+        <div class="sheet-head"><h3>Site Permissions</h3></div>
+        <div id="perm-list"></div>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">
+          Sites ask in the toolbar the first time. Your answer is kept per site. Private tabs ask every time and remember nothing.
+          Undecided requests from Peek and Little windows are blocked.
         </div>
       </div>
 
@@ -1294,7 +1312,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1564,6 +1582,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Save Page as PDF (PrintToPdf)', run: () => send('PRINT_TO_PDF') },
       { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
       { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
+      { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
       { kind: 'Action', title: 'Export Download History to CSV (with SHA-256)', run: () => send('EXPORT_DL_CSV') },
       { kind: 'Action', title: 'Sleep Inactive Background Tabs (Save RAM)', run: () => send('SLEEP_INACTIVE_TABS') },
       { kind: 'Action', title: 'Toggle Dark Mode', run: () => send('TOGGLE_GLOBAL:full_dark') },
@@ -1739,6 +1758,47 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <button class="icon-btn" onclick="send('PW_DISMISS')" title="Not now">${SVG_X}</button>`;
     el.style.display = 'flex';
   }
+  function renderPermOffer(state) {
+    const el = document.getElementById('perm-offer');
+    const o = state.perm_prompt;
+    if (!o) { el.style.display = 'none'; el.dataset.k = ''; return; }
+    const k = String(o.id);
+    if (el.dataset.k === k) return;
+    el.dataset.k = k;
+    el.title = o.origin + (o.private ? ' (private tab: not remembered)' : '');
+    el.innerHTML = `<span class="t">${escapeHtml(o.icon)} <b>${escapeHtml(o.host)}</b> wants to ${escapeHtml(o.label)}</span>
+      <button class="deny" onclick="send('PERM_DECIDE:${o.id}|block')">Block</button>
+      <button class="save" onclick="send('PERM_DECIDE:${o.id}|allow')">Allow</button>`;
+    el.style.display = 'flex';
+  }
+  function renderPermissions(state) {
+    const list = document.getElementById('perm-list');
+    if (!list) return;
+    const items = state.permissions || [];
+    const sig = JSON.stringify(items);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    if (!items.length) {
+      list.innerHTML = '<div class="meta" style="text-align:center;padding:20px 8px;">No site has asked yet.</div>';
+      return;
+    }
+    const bySite = new Map();
+    items.forEach(e => { if (!bySite.has(e.origin)) bySite.set(e.origin, []); bySite.get(e.origin).push(e); });
+    list.innerHTML = '<div class="dl-group">' + Array.from(bySite.entries()).map(([origin, rows]) => {
+      const o = encodeAttr(origin);
+      return `<div class="perm-site" title="${o}"><span>${escapeHtml(pwHost(origin))}</span>
+          <button class="text-btn" onclick="send('PERM_RESET_SITE:' + this.dataset.o)" data-o="${o}" title="Forget every decision for this site">Reset</button></div>` +
+        rows.map(e => `<div class="perm-row">
+          <span>${escapeHtml(e.icon)}</span><span class="lbl">${escapeHtml(e.label.charAt(0).toUpperCase() + e.label.slice(1))}</span>
+          <span class="perm-seg" data-o="${o}" data-k="${encodeAttr(e.kind)}">
+            <button class="${e.decision === 'allow' ? 'on' : ''}" onclick="permSet(this.parentNode,'allow')">Allow</button>
+            <button class="${e.decision === 'block' ? 'on' : ''}" onclick="permSet(this.parentNode,'block')">Block</button>
+          </span>
+          <button class="icon-btn" onclick="permSet(this.previousElementSibling,'reset')" title="Ask next time">${SVG_X}</button>
+        </div>`).join('');
+    }).join('') + '</div>';
+  }
+  function permSet(seg, d) { send('PERM_SET:' + seg.dataset.o + '|' + seg.dataset.k + '|' + d); }
   function renderPasswords(state) {
     const list = document.getElementById('pw-list');
     if (!list) return;
@@ -2268,6 +2328,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     rb.classList.toggle('on', !!state.active_reader);
     rb.title = state.active_reader ? 'Close Reader (F9 or Esc)' : 'Reader (F9)';
     renderPwOffer(state);
+    renderPermOffer(state);
+    renderPermissions(state);
     renderPasswords(state);
 
     const folderBar = document.getElementById('bookmark-folders-bar');

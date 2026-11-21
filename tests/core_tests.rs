@@ -20,6 +20,9 @@ mod importer;
 mod passwords;
 #[path = "../src/little.rs"]
 mod little;
+#[path = "../src/permissions.rs"]
+#[allow(dead_code)]
+mod permissions;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -569,4 +572,35 @@ fn test_reader_prefs_validation() {
     assert_eq!(reader.matches("__SHUNNO_READER_PREFS__").count(), 1);
     let rd = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/readability.min.js")).unwrap();
     assert!(rd.contains("Apache License") && rd.contains("Readability"));
+}
+
+#[test]
+fn permissions_resolve_and_store() {
+    use permissions::{resolve, Decision, Store};
+    // Saved Block always wins; saved Allow is ignored in private tabs; otherwise defaults.
+    assert_eq!(resolve(Some(Decision::Block), "camera", true), Some(Decision::Block));
+    assert_eq!(resolve(Some(Decision::Allow), "camera", false), Some(Decision::Allow));
+    assert_eq!(resolve(Some(Decision::Allow), "camera", true), None);
+    assert_eq!(resolve(None, "camera", false), None);
+    assert_eq!(resolve(None, "autoplay", false), Some(Decision::Allow));
+
+    let mut st = Store::default();
+    st.set("https://meet.example", "camera", Decision::Allow);
+    st.set("https://meet.example", "microphone", Decision::Block);
+    st.set("https://meet.example", "bogus", Decision::Allow); // unknown kind rejected
+    st.set("", "camera", Decision::Allow); // empty origin rejected
+    assert_eq!(st.get("https://meet.example", "camera"), Some(Decision::Allow));
+    assert_eq!(st.get("https://meet.example", "bogus"), None);
+    assert_eq!(st.entries().len(), 2);
+    st.reset("https://meet.example", Some("camera"));
+    assert_eq!(st.entries().len(), 1);
+    st.reset("https://meet.example", None);
+    assert!(st.entries().is_empty());
+
+    // Round trip through JSON keeps lowercase decisions.
+    st.set("https://a.example", "location", Decision::Block);
+    let t = serde_json::to_string(&st).unwrap();
+    assert!(t.contains("\"block\""));
+    let back: Store = serde_json::from_str(&t).unwrap();
+    assert_eq!(back.get("https://a.example", "location"), Some(Decision::Block));
 }
