@@ -109,7 +109,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
      while the others shrink to their icon; past that the strip scrolls sideways (wheel or
      trackpad), with soft edges showing there is more. Empty space in the strip drags the window. */
   #tabs-container {
-    position: relative; display: flex; gap: 4px; align-items: center; flex: 1 1 auto; min-width: 0; height: 100%;
+    position: relative; display: flex; gap: 4px; align-items: center; flex: 0 1 auto; min-width: 0; height: 100%;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
   }
   #tabs-container::-webkit-scrollbar { display: none; }
@@ -122,10 +122,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     from { max-width: 0; min-width: 0; opacity: 0; padding-left: 0; padding-right: 0; }
   }
   .tab {
-    position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;
-    height: 28px; box-sizing: border-box; padding: 0 6px; border-radius: 9px;
+    position: relative; display: flex; align-items: center; justify-content: flex-start; gap: 7px;
+    height: 28px; box-sizing: border-box; padding: 0 6px 0 8px; border-radius: 9px;
     background: transparent; color: var(--text); font-size: 12px; cursor: default; user-select: none;
-    flex: 1 1 0; min-width: 36px; max-width: 240px; overflow: hidden;
+    /* Same starting width for every tab, all shrinking alike: tabs stay equal and the New Tab and
+       Private buttons follow the last tab. */
+    flex: 0 1 220px; min-width: 36px; max-width: 220px; overflow: hidden;
     /* Switching tabs changes no sizes and animates nothing but colour: no reflow, no flicker. */
     transition: background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
   }
@@ -283,23 +285,27 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab-audio:hover { background: var(--blue); color: #fff; }
   /* Padding stays the same on every tab (so all tabs get the same share of the strip); the title
      leaves room at both ends for the close button. */
-  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; max-width: calc(100% - 66px); }
-  /* Close button at the left edge, as in Safari: on the current tab always, on others while hovered. */
+  /* Icon and title on the left, close button on the right (Chrome layout): on the current tab
+     always, on others while hovered. */
+  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); text-overflow: clip; }
   .tab-close {
-    position: absolute; left: 5px; top: 50%; transform: translateY(-50%);
+    order: 9; flex-shrink: 0;
     width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 5px;
     color: var(--muted); opacity: 0; pointer-events: none;
     transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
   }
   .tab-close svg { display: block; }
   .tab:hover .tab-close, .tab.active .tab-close { opacity: 1; pointer-events: auto; }
+  /* Out of the layout while hidden, so a narrow tab's title gets that room. */
+  .tab:not(.active):not(:hover):not([data-narrow]) .tab-close { display: none; }
   .tab-close:hover { background: rgba(128, 128, 128, 0.22); color: var(--text); }
   .tab-close:active { background: rgba(128, 128, 128, 0.34); }
   /* Narrow tabs (many open) show only their icon. A click selects the tab (middle-click closes
      it); on the current narrow tab the close button takes the icon's place. */
-  .tab[data-narrow] { gap: 0; }
+  .tab[data-narrow] { gap: 0; justify-content: center; }
   .tab[data-narrow] .tab-title, .tab[data-narrow] .tab-audio { display: none; }
-  .tab[data-narrow] .tab-close { left: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; background: var(--surface-solid); }
+  .tab[data-narrow] .tab-close { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; background: var(--surface-solid); }
   .tab[data-narrow].active .tab-close { opacity: 1; pointer-events: auto; }
   .tab[data-narrow].active .tab-close ~ .tab-fav, .tab[data-narrow].active > .tab-fav, .tab[data-narrow].active > .tab-logo { visibility: hidden; }
   .space-pill:empty { display: none; }
@@ -314,7 +320,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Drag spacer + Native Window Controls (replaces wasted top title bar!) */
   .win-drag-spacer {
-    flex: 0 0 24px; height: 100%; min-width: 24px; cursor: default;
+    flex: 1 1 24px; height: 100%; min-width: 24px; cursor: default;
   }
   .win-controls {
     display: flex; align-items: center; gap: 4px; flex-shrink: 0;
@@ -575,6 +581,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: var(--blue-soft); color: var(--blue); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .cb-pick:hover { filter: brightness(1.05); }
   .cb-pick:active { transform: scale(0.98); }
+  /* Press feedback everywhere: a small give under the pointer, released on the same curve. */
+  .text-btn, .fav-tile, .lib-row, .space-row, .ctx-row, .dl-row, .cb-pick, .ext-stores button { transition-property: transform, background, color, opacity; transition-duration: var(--dur-fast); transition-timing-function: var(--ease-fluid); }
+  .text-btn:active, .fav-tile:active, .lib-row:active, .space-row:active, .ctx-row:active, .ext-stores button:active { transform: scale(0.97); }
+  @keyframes noticeIn { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+  .cb-notice, #menu-note, #ext-notice, .perm-offer, #dup-banner { animation: noticeIn 0.3s var(--ease-fluid); }
   .cb-notice { margin-top: 8px; padding: 7px 10px; border-radius: 9px; font-size: 11.5px; line-height: 1.4; background: rgba(118,118,128,.1); word-break: break-word; }
   .cb-h { font-size: 12px; font-weight: 600; margin: 12px 2px 6px; }
   .cb-user { width: 100%; box-sizing: border-box; min-height: 110px; max-height: 220px; resize: vertical; border: none; border-radius: 10px; padding: 8px 10px;
@@ -1596,7 +1607,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   function toggleLibFolder(f) { libOpenFolders.has(f) ? libOpenFolders.delete(f) : libOpenFolders.add(f); renderLibrary(); }
   function libRow(url, title, sub, actions) {
-    return `<div class="lib-row" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(url)}'); closeDrawer();"
+    return `<div class="lib-row" data-k="${escapeHtml(url)}" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(url)}'); closeDrawer();"
          onauxclick="if(event.button===1){ send('NAV_NEW_TAB:${encodeAttr(url)}'); }" title="${escapeHtml(url)}">
       ${siteIcon(url, title)}<div class="lib-tx"><div class="t">${escapeHtml(title || url)}</div><div class="s">${escapeHtml(sub)}</div></div>${actions || ''}</div>`;
   }
@@ -1835,6 +1846,71 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (window.ipc) window.ipc.postMessage(msg);
   }
 
+  // ---------------------------------------------------------------- Motion (Apple style)
+  // Lists are re-rendered as HTML, so rows would jump. Rows carry a stable key (data-k): after each
+  // render, a row that moved glides from its old place, a new row grows in, and a progress bar
+  // continues from where it was. Same curve as the tabs; nothing moves with reduced motion.
+  const MOTION_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+  const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const MOTION_LISTS = ['#lib-body', '#downloads-list', '#perm-list', '#pw-list', '#cb-lists', '#ext-list', '#spaces-list',
+    '#bookmarks-strip', '#home-shortcuts-grid', '#streams-list'];
+  const motionState = new WeakMap(); // container -> Map(key -> {x, y, bar})
+  function motionSnapshot(box) {
+    const m = new Map();
+    if (!box.offsetParent) return m; // hidden: nothing to animate from
+    const b = box.getBoundingClientRect();
+    box.querySelectorAll('[data-k]').forEach(el => {
+      const r = el.getBoundingClientRect();
+      const bar = el.querySelector('.dl-bar > i');
+      m.set(el.dataset.k, { x: r.left - b.left + box.scrollLeft, y: r.top - b.top + box.scrollTop, bar: bar ? bar.style.width : null });
+    });
+    return m;
+  }
+  function motionPlay(box) {
+    const before = motionState.get(box);
+    const after = motionSnapshot(box);
+    motionState.set(box, after);
+    if (!before || !before.size || !after.size || reduceMotion()) return;
+    let entering = 0;
+    box.querySelectorAll('[data-k]').forEach(el => {
+      const was = before.get(el.dataset.k), now = after.get(el.dataset.k);
+      if (!now) return;
+      if (!was) {
+        el.animate([{ opacity: 0, transform: 'translateY(-6px) scale(0.97)' }, { opacity: 1, transform: 'none' }],
+          { duration: 300, easing: MOTION_EASE, delay: Math.min(entering++, 8) * 22, fill: 'backwards' });
+        return;
+      }
+      const dx = was.x - now.x, dy = was.y - now.y;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+        el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 320, easing: MOTION_EASE });
+      }
+      const bar = el.querySelector('.dl-bar > i');
+      if (bar && was.bar && was.bar !== bar.style.width) {
+        bar.animate([{ width: was.bar }, { width: bar.style.width }], { duration: 420, easing: MOTION_EASE });
+      }
+    });
+  }
+  (function motionWatch() {
+    const start = () => {
+      MOTION_LISTS.forEach(sel => {
+        const box = document.querySelector(sel);
+        if (!box || !window.MutationObserver) return;
+        motionState.set(box, motionSnapshot(box));
+        // Runs after the new HTML is in place and before it is painted.
+        new MutationObserver(() => motionPlay(box)).observe(box, { childList: true, subtree: false });
+      });
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  })();
+  // A panel opening inside the popover, or a group of items appearing: a short cascade.
+  function motionCascade(items, opts) {
+    if (reduceMotion()) return;
+    Array.from(items).slice(0, 24).forEach((el, i) => {
+      el.animate([{ opacity: 0, transform: (opts && opts.from) || 'translateY(6px) scale(0.98)' }, { opacity: 1, transform: 'none' }],
+        { duration: (opts && opts.duration) || 320, easing: MOTION_EASE, delay: i * ((opts && opts.step) || 18), fill: 'backwards' });
+    });
+  }
+
   function navigateFromBar() {
     const input = document.getElementById('url-input');
     const val = input.value.trim();
@@ -1898,6 +1974,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     else if (!activeDrawer) drawerAnchor = defaultAnchorFor(name);
     document.querySelectorAll('.tb.open').forEach(b => b.classList.remove('open'));
     if (drawerAnchor && drawerAnchor.classList.contains('tb')) drawerAnchor.classList.add('open');
+    const switching = !!activeDrawer && drawer.classList.contains('open');
+    const oldH = switching ? sheet.getBoundingClientRect().height : 0;
     activeDrawer = name;
     if (name === 'bookmarks') renderLibrary();
     if (name === 'blocker') { cbUserDirty(false); send('FILTERS_USER_GET'); if (lastState) renderBlocker(lastState); }
@@ -1910,9 +1988,21 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     drawer.classList.add('open');
     positionSheet();
-    sheet.style.animation = 'none';
-    void sheet.offsetWidth;
-    sheet.style.animation = '';
+    if (switching && !reduceMotion()) {
+      // Moving between panels in an open popover: it resizes smoothly and the new panel slides in.
+      const newH = sheet.getBoundingClientRect().height;
+      if (Math.abs(newH - oldH) > 1) {
+        sheet.style.overflow = 'hidden';
+        const a = sheet.animate([{ height: oldH + 'px' }, { height: newH + 'px' }], { duration: 300, easing: MOTION_EASE });
+        a.onfinish = a.oncancel = () => { sheet.style.overflow = ''; };
+      }
+      const panel = document.getElementById('panel-' + name);
+      if (panel) motionCascade(panel.children, { from: 'translateX(12px)', step: 14, duration: 300 });
+    } else {
+      sheet.style.animation = 'none';
+      void sheet.offsetWidth;
+      sheet.style.animation = '';
+    }
     send('DRAWER_OPEN:' + name);
   }
 
@@ -2262,15 +2352,27 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   // Safari, many tabs: a narrow tab keeps its close button, shown in place of the icon on the
   // current tab and on hover, instead of being pushed out of view.
+  // The strip asks for the room its tabs want at full width (220px each, pinned 36px); the window
+  // then shrinks all tabs alike. Measured content would feed back (a narrow tab hides its title,
+  // asks for less room, and the strip shrinks further).
+  function sizeTabStrip() {
+    const tc = document.getElementById('tabs-container');
+    if (!tc || tabWidthsLocked) return;
+    let want = 0, n = 0;
+    tc.querySelectorAll('.tab:not(.closing):not(.tg-hidden)').forEach(el => { want += el.classList.contains('pinned') ? 36 : 220; n++; });
+    tc.querySelectorAll('.tg-chip').forEach(c => { want += c.getBoundingClientRect().width; n++; });
+    tc.style.flexBasis = (want + Math.max(0, n - 1) * 4) + 'px';
+  }
   function markNarrowTabs() {
     const tc = document.getElementById('tabs-container');
+    sizeTabStrip();
     if (tc && !tabWidthsLocked) {
       const live = tc.querySelectorAll('.tab:not(.closing):not(.pinned):not(.tg-hidden)').length;
       tc.classList.toggle('crowded', live > 0 && tc.clientWidth / live < 150);
     }
     document.querySelectorAll('#tabs-container .tab:not(.closing)').forEach(el => {
       if (tabWidthsLocked || el.classList.contains('is-new')) return;
-      const narrow = el.getBoundingClientRect().width < 100;
+      const narrow = el.getBoundingClientRect().width < 58;
       if (narrow !== (el.dataset.narrow === '1')) {
         if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
       }
@@ -2654,7 +2756,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       const o = escapeHtml(origin); // read back through dataset, so plain HTML escaping
       return `<div class="perm-site" title="${o}"><span>${escapeHtml(pwHost(origin))}</span>
           <button class="text-btn" onclick="send('PERM_RESET_SITE:' + this.dataset.o)" data-o="${o}" title="Forget every decision for this site">Reset</button></div>` +
-        rows.map(e => `<div class="perm-row">
+        rows.map(e => `<div class="perm-row" data-k="${o}|${escapeHtml(e.kind)}">
           <span>${escapeHtml(e.icon)}</span><span class="lbl">${escapeHtml(e.label.charAt(0).toUpperCase() + e.label.slice(1))}</span>
           <span class="perm-seg" data-o="${o}" data-k="${escapeHtml(e.kind)}">
             <button class="${e.decision === 'allow' ? 'on' : ''}" onclick="permSet(this.parentNode,'allow')">Allow</button>
@@ -2690,7 +2792,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       const rows = f.lists.filter(l => l.group === g);
       if (!rows.length) return '';
       return `<div class="cb-site"><span>${escapeHtml(g)}</span></div>` + rows.map(l => `
-        <div class="cb-row"><span class="lbl" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}${l.on && !l.have ? ' <span class="meta">(downloading)</span>' : ''}</span>
+        <div class="cb-row" data-k="${escapeHtml(l.id)}"><span class="lbl" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}${l.on && !l.have ? ' <span class="meta">(downloading)</span>' : ''}</span>
           <button class="switch ${l.on ? 'on' : ''}" role="switch" aria-checked="${l.on}" aria-label="${escapeHtml(l.name)}"
             data-id="${escapeHtml(l.id)}" onclick="this.classList.toggle('on'); send('FILTER_LIST:' + this.dataset.id + '|' + (this.classList.contains('on') ? 1 : 0))"><i></i></button></div>`).join('');
     }).join('');
@@ -2738,7 +2840,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       const host = pwHost(c.origin);
       const shown = pwRevealed.get(c.id);
       const editing = pwEditing === c.id;
-      return `<div class="pw-row-wrap">
+      return `<div class="pw-row-wrap" data-k="pw${c.id}">
         <div class="pw-row" title="${escapeHtml(c.origin)}">
           <div class="pw-av">${escapeHtml(host.charAt(0).toUpperCase())}</div>
           <div class="pw-main">
@@ -2779,7 +2881,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function openNewTab() {
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
-    if (hc) hc.classList.add('active');
+    if (hc) { hc.classList.add('active'); homeEnter(hc); }
     // Keep the Favorites bar as the setting has it, so it neither flashes nor vanishes.
     document.getElementById('bookmarks-strip').style.display = favoritesBarOn(lastState) ? '' : 'none';
     window.__focusHomeSearch();
@@ -2809,7 +2911,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       renderExtensions.t = setTimeout(() => n.classList.remove('on'), 8000);
     }
     const el = document.getElementById('ext-list');
-    const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}">
+    const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}" data-k="${escapeHtml(e.id)}">
         <div class="ic">${extIcon(e, 36)}</div>
         <div class="tx">
           <div class="nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
@@ -2942,7 +3044,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     (state.tabs || []).forEach(t => { counts[t.space] = (counts[t.space] || 0) + 1; });
     const list = document.getElementById('spaces-list');
     const html = sv.list.map(x => `
-      <div class="space-row ${x.id === sv.active ? 'on' : ''}" style="--row-accent:${x.color}" onclick="send('SPACE_SWITCH:${x.id}')">
+      <div class="space-row ${x.id === sv.active ? 'on' : ''}" data-k="sp${x.id}" style="--row-accent:${x.color}" onclick="send('SPACE_SWITCH:${x.id}')">
         <div class="sw">${escapeHtml(x.icon)}</div>
         <div class="nm">${escapeHtml(x.name)}</div>
         <div class="ct">${counts[x.id] || 0}</div>
@@ -3012,10 +3114,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   };
 
   // Called by the native side just before it opens a New Tab it initiated (e.g. Ctrl+T inside a page).
+  // New Tab page: search field and Favorites settle in, one after another.
+  function homeEnter(hc) {
+    const hero = hc.querySelectorAll('.home-hero > *');
+    motionCascade(hero, { from: 'translateY(10px) scale(0.985)', step: 40, duration: 380 });
+    setTimeout(() => motionCascade(hc.querySelectorAll('.fav-tile'), { from: 'translateY(8px) scale(0.94)', step: 16, duration: 340 }), 60);
+  }
   window.__showHomeNow = function () {
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
-    if (hc) hc.classList.add('active');
+    if (hc) { hc.classList.add('active'); homeEnter(hc); }
     document.getElementById('bookmarks-strip').style.display = favoritesBarOn(lastState) ? '' : 'none';
   };
   function favoritesBarOn(state) {
@@ -3084,7 +3192,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         const openAttr = d.status === 'COMPLETED' && d.saved_path
           ? ` role="button" tabindex="0" onclick="send('DL_OPEN:${encodeAttr(d.saved_path)}')" onkeydown="if(event.key==='Enter')this.click()"` : '';
         return `
-          <div class="dl-row${openAttr ? ' done' : ''}" title="${escapeHtml(tip)}">
+          <div class="dl-row${openAttr ? ' done' : ''}" data-k="dl${d.id}" title="${escapeHtml(tip)}">
             <div class="dl-icon ${dlIconClass(d.category)}"${openAttr}><b>${escapeHtml(ext)}</b></div>
             <div class="dl-main">
               <div class="dl-name"${openAttr}>${escapeHtml(d.file_name)}</div>
@@ -3208,7 +3316,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const barOn = favoritesBarOn(state);
     bmStrip.style.display = barOn ? '' : 'none';
     const barHtml = barOn ? favs.slice(0, 30).map(b => `
-      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
+      <button class="bm-chip" data-k="${escapeHtml(b.url)}" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
               oncontextmenu="event.preventDefault(); editBookmarkByUrl('${encodeAttr(b.url)}')" title="${escapeHtml(b.title)}\n${escapeHtml(b.url)}">${siteIcon(b.url, b.title, 'chip-ic')}<span>${escapeHtml(b.title)}</span></button>`).join('') : '';
     if (bmStrip.dataset.h !== barHtml) { bmStrip.dataset.h = barHtml; bmStrip.innerHTML = barHtml; }
     const homeCanvas = document.getElementById('home-canvas');
@@ -3216,7 +3324,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       homeCanvas.classList.add('active');
       const grid = document.getElementById('home-shortcuts-grid');
       const gridHtml = `<div class="fav-title">Favorites</div><div class="fav-grid">` + favs.slice(0, 24).map(b => `
-        <div class="fav-tile" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
+        <div class="fav-tile" data-k="${escapeHtml(b.url)}" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
              oncontextmenu="event.preventDefault(); editBookmarkByUrl('${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">
           <button class="fav-x" onclick="event.stopPropagation(); send('BOOKMARK_REMOVE_URL:${encodeAttr(b.url)}')" title="Remove from Favorites">✕</button>
           ${siteIcon(b.url, b.title, 'fav-ic')}
@@ -3300,7 +3408,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.getElementById('streams-list').innerHTML = state.streams.length === 0
       ? '<div class="meta">No direct media or file links detected on this page yet.</div>'
       : state.streams.map(s => `
-          <div class="list-row">
+          <div class="list-row" data-k="${escapeHtml(s.url)}">
             <div style="overflow:hidden;">
               <div style="font-size:12px;font-weight:600;">${escapeHtml(s.name)} <span class="pill-btn pill-green" style="padding:1px 5px;font-size:10.5px;">${escapeHtml(s.size_label)}</span></div>
               <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(s.url)}</div>

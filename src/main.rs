@@ -592,6 +592,8 @@ enum AppEvent {
     SearchSelection(usize, String),
     /// Right-click → Hide Element on Page (tab id): start the element picker at the clicked element.
     StartPicker(usize),
+    /// A tab shown under the previous one has had time to draw: put it on top.
+    RaiseTab(usize),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     /// Toolbar message from a specific browser window (its key); handled as ChromeIpc there.
@@ -719,6 +721,7 @@ fn event_tab_id(e: &AppEvent) -> Option<usize> {
         | AppEvent::TabZoomChanged(t, _)
         | AppEvent::SearchSelection(t, _)
         | AppEvent::StartPicker(t)
+        | AppEvent::RaiseTab(t)
         | AppEvent::DownloadIntercepted(t, _) => Some(*t),
         AppEvent::NavigationDone(t, _, _) => Some(*t),
         AppEvent::TakeoverCandidate { tab_id, .. } => Some(*tab_id),
@@ -3567,6 +3570,32 @@ fn bring_active_tab_above_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
 #[cfg(not(windows))]
 fn bring_active_tab_above_chrome(_tab_wv: &WebView, _chrome_wv: &WebView) {}
 
+/// Puts `wv` directly under `above` in the window's z-order.
+#[cfg(windows)]
+fn place_tab_below(wv: &WebView, above: &WebView) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use wry::WebViewExtWindows;
+    unsafe {
+        let (mut a, mut b) = (HWND::default(), HWND::default());
+        if wv.controller().ParentWindow(&mut a).is_ok() && above.controller().ParentWindow(&mut b).is_ok() && a.0 != 0 && b.0 != 0 && a.0 != b.0 {
+            let _ = SetWindowPos(a, b, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn place_tab_below(_wv: &WebView, _above: &WebView) {}
+
+thread_local! {
+    /// Tab ids whose web views layout_webviews left visible.
+    static TAB_SHOWN: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The current tab, and the one before it (kept on screen under the current one).
+    static TAB_LAST_ACTIVE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static TAB_WARM_PREV: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// A newly shown tab waiting to be raised over the previous one.
+    static TAB_RAISE_PENDING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 
 
 fn layout_webviews(
@@ -3640,6 +3669,36 @@ fn layout_webviews(
     if placements.is_empty() && tabs.get(active_idx).is_some_and(|t| t.url != "shunno://newtab") {
         placements.push((active_idx, grip, web_w));
     }
+    // Smooth switching (as Chrome does): the tab you came from stays on screen, under the current
+    // one, so switching back is only a change of order. A tab that was hidden is first shown under
+    // the one on screen and raised a moment later, once it has drawn its page: a web view that has
+    // just been shown paints an empty frame first, which was the flash between pages.
+    let active_id = tabs.get(active_idx).map(|t| t.id);
+    let mut raise_later = false;
+    let mut cover: Option<usize> = None; // index of the tab that stays on top while the new one draws
+    if valid_split.is_none() && placements.len() == 1 {
+        let last = TAB_LAST_ACTIVE.with(|c| c.get());
+        if let Some(aid) = active_id {
+            if last != Some(aid) {
+                TAB_WARM_PREV.with(|c| c.set(last));
+                TAB_LAST_ACTIVE.with(|c| c.set(Some(aid)));
+            }
+        }
+        let prev = TAB_WARM_PREV
+            .with(|c| c.get())
+            .and_then(|pid| tabs.iter().position(|t| t.id == pid))
+            .filter(|&pi| pi != active_idx && tabs[pi].url != "shunno://newtab");
+        if let Some(pi) = prev {
+            let shown = TAB_SHOWN.with(|v| v.borrow().clone());
+            let active_was_shown = active_id.is_some_and(|aid| shown.contains(&aid));
+            let pending = TAB_RAISE_PENDING.with(|c| c.get()) == active_id;
+            if (!active_was_shown || pending) && shown.contains(&tabs[pi].id) {
+                raise_later = true;
+                cover = Some(pi);
+            }
+            placements.push((pi, grip, web_w));
+        }
+    }
     for &(idx, x, pw) in &placements {
         let tab = &tabs[idx];
         let _ = tab.webview.set_bounds(Rect {
@@ -3658,16 +3717,43 @@ fn layout_webviews(
         });
         let _ = tab.webview.set_visible(false);
     }
+    TAB_SHOWN.with(|v| *v.borrow_mut() = placements.iter().map(|p| tabs[p.0].id).collect());
     if !chrome_grows {
         apply_chrome();
+    }
+
+    // Which page is on top: the current tab, or (for a moment) the one it is replacing.
+    let top_idx = match (raise_later, cover) {
+        (true, Some(ci)) => ci,
+        _ => active_idx,
+    };
+    if raise_later {
+        if let Some(aid) = active_id {
+            if TAB_RAISE_PENDING.with(|c| c.replace(Some(aid))) != Some(aid) {
+                if let Some(px) = THEME_PROXY.get().and_then(|m| m.lock().ok().map(|p| p.clone())) {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(70));
+                        let _ = px.send_event(AppEvent::RaiseTab(aid));
+                    });
+                }
+            }
+        }
+    } else {
+        TAB_RAISE_PENDING.with(|c| c.set(None));
+    }
+    if let (Some(&(_, _, _)), Some(top)) = (placements.first(), tabs.get(top_idx)) {
+        if raise_later {
+            // The new page goes directly under the one on screen.
+            place_tab_below(&tabs[active_idx].webview, &top.webview);
+        }
     }
 
     if !is_fs {
         if overlay_active || is_home {
             bring_chrome_above_tabs(chrome_wv, tabs);
-        } else if let Some(active_tab) = tabs.get(active_idx) {
-            if active_tab.url != "shunno://newtab" {
-                bring_active_tab_above_chrome(&active_tab.webview, chrome_wv);
+        } else if let Some(top_tab) = tabs.get(top_idx) {
+            if top_tab.url != "shunno://newtab" {
+                bring_active_tab_above_chrome(&top_tab.webview, chrome_wv);
             }
         }
     }
@@ -5137,6 +5223,15 @@ fn main() -> wry::Result<()> {
                     Err(e) => importer::set_status(e),
                 }
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::RaiseTab(tab_id)) => {
+                if TAB_RAISE_PENDING.with(|c| c.get()) == Some(tab_id) {
+                    TAB_RAISE_PENDING.with(|c| c.set(None));
+                    if tabs.get(active_tab_idx).map(|t| t.id) == Some(tab_id) {
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
+                }
             }
 
             Event::UserEvent(AppEvent::StartPicker(tab_id)) => {
