@@ -1,3 +1,16 @@
+## v2.23.0
+
+### Tab Groups
+* **Right-click a tab** for a compact menu: Pin, *Add Tab to New Group*, *Move to Group*, *Remove from Group*, Mute and Close.
+* A group shows as a **coloured capsule** before its tabs, and its tabs take a light tint of the group colour. A new group opens its name field straight away; an unnamed group shows as a dot.
+* **Click the capsule to collapse** the group (it shows how many tabs it holds); click again to expand. Collapsing the group you are in moves you to the nearest visible tab.
+* **Right-click the capsule** to rename, recolour, collapse, ungroup or close the whole group.
+* Drag a tab between two tabs of a group to add it; drag it away to take it out. Grouped tabs always stay together. Pinned and private tabs are not grouped; moving a tab to another Space takes it out of its group.
+* Groups and collapsed state are restored with your session, per profile.
+
+### Fixes
+* *Restart to update* now reopens the same profile.
+
 ## v2.22.1
 
 ### Profiles
