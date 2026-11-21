@@ -171,6 +171,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: background 0.18s var(--ease-fluid), color 0.18s ease;
   }
   .win-btn:hover { background: rgba(128, 128, 128, 0.18); }
+  .cap-glyph { font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: 10px; font-weight: 400; line-height: 1; }
+  /* Windows 11: the maximize button is drawn and hit-tested by the window itself (real Snap Layouts);
+     this one only holds its place. */
+  .win-btn.native-max { visibility: hidden; }
   .win-btn.close:hover { background: #FF3B30; color: #FFFFFF; }
 
   /* 2. Unified Responsive Centered Address + Search Toolbar */
@@ -659,15 +663,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </button>
       <div class="win-drag-spacer" onmousedown="send('WIN_DRAG')" ondblclick="send('WIN_MAXIMIZE')"></div>
       <div class="win-controls">
-        <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize">
-          <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </button>
-        <button class="win-btn" id="btn-max" onclick="closeSnapFlyout(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize">
-          <svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-        </button>
-        <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close">
-          <svg width="11" height="11" viewBox="0 0 12 12"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </button>
+        <!-- Windows' own caption glyphs (Segoe Fluent Icons / MDL2): the same marks as every other app. -->
+        <button class="win-btn" onclick="send('WIN_MINIMIZE')" title="Minimize"><span class="cap-glyph">&#xE921;</span></button>
+        <button class="win-btn" id="btn-max" onclick="closeSnapFlyout(); send('WIN_MAXIMIZE')" onmouseenter="startSnapHover()" onmouseleave="cancelSnapHover()" title="Maximize"><span class="cap-glyph">&#xE922;</span></button>
+        <button class="win-btn close" onclick="send('WIN_CLOSE')" title="Close"><span class="cap-glyph">&#xE8BB;</span></button>
       </div>
     </div>
 
@@ -1091,12 +1090,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // Windows 10 (no Snap Layouts) and background windows use Shunno's flyout.
   let snapNative = false;
   function startSnapHover() {
+    if (snapNative) return; // Windows shows Snap Layouts itself over the native button.
     keepSnapOpen();
     if (snapHoverTimer) clearTimeout(snapHoverTimer);
-    if (snapNative) {
-      snapHoverTimer = setTimeout(() => { snapHoverTimer = null; send('SNAP_LAYOUTS'); }, 450);
-      return;
-    }
     snapHoverTimer = setTimeout(() => {
       const el = document.getElementById('snap-flyout');
       if (el && !el.classList.contains('open')) {
@@ -1121,13 +1117,36 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       send('ENGINE_MENU:0');
     }
   }
-  window.__snapFallback = function () {
-    const el = document.getElementById('snap-flyout');
-    if (el && !el.classList.contains('open')) {
-      el.classList.add('open');
-      send('ENGINE_MENU:1');
+  // Tell the window where the maximize button is and how to paint it (physical px, opaque colours).
+  function parseRgba(c) {
+    const m = (c || '').match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const p = m[1].split(',').map(v => parseFloat(v));
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  }
+  function over(top, base) { const a = top[3]; return [0, 1, 2].map(i => top[i] * a + base[i] * (1 - a)); }
+  function hex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
+  let lastMaxBtn = '';
+  function reportMaxButton() {
+    if (!snapNative) return;
+    const b = document.getElementById('btn-max');
+    if (!b) return;
+    const r = b.getBoundingClientRect();
+    const d = window.devicePixelRatio || 1;
+    // Composite the backgrounds behind the button over the window's own frame colour.
+    const chain = [];
+    for (let el = b.parentElement; el; el = el.parentElement) chain.push(el);
+    let col = document.body.classList.contains('dark') ? [0x1C, 0x1C, 0x1E] : [255, 255, 255];
+    for (const el of chain.reverse()) {
+      const c = parseRgba(getComputedStyle(el).backgroundColor);
+      if (c && c[3] > 0) col = over(c, col);
     }
-  };
+    const fg = parseRgba(getComputedStyle(b).color) || [0, 0, 0, 1];
+    const hov = over([128, 128, 128, 0.18], col);
+    const msg = `MAXBTN:${r.left * d}|${r.top * d}|${r.width * d}|${r.height * d}|${hex(col)}|${hex(over(fg, col))}|${hex(hov)}|${7 * d}|${10 * d}`;
+    if (msg !== lastMaxBtn) { lastMaxBtn = msg; send(msg); }
+  }
+  window.addEventListener('resize', () => requestAnimationFrame(reportMaxButton));
   function cancelSnapHover() {
     scheduleSnapClose();
   }
@@ -1249,8 +1268,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     else flip();
   }
 
-  const ICON_MAX = '<svg width="11" height="11" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
-  const ICON_RESTORE = '<svg width="11" height="11" viewBox="0 0 12 12"><rect x="1.8" y="3.6" width="6.6" height="6.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.8 3.6V2.9a1.1 1.1 0 0 1 1.1-1.1h4.2a1.1 1.1 0 0 1 1.1 1.1v4.2a1.1 1.1 0 0 1-1.1 1.1h-0.7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+  const ICON_MAX = '<span class="cap-glyph">&#xE922;</span>';
+  const ICON_RESTORE = '<span class="cap-glyph">&#xE923;</span>';
   let lastMaximized = null;
   function applyWindowState(maximized) {
     if (lastMaximized === maximized) return;
@@ -1813,7 +1832,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const wantDark = !!state.global.full_dark_mode;
     if (document.body.classList.contains('dark') !== wantDark) applyTheme(wantDark);
     applyWindowState(!!state.is_maximized);
-    snapNative = !!state.snap_native;
+    if (snapNative !== !!state.snap_native) {
+      snapNative = !!state.snap_native;
+      const mb = document.getElementById('btn-max');
+      if (mb) mb.classList.toggle('native-max', snapNative);
+    }
+    // Position and colours can change with layout, maximize and theme (after its cross-fade).
+    requestAnimationFrame(reportMaxButton);
+    setTimeout(reportMaxButton, 450);
 
     document.getElementById('version-badge').textContent = state.version || '';
     const upBtn = document.getElementById('btn-update');

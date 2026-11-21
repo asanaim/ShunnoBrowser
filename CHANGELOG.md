@@ -1,3 +1,10 @@
+## v2.17.4
+
+### Window
+* **Snap Layouts now appear exactly as in other apps (no zone numbers).** v2.17.2 opened them with Win+Z, which is the keyboard version and labels every zone with a number. On Windows 11 the maximize button is now a real window caption button: the window reports it to Windows (HTMAXBUTTON) and draws it, so hovering it shows the mouse version of Snap Layouts, the same as Notepad or Chrome. Click and double-click maximize/restore; hover and pressed states match the other buttons in both themes.
+* Minimize, maximize/restore and close use Windows' own caption glyphs (Segoe Fluent Icons; Segoe MDL2 Assets on Windows 10).
+* Windows 10 (no Snap Layouts) keeps Shunno's flyout.
+
 ## v2.17.3
 
 ### Keyboard

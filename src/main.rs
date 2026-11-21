@@ -1876,39 +1876,137 @@ fn windows_build() -> u32 {
     0
 }
 
-/// Windows 11 Snap Layouts: use the system flyout itself (identical look, zones, keyboard numbers).
+/// Windows 11: the maximize button is a real caption button (HTMAXBUTTON), so hovering it shows the
+/// system Snap Layouts flyout exactly as in other apps. Windows 10 keeps the web-drawn button.
 static SNAP_NATIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Open the real Snap Layouts flyout for this window by sending Win+Z. Only when this window is in
-/// the foreground; otherwise Win+Z would act on another app. Returns false if not sent.
+/// Native maximize button: a hole cut in the toolbar web view, hit-tested and painted by the window.
+#[derive(Clone, Copy, Default)]
+struct MaxButton {
+    /// Rectangle in the toolbar web view's host window, physical px.
+    rect: (i32, i32, i32, i32),
+    bg: u32,
+    fg: u32,
+    hover_bg: u32,
+    radius: i32,
+    glyph_px: i32,
+    hover: bool,
+    pressed: bool,
+    active: bool,
+}
+static MAX_BUTTON: std::sync::Mutex<MaxButton> = std::sync::Mutex::new(MaxButton {
+    rect: (0, 0, 0, 0), bg: 0, fg: 0, hover_bg: 0, radius: 0, glyph_px: 10, hover: false, pressed: false, active: false,
+});
+/// The toolbar web view's host window (wry's container HWND).
+static CHROME_HOST_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Parse "#RRGGBB" to COLORREF (0x00BBGGRR).
+fn colorref(hex: &str) -> Option<u32> {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some(((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF))
+}
+
+/// Cut the maximize button out of the toolbar web view so the window receives the mouse there.
+/// The native maximize button's rectangle in the main window's client coordinates, if active.
 #[cfg(windows)]
-fn open_native_snap_layouts(window: &Window) -> bool {
-    use tao::platform::windows::WindowExtWindows;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+fn max_button_client_rect(main: windows::Win32::Foundation::HWND) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::MapWindowPoints;
+    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+    let host = CHROME_HOST_HWND.load(Ordering::Relaxed);
+    if !b.active || host == 0 || !SNAP_NATIVE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut pts = [POINT { x: b.rect.0, y: b.rect.1 }, POINT { x: b.rect.2, y: b.rect.3 }];
     unsafe {
-        let me = windows::Win32::Foundation::HWND(window.hwnd() as isize);
-        let fg = GetForegroundWindow();
-        if fg != me && GetAncestor(fg, GA_ROOT) != me {
-            return false;
+        MapWindowPoints(HWND(host), main, &mut pts);
+    }
+    Some(RECT { left: pts[0].x, top: pts[0].y, right: pts[1].x, bottom: pts[1].y })
+}
+
+#[cfg(windows)]
+fn invalidate_max_button(main: windows::Win32::Foundation::HWND) {
+    if let Some(r) = max_button_client_rect(main) {
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(main, Some(&r), false);
         }
-        let key = |vk: VIRTUAL_KEY, up: bool| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, time: 0, dwExtraInfo: 0 },
-            },
-        };
-        let vk_z = VIRTUAL_KEY(0x5A);
-        let inputs = [key(VK_LWIN, false), key(vk_z, false), key(vk_z, true), key(VK_LWIN, true)];
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32
+    }
+}
+
+/// Paint the native maximize/restore button with Windows' own caption glyphs (Segoe Fluent Icons).
+#[cfg(windows)]
+fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32::Graphics::Gdi::HDC) {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::Graphics::Gdi::{
+        CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, FillRgn, SelectObject, SetBkMode,
+        SetTextColor, CLEARTYPE_QUALITY, DT_CENTER, DT_NOCLIP, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, TRANSPARENT,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
+    let Some(mut r) = max_button_client_rect(main) else { return };
+    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let bg = CreateSolidBrush(COLORREF(b.bg));
+        FillRect(hdc, &r, bg);
+        let _ = DeleteObject(bg);
+        if b.hover || b.pressed {
+            let c = if b.pressed {
+                // A little darker/lighter than hover.
+                let mix = |a: u32, b: u32| (a * 3 + b) / 4;
+                let (h, f) = (b.hover_bg, b.fg);
+                mix(h & 0xFF, f & 0xFF) | (mix((h >> 8) & 0xFF, (f >> 8) & 0xFF) << 8) | (mix((h >> 16) & 0xFF, (f >> 16) & 0xFF) << 16)
+            } else {
+                b.hover_bg
+            };
+            let hb = CreateSolidBrush(COLORREF(c));
+            let rgn = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, b.radius * 2, b.radius * 2);
+            let _ = FillRgn(hdc, rgn, hb);
+            let _ = DeleteObject(rgn);
+            let _ = DeleteObject(hb);
+        }
+        let mut face: Vec<u16> = "Segoe Fluent Icons".encode_utf16().chain(Some(0)).collect();
+        let mut font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, CLEARTYPE_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
+        if font.is_invalid() {
+            face = "Segoe MDL2 Assets".encode_utf16().chain(Some(0)).collect();
+            font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, CLEARTYPE_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
+        }
+        let old = SelectObject(hdc, font);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLORREF(b.fg));
+        // E922 = Maximize, E923 = Restore (the glyphs Windows uses on caption buttons).
+        let mut glyph: Vec<u16> = vec![if IsZoomed(main).as_bool() { 0xE923 } else { 0xE922 }];
+        DrawTextW(hdc, &mut glyph, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+        SelectObject(hdc, old);
+        let _ = DeleteObject(font);
+    }
+}
+
+#[cfg(windows)]
+fn apply_max_button_hole(main_hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, InvalidateRect, SetWindowRgn, RGN_DIFF};
+    let host = CHROME_HOST_HWND.load(Ordering::Relaxed);
+    if host == 0 {
+        return;
+    }
+    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let all = CreateRectRgn(0, 0, 32000, 32000);
+        if b.active && b.rect.2 > b.rect.0 && b.rect.3 > b.rect.1 {
+            let hole = CreateRectRgn(b.rect.0, b.rect.1, b.rect.2, b.rect.3);
+            CombineRgn(all, all, hole, RGN_DIFF);
+            let _ = DeleteObject(hole);
+        }
+        // The system owns the region after this call.
+        SetWindowRgn(HWND(host), all, true);
+        let _ = InvalidateRect(HWND(main_hwnd), None, false);
     }
 }
 #[cfg(not(windows))]
-fn open_native_snap_layouts(_window: &Window) -> bool {
-    false
-}
+fn apply_max_button_hole(_main_hwnd: isize) {}
 
 /// Proxy for the window procedure to report WM_SETTINGCHANGE("ImmersiveColorSet").
 /// "Darken All Sites" as it was when the browser started (the setting applies at next start).
@@ -1957,7 +2055,7 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
         CallWindowProcW, CreateIconFromResourceEx, GetClientRect, GetWindowLongW, GetWindowRect, IsZoomed, SendMessageW,
         SetClassLongPtrW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON,
         GCLP_HICONSM, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, HTBOTTOM, HTBOTTOMLEFT,
-        HTBOTTOMRIGHT, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG,
+        HTBOTTOMRIGHT, HTCLIENT, HTMAXBUTTON, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, ICON_BIG,
         ICON_SMALL, LR_DEFAULTCOLOR, SWP_FRAMECHANGED, SWP_NOMOVE,
         SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE, WM_NCHITTEST, WM_SETICON, WNDPROC,
         WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
@@ -2068,7 +2166,57 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                     let brush = CreateSolidBrush(COLORREF(FRAME_COLOR.load(Ordering::Relaxed)));
                     FillRect(hdc, &ps.rcPaint, brush);
                     let _ = DeleteObject(brush);
+                    paint_max_button(hwnd, hdc);
                     let _ = EndPaint(hwnd, &ps);
+                    return LRESULT(0);
+                }
+                // Native maximize button (Windows 11): hover tracking and clicks. Mouse-move still goes
+                // to the default handler so Windows can show Snap Layouts.
+                0x00A0 /* WM_NCMOUSEMOVE */ => {
+                    let over = wparam.0 == HTMAXBUTTON as usize;
+                    let changed = {
+                        let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                        let c = b.hover != over;
+                        b.hover = over;
+                        if !over {
+                            b.pressed = false;
+                        }
+                        c
+                    };
+                    if over {
+                        use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
+                        let mut t = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE | TME_NONCLIENT,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        let _ = TrackMouseEvent(&mut t);
+                    }
+                    if changed {
+                        invalidate_max_button(hwnd);
+                    }
+                }
+                0x02A2 /* WM_NCMOUSELEAVE */ => {
+                    {
+                        let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                        b.hover = false;
+                        b.pressed = false;
+                    }
+                    invalidate_max_button(hwnd);
+                }
+                0x00A1 /* WM_NCLBUTTONDOWN */ | 0x00A3 /* WM_NCLBUTTONDBLCLK */ if wparam.0 == HTMAXBUTTON as usize => {
+                    MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner()).pressed = true;
+                    invalidate_max_button(hwnd);
+                    return LRESULT(0);
+                }
+                0x00A2 /* WM_NCLBUTTONUP */ if wparam.0 == HTMAXBUTTON as usize => {
+                    let was_pressed = std::mem::replace(&mut MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner()).pressed, false);
+                    if was_pressed {
+                        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MAXIMIZE, SW_RESTORE};
+                        let _ = ShowWindow(hwnd, if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE });
+                    }
+                    invalidate_max_button(hwnd);
                     return LRESULT(0);
                 }
                 WM_NCCALCSIZE => {
@@ -2098,6 +2246,17 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                     }
                 }
                 WM_NCHITTEST => {
+                    if let Some(r) = max_button_client_rect(hwnd) {
+                        use windows::Win32::Graphics::Gdi::ScreenToClient;
+                        let mut pt = windows::Win32::Foundation::POINT {
+                            x: (lparam.0 & 0xFFFF) as i16 as i32,
+                            y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                        };
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                        if pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom {
+                            return LRESULT(HTMAXBUTTON as isize);
+                        }
+                    }
                     if IsZoomed(hwnd).as_bool() {
                         return LRESULT(HTCLIENT as isize);
                     }
@@ -2401,6 +2560,22 @@ fn main() -> wry::Result<()> {
     let _ = THEME_PROXY.set(std::sync::Mutex::new(proxy.clone()));
     FORCE_DARK_AT_START.store(global_settings.force_dark_pages, Ordering::Relaxed);
     SNAP_NATIVE.store(windows_build() >= 22000, Ordering::Relaxed);
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_MAXIMIZEBOX};
+        use wry::WebViewExtWindows;
+        let mut host = windows::Win32::Foundation::HWND::default();
+        if chrome_wv.controller().ParentWindow(&mut host).is_ok() {
+            CHROME_HOST_HWND.store(host.0, Ordering::Relaxed);
+        }
+        if SNAP_NATIVE.load(Ordering::Relaxed) {
+            // Windows only offers Snap Layouts for windows that have a maximize box.
+            use tao::platform::windows::WindowExtWindows;
+            let h = windows::Win32::Foundation::HWND(window.hwnd() as isize);
+            let st = GetWindowLongPtrW(h, GWL_STYLE);
+            SetWindowLongPtrW(h, GWL_STYLE, st | WS_MAXIMIZEBOX.0 as isize);
+        }
+    }
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -4411,10 +4586,28 @@ fn main() -> wry::Result<()> {
                     engine.install_ffmpeg_bundle(&rt_handle);
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
-                } else if cmd == "SNAP_LAYOUTS" {
-                    if !open_native_snap_layouts(&window) {
-                        // Not in the foreground: show Shunno's own flyout instead of acting on another app.
-                        let _ = chrome_wv.evaluate_script("window.__snapFallback && window.__snapFallback()");
+                } else if let Some(arg) = cmd.strip_prefix("MAXBTN:") {
+                    // MAXBTN:x|y|w|h|#bg|#fg|#hover|radius|glyph  (physical px in the toolbar web view)
+                    if SNAP_NATIVE.load(Ordering::Relaxed) {
+                        let f: Vec<&str> = arg.split('|').collect();
+                        if f.len() == 9 {
+                            let n = |i: usize| f[i].trim().parse::<f64>().map(|v| v.round() as i32).unwrap_or(0);
+                            {
+                                let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                                b.rect = (n(0), n(1), n(0) + n(2), n(1) + n(3));
+                                b.bg = colorref(f[4]).unwrap_or(0x00FFFFFF);
+                                b.fg = colorref(f[5]).unwrap_or(0);
+                                b.hover_bg = colorref(f[6]).unwrap_or(b.bg);
+                                b.radius = n(7);
+                                b.glyph_px = n(8).max(8);
+                                b.active = n(2) > 0 && n(3) > 0;
+                            }
+                            #[cfg(windows)]
+                            {
+                                use tao::platform::windows::WindowExtWindows;
+                                apply_max_button_hole(window.hwnd() as isize);
+                            }
+                        }
                     }
                     return;
                 } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
