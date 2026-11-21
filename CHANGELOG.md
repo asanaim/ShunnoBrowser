@@ -1,3 +1,10 @@
+## v2.30.0
+
+### Fixed
+- Maximize button: on a light/dark switch the native button now fades on the same curve and duration as the page cross-fade (0.38s) instead of jumping after it. Colour only updates repaint the button alone; the window region is rebuilt only when the button moves.
+- Maximize button glyph is drawn with grayscale antialiasing, as Windows draws caption buttons, removing ClearType colour fringes.
+- Favorites Bar: turning it on now shows it on the New Tab page as well as on web pages. Opening a New Tab keeps the bar as the setting has it, so it neither flashes nor vanishes. It still never shows as an empty strip.
+
 ## v2.29.0
 
 * **Extension icons:** shown in their own colours at full strength (they were dimmed like the
