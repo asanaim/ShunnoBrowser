@@ -689,3 +689,69 @@ fn session_split_into_windows() {
     assert_eq!(old.window, 0);
     assert!(!serde_json::to_string(&old).unwrap().contains("window"));
 }
+
+#[path = "../src/extensions.rs"]
+#[allow(dead_code)]
+mod extensions;
+
+#[test]
+fn extensions_crx_manifest_and_urls() {
+    use extensions::*;
+    // CRX3: magic, version 3, header length, header, then the zip.
+    let mut crx3 = b"Cr24".to_vec();
+    crx3.extend(3u32.to_le_bytes());
+    crx3.extend(5u32.to_le_bytes());
+    crx3.extend([0u8; 5]);
+    crx3.extend(b"PK\x03\x04rest");
+    assert_eq!(crx_zip_offset(&crx3), Ok(17));
+    // CRX2: magic, version 2, key length, signature length, key, signature, zip.
+    let mut crx2 = b"Cr24".to_vec();
+    crx2.extend(2u32.to_le_bytes());
+    crx2.extend(2u32.to_le_bytes());
+    crx2.extend(3u32.to_le_bytes());
+    crx2.extend([1u8; 5]);
+    crx2.extend(b"PK\x03\x04");
+    assert_eq!(crx_zip_offset(&crx2), Ok(21));
+    assert_eq!(crx_zip_offset(b"PK\x03\x04zip"), Ok(0));
+    assert!(crx_zip_offset(b"MZ\x90\x00 not an extension").is_err());
+    let mut bad = b"Cr24".to_vec();
+    bad.extend(3u32.to_le_bytes());
+    bad.extend(u32::MAX.to_le_bytes());
+    bad.extend([0u8; 8]);
+    assert!(crx_zip_offset(&bad).is_err());
+
+    // Manifest with a localized name, MV3 action popup and options_ui.
+    let dir = std::env::temp_dir().join(format!("shunno-ext-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("_locales/en")).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        r#"{"manifest_version":3,"name":"__MSG_appName__","version":"1.2.3","default_locale":"en",
+            "action":{"default_popup":"popup.html"},"options_ui":{"page":"opts/index.html"},"icons":{"16":"i16.png","48":"i48.png"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("_locales/en/messages.json"), r#"{"APPNAME":{"message":"Shunno Test"}}"#).unwrap();
+    std::fs::write(dir.join("i48.png"), b"\x89PNGfake").unwrap();
+    let m = read_manifest(&dir).unwrap();
+    assert_eq!(m.name, "Shunno Test");
+    assert_eq!(m.version, "1.2.3");
+    assert_eq!(m.popup.as_deref(), Some("popup.html"));
+    assert_eq!(m.options.as_deref(), Some("opts/index.html"));
+    assert!(m.icon.as_deref().unwrap_or("").starts_with("data:image/png;base64,"));
+    assert!(read_manifest(&dir.join("_locales")).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Page URLs only for real ids and relative pages.
+    let id = "cjpalhdlnbpafiamejdnhcphjbkeiagm";
+    assert_eq!(page_url(id, &m, "popup").as_deref(), Some("chrome-extension://cjpalhdlnbpafiamejdnhcphjbkeiagm/popup.html"));
+    assert_eq!(page_url("bad/id", &m, "popup"), None);
+    let evil = Meta { popup: Some("../../x.html".into()), ..m.clone() };
+    assert_eq!(page_url(id, &evil, "popup"), None);
+    assert_eq!(page_url(id, &m, "other"), None);
+
+    assert_eq!(base64(b"Man"), "TWFu");
+    assert_eq!(base64(b"Ma"), "TWE=");
+    assert_eq!(base64(b"M"), "TQ==");
+    assert_eq!(slug("uBlock Origin!"), "ublock-origin");
+    assert_eq!(slug("مرحبا"), "extension");
+}

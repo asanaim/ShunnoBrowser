@@ -1,3 +1,12 @@
+## v2.25.0
+
+### Extensions
+* **Chrome and Edge extensions** run in Shunno. Open the Extensions panel (🧩 in the Menu, the toolbar or the command palette) and choose **Add File…** for a `.crx` or `.zip`, or **Add Folder…** for an unpacked extension. Shunno keeps its own copy, so the original can be deleted.
+* Extensions with a popup get a **toolbar button** (up to four, Safari-style); click it to open the popup over the page. The puzzle button opens the panel.
+* Each extension has an **on/off switch**, **Open**, **Settings** (its options page) and **Remove** (with confirmation; its copy is deleted).
+* Limits: the Chrome Web Store cannot install into Shunno directly; extensions run in normal tabs, not private ones; some that need Chrome-only APIs may not work. Needs a current Microsoft Edge WebView2 Runtime; Shunno says so if it is too old.
+* Technical: WebView2 needs `AreBrowserExtensionsEnabled`, which wry 0.40 cannot set, so Shunno vendors `webview2-com` 0.30.0 with that option added (see THIRD_PARTY_NOTICES.md).
+
 ## v2.24.0
 
 ### Multiple windows

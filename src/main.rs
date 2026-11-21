@@ -2,6 +2,7 @@
 
 mod blocker;
 mod downloader;
+mod extensions;
 mod https_guard;
 mod importer;
 mod passwords;
@@ -380,6 +381,167 @@ struct ProfileForm {
     color: String,
 }
 
+// ---------------------------------------------------------------- Extensions (WebView2 profile)
+thread_local! {
+    static EXTENSIONS: std::cell::RefCell<Vec<extensions::Entry>> = const { std::cell::RefCell::new(Vec::new()) };
+    static EXT_NOTICE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(windows)]
+fn ext_profile(wv: &WebView) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile7> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+    unsafe {
+        let core = wv.controller().CoreWebView2().ok()?;
+        let c13: ICoreWebView2_13 = core.cast().ok()?;
+        c13.Profile().ok()?.cast::<ICoreWebView2Profile7>().ok()
+    }
+}
+
+const EXT_UNSUPPORTED: &str = "Extensions need a newer Microsoft Edge WebView2 Runtime. Update it from Windows Update or microsoft.com/edge/webview2, then restart Shunno.";
+
+/// Ask WebView2 for the installed extensions; the answer arrives as ExtensionsListed.
+#[cfg(windows)]
+fn ext_refresh(wv: &WebView, proxy: EventLoopProxy<AppEvent>) {
+    use webview2_com::ProfileGetBrowserExtensionsCompletedHandler;
+    let Some(prof) = ext_profile(wv) else {
+        let _ = proxy.send_event(AppEvent::ExtensionsListed(Vec::new()));
+        return;
+    };
+    let p2 = proxy.clone();
+    let h = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |res, list| {
+        let mut out = Vec::new();
+        if let (Ok(()), Some(list)) = (res, list) {
+            unsafe {
+                let mut n = 0u32;
+                let _ = list.Count(&mut n);
+                for i in 0..n {
+                    if let Ok(e) = list.GetValueAtIndex(i) {
+                        let mut id = windows::core::PWSTR::null();
+                        let mut name = windows::core::PWSTR::null();
+                        let mut on = windows::Win32::Foundation::BOOL::default();
+                        let _ = e.Id(&mut id);
+                        let _ = e.Name(&mut name);
+                        let _ = e.IsEnabled(&mut on);
+                        out.push((webview2_com::take_pwstr(id), webview2_com::take_pwstr(name), on.as_bool()));
+                    }
+                }
+            }
+        }
+        let _ = p2.send_event(AppEvent::ExtensionsListed(out));
+        Ok(())
+    }));
+    unsafe {
+        let _ = prof.GetBrowserExtensions(&h);
+    }
+}
+#[cfg(not(windows))]
+fn ext_refresh(_wv: &WebView, proxy: EventLoopProxy<AppEvent>) {
+    let _ = proxy.send_event(AppEvent::ExtensionsListed(Vec::new()));
+}
+
+/// Install Shunno's copy at `dir`. On failure the copy is deleted.
+#[cfg(windows)]
+fn ext_install(wv: &WebView, proxy: EventLoopProxy<AppEvent>, dir: std::path::PathBuf, meta: extensions::Meta) {
+    use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
+    let Some(prof) = ext_profile(wv) else {
+        extensions::delete_copy(&dir.to_string_lossy());
+        let _ = proxy.send_event(AppEvent::ExtensionNotice(EXT_UNSUPPORTED.into()));
+        return;
+    };
+    let p2 = proxy.clone();
+    let d2 = dir.clone();
+    let h = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |res, ext| {
+        match (res, ext) {
+            (Ok(()), Some(e)) => {
+                let mut id = windows::core::PWSTR::null();
+                unsafe {
+                    let _ = e.Id(&mut id);
+                }
+                let id = webview2_com::take_pwstr(id);
+                let mut reg = extensions::load_registry();
+                let name = meta.name.clone();
+                reg.insert(id, meta);
+                extensions::save_registry(&reg);
+                let _ = p2.send_event(AppEvent::ExtensionNotice(format!("Added {name}.")));
+            }
+            (r, _) => {
+                extensions::delete_copy(&d2.to_string_lossy());
+                let why = r.err().map(|e| e.message().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| "unknown error".into());
+                let _ = p2.send_event(AppEvent::ExtensionNotice(format!("WebView2 could not install it: {why}")));
+            }
+        }
+        let _ = p2.send_event(AppEvent::ChromeIpc("EXT_REFRESH".into()));
+        Ok(())
+    }));
+    let path = windows::core::HSTRING::from(dir.as_os_str());
+    unsafe {
+        if prof.AddBrowserExtension(&path, &h).is_err() {
+            extensions::delete_copy(&dir.to_string_lossy());
+            let _ = proxy.send_event(AppEvent::ExtensionNotice(EXT_UNSUPPORTED.into()));
+        }
+    }
+}
+#[cfg(not(windows))]
+fn ext_install(_wv: &WebView, _proxy: EventLoopProxy<AppEvent>, _dir: std::path::PathBuf, _meta: extensions::Meta) {}
+
+/// Enable, disable or remove one installed extension by id.
+#[cfg(windows)]
+fn ext_change(wv: &WebView, proxy: EventLoopProxy<AppEvent>, id: String, action: &'static str) {
+    use webview2_com::{BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler};
+    let Some(prof) = ext_profile(wv) else { return };
+    let p2 = proxy.clone();
+    let h = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |res, list| {
+        let (Ok(()), Some(list)) = (res, list) else { return Ok(()) };
+        unsafe {
+            let mut n = 0u32;
+            let _ = list.Count(&mut n);
+            for i in 0..n {
+                let Ok(e) = list.GetValueAtIndex(i) else { continue };
+                let mut eid = windows::core::PWSTR::null();
+                let _ = e.Id(&mut eid);
+                if webview2_com::take_pwstr(eid) != id {
+                    continue;
+                }
+                let p3 = p2.clone();
+                match action {
+                    "remove" => {
+                        let id2 = id.clone();
+                        let done = BrowserExtensionRemoveCompletedHandler::create(Box::new(move |r| {
+                            if r.is_ok() {
+                                let mut reg = extensions::load_registry();
+                                if let Some(m) = reg.remove(&id2) {
+                                    extensions::delete_copy(&m.path);
+                                    let _ = p3.send_event(AppEvent::ExtensionNotice(format!("Removed {}.", m.name)));
+                                }
+                                extensions::save_registry(&reg);
+                            }
+                            let _ = p3.send_event(AppEvent::ChromeIpc("EXT_REFRESH".into()));
+                            Ok(())
+                        }));
+                        let _ = e.Remove(&done);
+                    }
+                    on => {
+                        let done = BrowserExtensionEnableCompletedHandler::create(Box::new(move |_r| {
+                            let _ = p3.send_event(AppEvent::ChromeIpc("EXT_REFRESH".into()));
+                            Ok(())
+                        }));
+                        let _ = e.Enable(windows::Win32::Foundation::BOOL::from(on == "enable"), &done);
+                    }
+                }
+                break;
+            }
+        }
+        Ok(())
+    }));
+    unsafe {
+        let _ = prof.GetBrowserExtensions(&h);
+    }
+}
+#[cfg(not(windows))]
+fn ext_change(_wv: &WebView, _proxy: EventLoopProxy<AppEvent>, _id: String, _action: &'static str) {}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -413,6 +575,10 @@ enum AppEvent {
     ChromeIpc(String),
     /// Toolbar message from a specific browser window (its key); handled as ChromeIpc there.
     ChromeIpcW(u64, String),
+    /// WebView2's installed extensions: (id, name, enabled).
+    ExtensionsListed(Vec<(String, String, bool)>),
+    /// A line for the Extensions panel (added, removed, or why it failed).
+    ExtensionNotice(String),
     /// Session restore: open another window with these tabs (url, space, group).
     RestoreWindow(Vec<(String, u32, Option<u32>)>),
     ContentIpc(usize, String),
@@ -595,6 +761,8 @@ struct ChromeSnapshot {
     links_profile: String,
     tab_groups: Vec<state::TabGroup>,
     window_key: u64,
+    extensions: Vec<extensions::Entry>,
+    ext_notice: Option<String>,
     other_windows: Vec<WindowView>,
     name_group: Option<u32>,
     permissions: Vec<permissions::Entry>,
@@ -3010,6 +3178,11 @@ fn bring_webview_to_top(_wv: &WebView) {}
 fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
 
+    // Extensions: every WebView2 environment sharing the profile folder must use the same options,
+    // so this is set once, before the first web view.
+    #[cfg(windows)]
+    webview2_com::DEFAULT_BROWSER_EXTENSIONS_ENABLED.store(true, Ordering::Relaxed);
+
     // Profile first: every data path below depends on it.
     // One Shunno per profile: a second launch (e.g. a link clicked in another app) hands its link over.
     let start_url = little::url_from_args(std::env::args());
@@ -3375,6 +3548,8 @@ fn main() -> wry::Result<()> {
             links_profile: LINKS_PROFILE.with(|l| l.borrow().clone()),
             tab_groups: live_groups(tabs),
             window_key: WINDOW_KEY.with(|k| k.get()),
+            extensions: EXTENSIONS.with(|e| e.borrow().clone()),
+            ext_notice: EXT_NOTICE.with(|n| n.borrow_mut().take()),
             other_windows: OTHER_WINDOWS.with(|w| w.borrow().clone()),
             name_group: NEW_GROUP_TO_NAME.with(|n| n.take()),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
@@ -3448,6 +3623,9 @@ fn main() -> wry::Result<()> {
     };
 
     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+
+    // Fill the toolbar's extension buttons.
+    let _ = proxy.send_event(AppEvent::ChromeIpc("EXT_REFRESH".into()));
 
     // ------------------------------------------------------------ Multiple windows
     let mut parked: Vec<ParkedWindow> = Vec::new();
@@ -4534,6 +4712,17 @@ fn main() -> wry::Result<()> {
                 return;
             }
 
+            Event::UserEvent(AppEvent::ExtensionsListed(list)) => {
+                let reg = extensions::load_registry();
+                EXTENSIONS.with(|e| *e.borrow_mut() = extensions::entries(&list, &reg));
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::ExtensionNotice(text)) => {
+                EXT_NOTICE.with(|n| *n.borrow_mut() = Some(text));
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
             Event::UserEvent(AppEvent::RestoreWindow(list)) => {
                 if open_window!(None) {
                     for (u, sp, grp) in list {
@@ -5217,6 +5406,9 @@ fn main() -> wry::Result<()> {
                     drawer_open = true;
                     if cmd == "DRAWER_OPEN:profiles" {
                         refresh_profiles();
+                    }
+                    if cmd == "DRAWER_OPEN:extensions" {
+                        ext_refresh(&chrome_wv, proxy.clone());
                     }
                     if cmd == "DRAWER_OPEN:controls" {
                         if let Ok(mut cs) = cached_scripts.lock() {
@@ -5950,6 +6142,58 @@ fn main() -> wry::Result<()> {
                                 }
                             }
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                } else if cmd == "EXT_REFRESH" {
+                    ext_refresh(&chrome_wv, proxy.clone());
+                } else if cmd == "EXT_ADD_FOLDER" || cmd == "EXT_ADD_FILE" {
+                    // Pick, copy into the profile's extensions folder, read the manifest, install.
+                    #[cfg(windows)]
+                    {
+                        use tao::platform::windows::WindowExtWindows;
+                        if let Some(src) = extensions::pick(window.hwnd() as isize, cmd == "EXT_ADD_FOLDER") {
+                            let copied = if cmd == "EXT_ADD_FOLDER" { extensions::copy_folder(&src) } else { extensions::unpack_archive(&src) };
+                            match copied.and_then(|dir| match extensions::read_manifest(&dir) {
+                                Ok(m) => Ok((dir, m)),
+                                Err(e) => {
+                                    extensions::delete_copy(&dir.to_string_lossy());
+                                    Err(e)
+                                }
+                            }) {
+                                Ok((dir, meta)) => ext_install(&chrome_wv, proxy.clone(), dir, meta),
+                                Err(e) => {
+                                    let _ = proxy.send_event(AppEvent::ExtensionNotice(e));
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("EXT_SET:") {
+                    // EXT_SET:<id>|enable|disable|remove
+                    if let Some((id, a)) = arg.split_once('|') {
+                        let action: Option<&'static str> = match a {
+                            "enable" => Some("enable"),
+                            "disable" => Some("disable"),
+                            "remove" => Some("remove"),
+                            _ => None,
+                        };
+                        if let Some(action) = action {
+                            ext_change(&chrome_wv, proxy.clone(), id.to_string(), action);
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("EXT_OPEN:") {
+                    // EXT_OPEN:<id>|popup|options: the page opens in Peek, like a popover over the tab.
+                    if let Some((id, which)) = arg.split_once('|') {
+                        let reg = extensions::load_registry();
+                        if let Some(url) = reg.get(id).and_then(|m| extensions::page_url(id, m, which)) {
+                            let _ = close_peek();
+                            let pid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, pid, &url, &SitePolicy::default(), &global_settings, &ipc_token, proxy.clone(), false) {
+                                drawer_open = false;
+                                engine_menu_open = false;
+                                palette_open = false;
+                                PEEK.with(|p| *p.borrow_mut() = Some(Peek { id: pid, webview: wv, incognito: false }));
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
                         }
                     }
                 } else if cmd == "NEW_WINDOW" {

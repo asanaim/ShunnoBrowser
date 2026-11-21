@@ -168,6 +168,28 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: transform .16s var(--ease-fluid); }
   .profile-btn.on { display: inline-flex; }
   .profile-btn:hover { transform: scale(1.06); }
+  /* Extensions: Safari-style toolbar icons for extensions with a popup, plus a puzzle button. */
+  .ext-bar { display: none; align-items: center; gap: 2px; }
+  .ext-bar.on { display: inline-flex; }
+  .ext-ic { width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent; cursor: pointer; display: inline-flex;
+    align-items: center; justify-content: center; padding: 0; transition: background .15s var(--ease-fluid); }
+  .ext-ic:hover { background: rgba(118,118,128,.14); }
+  .ext-ic img { width: 18px; height: 18px; border-radius: 4px; }
+  .ph { width: 18px; height: 18px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 10px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; }
+  .ext-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; }
+  .ext-row:hover { background: rgba(118,118,128,.08); }
+  .ext-row .ic { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(118,118,128,.12); }
+  .ext-row .ic img { width: 24px; height: 24px; }
+  .ext-row .tx { flex: 1; min-width: 0; }
+  .ext-row .nm { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ext-row .ds { font-size: 11px; color: var(--text-dim, #8E8E93); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ext-row .acts { display: flex; gap: 4px; margin-top: 3px; }
+  .ext-row .acts button { border: none; background: rgba(118,118,128,.14); color: var(--text); font-size: 11px; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+  .ext-row .acts button.rm { color: var(--red); }
+  .ext-row.off .ic, .ext-row.off .tx { opacity: .5; }
+  .ext-notice { font-size: 12px; padding: 8px 10px; border-radius: 9px; background: rgba(10,132,255,.10); margin-bottom: 8px; display: none; }
+  .ext-notice.on { display: block; }
   .prof-links { display: none; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 10px;
     border-radius: 10px; background: rgba(118,118,128,.08); font-size: 12px; }
   .prof-links.on { display: flex; }
@@ -784,6 +806,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
       <div class="nav-group right">
         <div id="perm-offer" class="pw-offer perm-offer" style="display:none"></div>
+        <div class="ext-bar" id="ext-bar"></div>
         <button class="profile-btn" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"></button>
         <div id="pw-offer" class="pw-offer" style="display:none"></div>
         <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
@@ -921,6 +944,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('permissions', document.getElementById('btn-controls'))" title="Camera, microphone, location and more, per site">🛡️ Permissions</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('profiles', document.getElementById('btn-controls'))" title="Separate cookies, logins and history">👤 Profiles</button>
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('extensions', document.getElementById('btn-controls'))" title="Add and manage browser extensions">🧩 Extensions</button>
             <button class="pill-btn pill-soft" onclick="send('NEW_WINDOW'); closeDrawer()" title="New Window (Ctrl+N)">🪟 New Window</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
@@ -1061,6 +1085,22 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Stored only on this PC, encrypted with your Windows account. Showing or copying a password asks for Windows Hello.
           <a href="#" onclick="event.preventDefault(); if (confirm('Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.')) send('CLEAR_PASSWORDS');" style="color:var(--blue);">Clear old built-in passwords</a>
+        </div>
+      </div>
+
+      <div id="panel-extensions" style="display:none">
+        <div class="sheet-head">
+          <h3>Extensions</h3>
+          <div style="display:flex;gap:6px;">
+            <button class="text-btn" onclick="send('EXT_ADD_FILE')" title="A .crx or .zip extension file">Add File…</button>
+            <button class="text-btn" onclick="send('EXT_ADD_FOLDER')" title="An unpacked extension folder with manifest.json">Add Folder…</button>
+          </div>
+        </div>
+        <div class="ext-notice" id="ext-notice"></div>
+        <div id="ext-list"></div>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">
+          Add a Chrome or Edge extension as a <b>.crx</b> or <b>.zip</b> file or an unpacked folder; Shunno keeps its own copy.
+          The Chrome Web Store cannot install into Shunno directly. Extensions run in normal tabs, not private ones, and some that depend on Chrome only features may not work.
         </div>
       </div>
 
@@ -1398,7 +1438,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1786,6 +1826,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
       { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
       { kind: 'Action', title: 'New Window (Ctrl+N)', run: () => send('NEW_WINDOW') },
+      { kind: 'Action', title: 'Extensions', run: () => toggleDrawer('extensions') },
       { kind: 'Action', title: 'Move Current Tab to New Window', run: () => send('MOVE_TAB_NEW_WINDOW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Add Current Tab to New Group', run: () => send('TAB_GROUP_NEW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
@@ -2075,6 +2116,51 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     window.__focusHomeSearch();
     send('NEW_TAB');
   }
+  // ---------------------------------------------------------------- Extensions
+  const PUZZLE_SVG = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M3 5h2.5a1.5 1.5 0 1 1 3 0H11v2.5a1.5 1.5 0 1 1 0 3V13H8.5a1.5 1.5 0 1 0-3 0H3v-2.5a1.5 1.5 0 1 0 0-3z"/></svg>';
+  function extIcon(e, size) {
+    return e.icon ? `<img src="${e.icon}" alt="">` : `<span class="ph" style="${size ? 'width:' + size + 'px;height:' + size + 'px' : ''}">${escapeHtml(profileInitial(e.name))}</span>`;
+  }
+  function renderExtensions(state) {
+    const list = state.extensions || [];
+    // Toolbar: enabled extensions with a popup (up to 4), then the puzzle button for the panel.
+    const bar = document.getElementById('ext-bar');
+    const shown = list.filter(e => e.enabled && e.popup).slice(0, 4);
+    const barHtml = list.length ? shown.map(e =>
+      `<button class="ext-ic" title="${encodeAttr(e.name)}" onclick="send('EXT_OPEN:${e.id}|popup')">${extIcon(e)}</button>`).join('') +
+      `<button class="ext-ic" id="ext-puzzle" title="Extensions" onclick="toggleDrawer('extensions', this)">${PUZZLE_SVG}</button>` : '';
+    if (bar.dataset.h !== barHtml) { bar.dataset.h = barHtml; bar.innerHTML = barHtml; }
+    bar.classList.toggle('on', list.length > 0);
+    // Panel.
+    if (state.ext_notice) {
+      const n = document.getElementById('ext-notice');
+      n.textContent = state.ext_notice;
+      n.classList.add('on');
+      clearTimeout(renderExtensions.t);
+      renderExtensions.t = setTimeout(() => n.classList.remove('on'), 8000);
+    }
+    const el = document.getElementById('ext-list');
+    const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}">
+        <div class="ic">${extIcon(e, 24)}</div>
+        <div class="tx">
+          <div class="nm" title="${encodeAttr(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
+          ${e.description ? `<div class="ds" title="${encodeAttr(e.description)}">${escapeHtml(e.description)}</div>` : ''}
+          <div class="acts">
+            ${e.popup && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|popup')">Open</button>` : ''}
+            ${e.options && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|options')">Settings</button>` : ''}
+            <button class="rm" onclick="extRemove('${e.id}')">Remove</button>
+          </div>
+        </div>
+        <button class="switch ${e.enabled ? 'on' : ''}" role="switch" aria-checked="${e.enabled}" aria-label="Enable ${encodeAttr(e.name)}"
+          onclick="this.classList.toggle('on'); send('EXT_SET:${e.id}|' + (this.classList.contains('on') ? 'enable' : 'disable'))"><i></i></button>
+      </div>`).join('') : '<div class="meta" style="text-align:center;padding:18px 8px;">No extensions yet.</div>';
+    if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
+  }
+  function extRemove(id) {
+    const e = (lastState.extensions || []).find(x => x.id === id);
+    if (e && confirm(`Remove "${e.name}"? Its settings and data are deleted.`)) send('EXT_SET:' + id + '|remove');
+  }
+
   // ---------------------------------------------------------------- Profiles
   const PROFILE_COLORS = ['#0A84FF', '#30D158', '#FF9F0A', '#FF375F', '#BF5AF2', '#64D2FF', '#8E8E93'];
   let profileEditing = null, profileColor = PROFILE_COLORS[0];
@@ -2610,6 +2696,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     renderPwOffer(state);
     renderPermOffer(state);
     renderProfiles(state);
+    renderExtensions(state);
     renderPermissions(state);
     renderPasswords(state);
 
