@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.17.4";
+pub const APP_VERSION: &str = "v2.18.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -142,6 +142,9 @@ pub struct GlobalSettings {
     /// Chromium auto dark mode for sites without a dark theme (applies at next start).
     #[serde(default)]
     pub force_dark_pages: bool,
+    /// Hand page-started downloads to Shunno's multi-connection engine when it can fetch them.
+    #[serde(default = "default_true")]
+    pub download_takeover: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -177,6 +180,7 @@ impl Default for GlobalSettings {
             peek_links: true,
             theme_mode: default_theme_mode(),
             force_dark_pages: false,
+            download_takeover: true,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
