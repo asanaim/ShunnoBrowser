@@ -285,8 +285,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab-audio:hover { background: var(--blue); color: #fff; }
   /* Padding stays the same on every tab (so all tabs get the same share of the strip); the title
      leaves room at both ends for the close button. */
-  /* Icon and title on the left, close button on the right (Chrome layout): on the current tab
-     always, on others while hovered. */
+  /* Icon and title on the left, close button on the right (Chrome layout). */
   .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0;
     -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent); text-overflow: clip; }
   .tab-close {
@@ -296,9 +295,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
   }
   .tab-close svg { display: block; }
-  .tab:hover .tab-close, .tab.active .tab-close { opacity: 1; pointer-events: auto; }
-  /* Out of the layout while hidden, so a narrow tab's title gets that room. */
-  .tab:not(.active):not(:hover):not([data-narrow]) .tab-close { display: none; }
+  /* Chrome: every tab with room shows its close button; a narrow tab shows only its icon. */
+  .tab .tab-close { opacity: 0.72; pointer-events: auto; }
+  .tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
+  /* Like Chrome, a tight background tab drops its close button (its title needs the room, and a
+     click there should select the tab, not close it); middle-click still closes it. */
+  .tab[data-tight]:not(.active) .tab-close { display: none; }
   .tab-close:hover { background: rgba(128, 128, 128, 0.22); color: var(--text); }
   .tab-close:active { background: rgba(128, 128, 128, 0.34); }
   /* Narrow tabs (many open) show only their icon. A click selects the tab (middle-click closes
@@ -2372,7 +2374,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
     document.querySelectorAll('#tabs-container .tab:not(.closing)').forEach(el => {
       if (tabWidthsLocked || el.classList.contains('is-new')) return;
-      const narrow = el.getBoundingClientRect().width < 58;
+      const wpx = el.getBoundingClientRect().width;
+      const narrow = wpx < 58;
+      const tight = wpx < 96;
+      if (tight !== (el.dataset.tight === '1')) { if (tight) el.dataset.tight = '1'; else delete el.dataset.tight; }
       if (narrow !== (el.dataset.narrow === '1')) {
         if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
       }
@@ -3120,6 +3125,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     motionCascade(hero, { from: 'translateY(10px) scale(0.985)', step: 40, duration: 380 });
     setTimeout(() => motionCascade(hc.querySelectorAll('.fav-tile'), { from: 'translateY(8px) scale(0.94)', step: 16, duration: 340 }), 60);
   }
+  // Leaving the New Tab page: keep drawing it until the page underneath has drawn (native asks).
+  window.__holdHome = function (ms) {
+    pendingHomeUntil = Math.max(pendingHomeUntil, Date.now() + ms);
+    setTimeout(() => { if (lastState) window.renderChromeState(lastState); }, ms + 10);
+  };
   window.__showHomeNow = function () {
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');

@@ -1112,7 +1112,12 @@ fn tab_strip_follows_safari() {
 fn tab_switch_keeps_the_previous_page_until_the_next_has_drawn() {
     let main = include_str!("../src/main.rs");
     assert!(main.contains("static TAB_WARM_PREV") && main.contains("AppEvent::RaiseTab(aid)"));
-    assert!(main.contains("place_tab_below(&tabs[active_idx].webview, &top.webview)"));
+    assert!(main.contains("place_tab_below(&tabs[active_idx].webview, &tabs[pi].webview)"));
+    // New Tab: the page stays over the growing New Tab page, and the New Tab page over the next page.
+    assert!(main.contains("let wait_home = single") && main.contains("let wait_leave_home = single"));
+    assert!(main.contains("window.__holdHome && window.__holdHome(90)"));
+    // Popovers: the current page, not the kept previous one, sits under the toolbar.
+    assert!(main.contains("fn bring_chrome_above_tabs(chrome_wv: &WebView, tabs: &[BrowserTab], top: Option<&WebView>)"));
 }
 
 #[test]
