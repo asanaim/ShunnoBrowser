@@ -651,3 +651,27 @@ fn launch_profile_routing() {
     // A plain launch (Start menu, no link) opens the default profile.
     assert_eq!(choose_launch_profile(None, false, "work", Some("school"), &known), DEFAULT_PROFILE);
 }
+
+#[test]
+fn tab_groups_order_and_drop() {
+    use state::*;
+    let n = None;
+    // Members gather at their group's first tab, everything else keeps its order.
+    assert_eq!(group_contiguous_order(&[n, Some(1), n, Some(2), Some(1), Some(2)]), vec![0, 1, 4, 2, 3, 5]);
+    assert_eq!(group_contiguous_order(&[n, n, n]), vec![0, 1, 2]);
+    assert_eq!(group_contiguous_order(&[]), Vec::<usize>::new());
+    // Dropped between two tabs of group 1: joins it.
+    assert_eq!(group_after_drop(&[Some(1), n, Some(1)], 1), Some(1));
+    // Dropped at the edge next to its own group: stays.
+    assert_eq!(group_after_drop(&[Some(1), Some(1), n], 1), Some(1));
+    // Dragged away from its group: leaves it.
+    assert_eq!(group_after_drop(&[n, Some(1), n, Some(1)], 1), None);
+    // Ungrouped tab at the edge of a group stays ungrouped.
+    assert_eq!(group_after_drop(&[Some(2), n, n], 1), None);
+    // Names are trimmed and capped; unknown colours fall back.
+    assert_eq!(clean_group("  Design  ", "#BF5AF2"), ("Design".to_string(), "#BF5AF2".to_string()));
+    assert_eq!(clean_group(&"x".repeat(50), "javascript:"), ("x".repeat(30), GROUP_COLORS[0].to_string()));
+    // Old sessions without groups still load.
+    let t: SavedTab = serde_json::from_str(r#"{"title":"a","url":"https://a.b","space":0}"#).unwrap();
+    assert_eq!(t.group, None);
+}

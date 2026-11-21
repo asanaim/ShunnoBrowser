@@ -132,6 +132,75 @@ fn save_spaces() {
     SPACES.with(|s| BrowserStorage::save_spaces(&s.borrow()));
 }
 
+// ---------------------------------------------------------------- Tab groups
+thread_local! {
+    static GROUPS: std::cell::RefCell<Vec<state::TabGroup>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Tab id → group id.
+    static TAB_GROUP: std::cell::RefCell<HashMap<usize, u32>> = std::cell::RefCell::new(HashMap::new());
+}
+fn tab_group(tab_id: usize) -> Option<u32> {
+    TAB_GROUP.with(|m| m.borrow().get(&tab_id).copied())
+}
+fn set_tab_group(tab_id: usize, g: Option<u32>) {
+    TAB_GROUP.with(|m| {
+        let mut m = m.borrow_mut();
+        match g {
+            Some(g) => m.insert(tab_id, g),
+            None => m.remove(&tab_id),
+        };
+    });
+}
+fn group_mut<R>(gid: u32, f: impl FnOnce(&mut state::TabGroup) -> R) -> Option<R> {
+    GROUPS.with(|g| g.borrow_mut().iter_mut().find(|x| x.id == gid).map(f))
+}
+/// Groups that still have tabs (others are dropped), saved when that changes anything.
+fn live_groups(tabs: &[BrowserTab]) -> Vec<state::TabGroup> {
+    GROUPS.with(|g| {
+        let mut g = g.borrow_mut();
+        let before = g.len();
+        g.retain(|x| tabs.iter().any(|t| tab_group(t.id) == Some(x.id)));
+        if g.len() != before {
+            BrowserStorage::save_tab_groups(&g);
+        }
+        g.clone()
+    })
+}
+fn save_groups() {
+    GROUPS.with(|g| BrowserStorage::save_tab_groups(&g.borrow()));
+}
+/// Make every group's tabs contiguous, keeping the active and split tabs selected.
+fn regroup_tabs(tabs: &mut Vec<BrowserTab>, active: &mut usize, split: &mut Option<usize>) {
+    let order = state::group_contiguous_order(&tabs.iter().map(|t| tab_group(t.id)).collect::<Vec<_>>());
+    if order.iter().enumerate().all(|(i, &j)| i == j) {
+        return;
+    }
+    let active_id = tabs.get(*active).map(|t| t.id);
+    let split_id = split.and_then(|i| tabs.get(i)).map(|t| t.id);
+    let mut slots: Vec<Option<BrowserTab>> = std::mem::take(tabs).into_iter().map(Some).collect();
+    *tabs = order.into_iter().filter_map(|j| slots[j].take()).collect();
+    if let Some(id) = active_id {
+        *active = tabs.iter().position(|t| t.id == id).unwrap_or(0);
+    }
+    *split = split_id.and_then(|id| tabs.iter().position(|t| t.id == id));
+}
+/// Put tab `i` into group `gid` right after the group's last tab.
+fn move_into_group(tabs: &mut Vec<BrowserTab>, i: usize, gid: u32, active: &mut usize, split: &mut Option<usize>) {
+    if i >= tabs.len() {
+        return;
+    }
+    set_tab_group(tabs[i].id, Some(gid));
+    let active_id = tabs.get(*active).map(|t| t.id);
+    let split_id = split.and_then(|k| tabs.get(k)).map(|t| t.id);
+    let t = tabs.remove(i);
+    let at = tabs.iter().rposition(|x| tab_group(x.id) == Some(gid)).map(|k| k + 1).unwrap_or(i.min(tabs.len()));
+    tabs.insert(at, t);
+    if let Some(aid) = active_id {
+        *active = tabs.iter().position(|t| t.id == aid).unwrap_or(0);
+    }
+    *split = split_id.and_then(|sid| tabs.iter().position(|t| t.id == sid));
+    regroup_tabs(tabs, active, split);
+}
+
 #[derive(Serialize)]
 struct SpacesView {
     list: Vec<state::Space>,
@@ -277,6 +346,8 @@ struct ProfileView {
 thread_local! {
     static PROFILES: std::cell::RefCell<Vec<ProfileView>> = const { std::cell::RefCell::new(Vec::new()) };
     static LINKS_PROFILE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// A group just made from the tab menu: the toolbar opens its name field once.
+    static NEW_GROUP_TO_NAME: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 fn refresh_profiles() -> Vec<state::Profile> {
     let list = BrowserStorage::load_profiles();
@@ -425,6 +496,7 @@ struct TabSummary {
     muted: bool,
     sleeping: bool,
     space: u32,
+    group: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -453,6 +525,8 @@ struct ChromeSnapshot {
     profile_id: &'static str,
     profiles: Vec<ProfileView>,
     links_profile: String,
+    tab_groups: Vec<state::TabGroup>,
+    name_group: Option<u32>,
     permissions: Vec<permissions::Entry>,
     active_reader_available: bool,
     import_status: String,
@@ -2980,18 +3054,21 @@ fn main() -> wry::Result<()> {
 
     SPACES.with(|s| *s.borrow_mut() = BrowserStorage::load_spaces());
     let saved_session = BrowserStorage::load_session();
-    let initial: Vec<(String, u32)> = if saved_session.is_empty() {
-        vec![("shunno://newtab".to_string(), active_space())]
+    GROUPS.with(|g| *g.borrow_mut() = BrowserStorage::load_tab_groups());
+    let initial: Vec<(String, u32, Option<u32>)> = if saved_session.is_empty() {
+        vec![("shunno://newtab".to_string(), active_space(), None)]
     } else {
         let resolve = |id: u32| SPACES.with(|s| s.borrow().resolve(id));
-        saved_session.into_iter().map(|t| (t.url, resolve(t.space))).collect()
+        let known = |g: u32| GROUPS.with(|x| x.borrow().iter().any(|y| y.id == g));
+        saved_session.into_iter().map(|t| (t.url, resolve(t.space), t.group.filter(|&g| known(g)))).collect()
     };
 
-    for (u, restored_space) in initial {
+    for (u, restored_space, restored_group) in initial {
         let host = extract_host(&u);
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
         set_tab_space(tid, restored_space);
+        set_tab_group(tid, restored_group);
         if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
             let init_title = if u == "shunno://newtab" {
                 "New Tab".to_string()
@@ -3200,6 +3277,8 @@ fn main() -> wry::Result<()> {
             profile_id: state::profile_id(),
             profiles: PROFILES.with(|p| p.borrow().clone()),
             links_profile: LINKS_PROFILE.with(|l| l.borrow().clone()),
+            tab_groups: live_groups(tabs),
+            name_group: NEW_GROUP_TO_NAME.with(|n| n.take()),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
@@ -3223,6 +3302,7 @@ fn main() -> wry::Result<()> {
                     muted: t.muted,
                     sleeping: t.sleeping,
                     space: tab_space(t.id),
+                    group: tab_group(t.id),
                 })
                 .collect(),
             menu_note: MENU_NOTE.with(|n| n.borrow().clone()),
@@ -3367,9 +3447,11 @@ fn main() -> wry::Result<()> {
                         title: t.title.clone(),
                         url: t.url.clone(),
                         space: tab_space(t.id),
+                        group: tab_group(t.id),
                     })
                     .collect();
                 BrowserStorage::save_session(&to_save);
+                save_groups();
                 *control_flow = ControlFlow::Exit;
             }
 
@@ -3430,7 +3512,7 @@ fn main() -> wry::Result<()> {
                     for idx in doomed {
                         let removed = tabs.remove(idx);
                         if removed.url != "shunno://newtab" {
-                            closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url });
+                            closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None });
                         }
                     }
                     active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(0);
@@ -4712,9 +4794,11 @@ fn main() -> wry::Result<()> {
                             title: t.title.clone(),
                             url: t.url.clone(),
                             space: tab_space(t.id),
+                            group: tab_group(t.id),
                         })
                         .collect();
                     BrowserStorage::save_session(&to_save);
+                    save_groups();
                     *control_flow = ControlFlow::Exit;
                     return;
                 } else if cmd == "ZOOM_IN" || cmd == "ZOOM_OUT" || cmd == "ZOOM_RESET" {
@@ -4874,6 +4958,12 @@ fn main() -> wry::Result<()> {
                                 } else if to <= active_tab_idx && active_tab_idx < from {
                                     active_tab_idx += 1;
                                 }
+                                // Tab groups: dropped inside a group joins it; dropped away from its group leaves it.
+                                if !tabs[to].pinned {
+                                    let gs: Vec<Option<u32>> = tabs.iter().map(|t| tab_group(t.id)).collect();
+                                    set_tab_group(tabs[to].id, state::group_after_drop(&gs, to));
+                                    regroup_tabs(&mut tabs, &mut active_tab_idx, &mut split_tab_idx);
+                                }
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                             }
                         }
@@ -4882,6 +4972,12 @@ fn main() -> wry::Result<()> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
                             active_tab_idx = idx;
+                            // A tab in a collapsed group opens its group.
+                            if let Some(g) = tab_group(tabs[idx].id) {
+                                if group_mut(g, |x| std::mem::replace(&mut x.collapsed, false)) == Some(true) {
+                                    save_groups();
+                                }
+                            }
                             // A tab picked from another Space (e.g. in the palette) brings its Space along.
                             let sp = tab_space(tabs[idx].id);
                             if sp != active_space() {
@@ -4923,7 +5019,7 @@ fn main() -> wry::Result<()> {
                         } else if idx < tabs.len() {
                             let removed = tabs.remove(idx);
                             if !removed.incognito && removed.url != "shunno://newtab" {
-                                closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url });
+                                closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None });
                             }
                             // Keep the same tab active when a tab to its left closes.
                             if idx < active_tab_idx {
@@ -4987,6 +5083,9 @@ fn main() -> wry::Result<()> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
                             tabs[idx].pinned = !tabs[idx].pinned;
+                            if tabs[idx].pinned {
+                                set_tab_group(tabs[idx].id, None);
+                            }
                             let tab_item = tabs.remove(idx);
                             let target_idx = if tab_item.pinned {
                                 tabs.iter().take_while(|t| t.pinned).count()
@@ -5114,12 +5213,14 @@ fn main() -> wry::Result<()> {
                         let to_save: Vec<SavedTab> = tabs
                             .iter()
                             .filter(|t| !t.incognito)
-                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone(), space: tab_space(t.id) })
+                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone(), space: tab_space(t.id), group: tab_group(t.id) })
                             .collect();
                         BrowserStorage::save_session(&to_save);
+                        save_groups();
                         engine.save_queue();
                         if let Ok(exe) = std::env::current_exe() {
-                            if Command::new(exe).spawn().is_ok() {
+                            // Come back in the same profile.
+                            if Command::new(exe).arg(format!("--profile={}", state::profile_id())).spawn().is_ok() {
                                 *control_flow = ControlFlow::Exit;
                                 return;
                             }
@@ -5448,7 +5549,7 @@ fn main() -> wry::Result<()> {
                                 if tab_space(tabs[i].id) == id && tabs.len() > 1 {
                                     let removed = tabs.remove(i);
                                     if !removed.incognito && removed.url != "shunno://newtab" {
-                                        closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url });
+                                        closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url, group: None });
                                     }
                                 } else {
                                     i += 1;
@@ -5472,12 +5573,117 @@ fn main() -> wry::Result<()> {
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
+                } else if let Some(i) = cmd.strip_prefix("TAB_GROUP_NEW:") {
+                    // TAB_GROUP_NEW:<tab index> → a new, unnamed group holding that tab.
+                    if let Ok(i) = i.parse::<usize>() {
+                        if i < tabs.len() && !tabs[i].pinned && !tabs[i].incognito {
+                            let gid = GROUPS.with(|g| {
+                                let mut g = g.borrow_mut();
+                                let id = g.iter().map(|x| x.id).max().unwrap_or(0) + 1;
+                                let color = state::GROUP_COLORS[g.len() % state::GROUP_COLORS.len()].to_string();
+                                g.push(state::TabGroup { id, name: String::new(), color, collapsed: false });
+                                id
+                            });
+                            move_into_group(&mut tabs, i, gid, &mut active_tab_idx, &mut split_tab_idx);
+                            save_groups();
+                            NEW_GROUP_TO_NAME.with(|n| n.set(Some(gid)));
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("TAB_GROUP_ADD:") {
+                    // TAB_GROUP_ADD:<tab index>|<group id>
+                    if let Some((i, g)) = arg.split_once('|') {
+                        if let (Ok(i), Ok(g)) = (i.parse::<usize>(), g.parse::<u32>()) {
+                            let exists = GROUPS.with(|x| x.borrow().iter().any(|y| y.id == g));
+                            if i < tabs.len() && exists && !tabs[i].pinned && !tabs[i].incognito {
+                                move_into_group(&mut tabs, i, g, &mut active_tab_idx, &mut split_tab_idx);
+                                save_groups();
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
+                        }
+                    }
+                } else if let Some(i) = cmd.strip_prefix("TAB_UNGROUP:") {
+                    // Leave the group and sit just after it, so the tab does not jump away.
+                    if let Ok(i) = i.parse::<usize>() {
+                        if let Some(g) = tabs.get(i).and_then(|t| tab_group(t.id)) {
+                            let id = tabs[i].id;
+                            let active_id = tabs[active_tab_idx].id;
+                            let split_id = split_tab_idx.and_then(|k| tabs.get(k)).map(|t| t.id);
+                            set_tab_group(id, None);
+                            let t = tabs.remove(i);
+                            let at = tabs.iter().rposition(|x| tab_group(x.id) == Some(g)).map(|k| k + 1).unwrap_or(i.min(tabs.len()));
+                            tabs.insert(at, t);
+                            active_tab_idx = tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
+                            split_tab_idx = split_id.and_then(|sid| tabs.iter().position(|t| t.id == sid));
+                            save_groups();
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("GROUP_EDIT:") {
+                    // GROUP_EDIT:<group id>|{"name":..,"color":..}
+                    if let Some((g, json)) = arg.split_once('|') {
+                        if let (Ok(g), Ok(v)) = (g.parse::<u32>(), serde_json::from_str::<serde_json::Value>(json)) {
+                            let (name, color) = state::clean_group(v["name"].as_str().unwrap_or(""), v["color"].as_str().unwrap_or(""));
+                            group_mut(g, |x| {
+                                x.name = name;
+                                x.color = color;
+                            });
+                            save_groups();
+                        }
+                    }
+                } else if let Some(g) = cmd.strip_prefix("GROUP_TOGGLE:") {
+                    if let Ok(g) = g.parse::<u32>() {
+                        if let Some(now_collapsed) = group_mut(g, |x| {
+                            x.collapsed = !x.collapsed;
+                            x.collapsed
+                        }) {
+                            save_groups();
+                            // Collapsing the group on screen moves to the nearest visible tab of this Space.
+                            if now_collapsed && tabs.get(active_tab_idx).and_then(|t| tab_group(t.id)) == Some(g) {
+                                let sp = active_space();
+                                let hidden = |t: &BrowserTab| {
+                                    tab_group(t.id).is_some_and(|gg| GROUPS.with(|x| x.borrow().iter().any(|y| y.id == gg && y.collapsed)))
+                                };
+                                let pick = (active_tab_idx + 1..tabs.len())
+                                    .chain((0..active_tab_idx).rev())
+                                    .find(|&k| tab_space(tabs[k].id) == sp && !hidden(&tabs[k]));
+                                split_tab_idx = None;
+                                match pick {
+                                    Some(k) => active_tab_idx = k,
+                                    None => {
+                                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                                    }
+                                }
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
+                        }
+                    }
+                } else if let Some(g) = cmd.strip_prefix("GROUP_UNGROUP:") {
+                    if let Ok(g) = g.parse::<u32>() {
+                        for t in &tabs {
+                            if tab_group(t.id) == Some(g) {
+                                set_tab_group(t.id, None);
+                            }
+                        }
+                        GROUPS.with(|x| x.borrow_mut().retain(|y| y.id != g));
+                        save_groups();
+                    }
+                } else if let Some(g) = cmd.strip_prefix("GROUP_CLOSE:") {
+                    // Close every tab of the group, last first so the earlier indices stay valid.
+                    if let Ok(g) = g.parse::<u32>() {
+                        let mut idx: Vec<usize> = (0..tabs.len()).filter(|&k| tab_group(tabs[k].id) == Some(g)).collect();
+                        idx.reverse();
+                        for k in idx {
+                            let _ = proxy.send_event(AppEvent::ChromeIpc(format!("CLOSE_TAB:{k}")));
+                        }
+                    }
                 } else if let Some(arg) = cmd.strip_prefix("TAB_TO_SPACE:") {
                     // TAB_TO_SPACE:<tab index>|<space id>
                     if let Some((i, sp)) = arg.split_once('|') {
                         if let (Ok(i), Ok(sp)) = (i.parse::<usize>(), sp.parse::<u32>()) {
                             if i < tabs.len() && SPACES.with(|s| s.borrow().spaces.iter().any(|x| x.id == sp)) {
                                 set_tab_space(tabs[i].id, sp);
+                                set_tab_group(tabs[i].id, None);
                                 if i == active_tab_idx && sp != active_space() {
                                     split_tab_idx = None;
                                     match state::pick_tab_for_space(&tab_space_pairs(&tabs), active_space(), None) {
@@ -5733,6 +5939,7 @@ fn main() -> wry::Result<()> {
                         let dup_url = src.url.clone();
                         let dup_title = src.title.clone();
                         let dup_incog = src.incognito;
+                        let dup_group = tab_group(src.id);
                         let host = extract_host(&dup_url);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
@@ -5754,6 +5961,8 @@ fn main() -> wry::Result<()> {
                                 webview: wv,
                             });
                             active_tab_idx = insert_at;
+                            // A duplicate sits next to its source, so it joins the source's group.
+                            set_tab_group(tid, dup_group);
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }

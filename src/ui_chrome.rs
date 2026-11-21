@@ -121,6 +121,29 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: background 0.22s var(--ease-fluid), box-shadow 0.22s var(--ease-fluid), color 0.18s ease;
   }
   .tab.is-new { animation: tabEnter 0.24s var(--ease-fluid); }
+  /* Tab groups: a capsule label in the group colour, member tabs tinted with a thin colour rule. */
+  .tg-chip {
+    display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 12px; flex-shrink: 0;
+    background: color-mix(in srgb, var(--tg) 20%, transparent); color: color-mix(in srgb, var(--tg) 70%, var(--text));
+    font-size: 11.5px; font-weight: 700; cursor: pointer; user-select: none; max-width: 140px;
+    transition: background .18s var(--ease-fluid), transform .18s var(--ease-fluid);
+  }
+  .tg-chip:hover { background: color-mix(in srgb, var(--tg) 30%, transparent); }
+  .tg-chip:active { transform: scale(.96); }
+  .tg-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tg-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--tg); flex-shrink: 0; }
+  .tg-chip .ct { font-size: 10.5px; font-weight: 600; opacity: .8; }
+  .tab.in-group { background: color-mix(in srgb, var(--tg) 12%, rgba(128, 128, 128, 0.08)); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--tg) 75%, transparent); }
+  .tab.in-group.active { background: var(--tab-active-bg, #fff); box-shadow: 0 1px 6px rgba(0,0,0,.12), inset 0 -2px 0 var(--tg); }
+  .tab.tg-hidden { display: none; }
+  .ctx-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: none; background: transparent; border-radius: 8px;
+    color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .ctx-row:hover { background: var(--blue); color: #fff; }
+  .ctx-row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .ctx-row.danger { color: var(--red); }
+  .ctx-row.danger:hover { background: var(--red); color: #fff; }
+  .ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+  .ctx-label { font-size: 11px; color: var(--text-dim, #8E8E93); padding: 6px 10px 2px; font-weight: 600; }
   .tab:hover { background: rgba(128, 128, 128, 0.20); }
   .tab.active {
     background: var(--surface-solid); color: var(--text); font-weight: 600;
@@ -395,6 +418,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transform-origin: 90% 0;
     animation: popoverIn var(--dur) var(--ease-fluid) both;
   }
+  /* Context menus (tab, group) are narrow and open from the item's left edge, like macOS menus. */
+  .floating-sheet[data-panel="tabmenu"], .floating-sheet[data-panel="groupmenu"] { width: 250px; padding: 6px; }
+  #group-swatches { gap: 6px; flex-wrap: nowrap; }
+  #group-swatches .swatch { width: 18px; height: 18px; flex-shrink: 0; }
   .floating-sheet.closing { animation: popoverOut var(--dur-fast) var(--ease-in) both; pointer-events: none; }
   body.dark .floating-sheet { background: rgba(30, 30, 34, 0.92); }
   /* All popovers share one width (Menu, Downloads, Library). */
@@ -1036,6 +1063,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </div>
       </div>
 
+      <div id="panel-tabmenu" style="display:none"><div id="tabmenu-body"></div></div>
+
+      <div id="panel-groupmenu" style="display:none">
+        <input class="text-box" id="group-name" maxlength="30" style="width:100%;margin-bottom:8px;" placeholder="Name this group"
+          oninput="groupSaveSoon()" onkeydown="if (event.key === 'Enter') { groupSaveNow(); closeDrawer(); }" />
+        <div class="swatches" id="group-swatches" style="margin-bottom:6px;"></div>
+        <div id="groupmenu-body"></div>
+      </div>
+
       <div id="panel-profiles" style="display:none">
         <div class="sheet-head">
           <h3>Profiles</h3>
@@ -1330,7 +1366,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const r = anchor.getBoundingClientRect();
     const vw = window.innerWidth, vh = window.innerHeight;
     const w = Math.min(sheet.offsetWidth || 430, vw - 24);
-    let left = Math.round(r.right - w + 4);
+    const isMenu = activeDrawer === 'tabmenu' || activeDrawer === 'groupmenu';
+    let left = isMenu ? Math.round(r.left - 4) : Math.round(r.right - w + 4);
     left = Math.max(12, Math.min(left, vw - w - 12));
     const top = Math.round(r.bottom + 10);
     sheet.style.left = left + 'px';
@@ -1360,7 +1397,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1497,6 +1534,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     // Remove closed tabs
     Array.from(tc.children).forEach(el => {
+      if (el.dataset.groupId) return; // group labels are handled after the tabs
       if (!currentIds.has(el.dataset.tabId)) {
         tc.removeChild(el);
         knownTabIds.delete(el.dataset.tabId);
@@ -1557,7 +1595,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       };
       el.onclick = () => send('SWITCH_TAB:' + idx);
       el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
-      el.oncontextmenu = (ev) => { ev.preventDefault(); send('TOGGLE_PIN_TAB:' + idx); };
+      el.oncontextmenu = (ev) => { ev.preventDefault(); openTabMenu(idx, el); };
       el.title = t.title || 'New Tab';
 
       const displayTitle = (t.sleeping ? '💤 ' : '') + (t.title || 'New Tab');
@@ -1581,7 +1619,109 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.innerHTML = `${tabLogoHtml}${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>`;
       }
     });
+    syncTabGroups(tabs, inSpace);
   }
+
+  // Tab groups: a label before each group's first tab; member tabs tinted; collapsed groups hide their tabs.
+  function syncTabGroups(tabs, inSpace) {
+    const tc = document.getElementById('tabs-container');
+    const st = window.__shunnoLastState || {};
+    const groups = new Map((st.tab_groups || []).map(g => [g.id, g]));
+    const want = [];
+    const counts = {};
+    tabs.forEach(t => { if (inSpace(t) && t.group != null) counts[t.group] = (counts[t.group] || 0) + 1; });
+    let prev = null;
+    tabs.forEach((t, idx) => {
+      if (!inSpace(t)) return;
+      const el = tc.querySelector(`.tab[data-tab-id="${t.id}"]`);
+      if (!el) return;
+      const g = t.group != null ? groups.get(t.group) : null;
+      if (g && prev !== g.id && !want.some(n => n.dataset && n.dataset.groupId === String(g.id))) {
+        let chip = tc.querySelector(`.tg-chip[data-group-id="${g.id}"]`);
+        if (!chip) {
+          chip = document.createElement('div');
+          chip.className = 'tg-chip';
+          chip.dataset.groupId = String(g.id);
+        }
+        const html = (g.name ? `<span class="nm">${escapeHtml(g.name)}</span>` : '<span class="dot"></span>') + (g.collapsed ? `<span class="ct">${counts[g.id] || 0}</span>` : '');
+        if (chip.dataset.h !== html) { chip.dataset.h = html; chip.innerHTML = html; }
+        chip.style.setProperty('--tg', g.color);
+        chip.title = (g.name || 'Unnamed group') + (g.collapsed ? ' (collapsed, click to expand)' : ' (click to collapse, right-click for options)');
+        chip.onclick = () => send('GROUP_TOGGLE:' + g.id);
+        chip.oncontextmenu = (ev) => { ev.preventDefault(); openGroupMenu(g.id, chip); };
+        want.push(chip);
+      }
+      prev = g ? g.id : null;
+      el.classList.toggle('in-group', !!g);
+      el.classList.toggle('tg-hidden', !!(g && g.collapsed));
+      if (g) el.style.setProperty('--tg', g.color); else el.style.removeProperty('--tg');
+      want.push(el);
+    });
+    // Drop labels of groups that are gone, then put nodes in order without touching ones already in place.
+    Array.from(tc.querySelectorAll('.tg-chip')).forEach(c => { if (!want.includes(c)) c.remove(); });
+    want.forEach((node, k) => { if (tc.children[k] !== node) tc.insertBefore(node, tc.children[k] || null); });
+    // A group just made from the tab menu: ask for its name.
+    if (st.name_group != null && groups.has(st.name_group)) {
+      const gid = st.name_group;
+      st.name_group = null;
+      setTimeout(() => { const c = tc.querySelector(`.tg-chip[data-group-id="${gid}"]`); if (c) openGroupMenu(gid, c); }, 60);
+    }
+  }
+
+  // ---------------------------------------------------------------- Tab and group menus (right-click)
+  let ctxTab = null, ctxGroup = null, groupColor = null, groupSaveTimer = null;
+  function ctxRow(label, cmd, extra) {
+    return `<button class="ctx-row ${extra && extra.danger ? 'danger' : ''}" onclick="${cmd}; closeDrawer()">${extra && extra.dot ? `<span class="dot" style="background:${extra.dot}"></span>` : ''}${escapeHtml(label)}</button>`;
+  }
+  function openTabMenu(idx, anchor) {
+    const st = lastState; const t = st && st.tabs[idx];
+    if (!t) return;
+    ctxTab = idx;
+    const groups = (st.tab_groups || []).filter(g => st.tabs.some(x => x.group === g.id && x.space === t.space) && g.id !== t.group);
+    let h = '';
+    h += ctxRow(t.pinned ? 'Unpin Tab' : 'Pin Tab', `send('TOGGLE_PIN_TAB:${idx}')`);
+    if (!t.pinned && !t.incognito) {
+      h += '<div class="ctx-sep"></div>';
+      h += ctxRow('Add Tab to New Group', `send('TAB_GROUP_NEW:${idx}')`);
+      if (groups.length) {
+        h += '<div class="ctx-label">Move to Group</div>';
+        h += groups.map(g => ctxRow(g.name || 'Unnamed group', `send('TAB_GROUP_ADD:${idx}|${g.id}')`, { dot: g.color })).join('');
+      }
+      if (t.group != null) h += ctxRow('Remove from Group', `send('TAB_UNGROUP:${idx}')`);
+    }
+    h += '<div class="ctx-sep"></div>';
+    h += ctxRow(t.muted ? 'Unmute Tab' : 'Mute Tab', `send('TOGGLE_MUTE_TAB:${idx}')`);
+    h += ctxRow('Close Tab', `send('CLOSE_TAB:${idx}')`, { danger: true });
+    document.getElementById('tabmenu-body').innerHTML = h;
+    if (activeDrawer === 'tabmenu') closeDrawer();
+    toggleDrawer('tabmenu', anchor);
+  }
+  function openGroupMenu(gid, anchor) {
+    const g = (lastState.tab_groups || []).find(x => x.id === gid);
+    if (!g) return;
+    ctxGroup = gid; groupColor = g.color;
+    document.getElementById('group-name').value = g.name;
+    renderGroupSwatches();
+    let h = '<div class="ctx-sep"></div>';
+    h += ctxRow(g.collapsed ? 'Expand Group' : 'Collapse Group', `send('GROUP_TOGGLE:${gid}')`);
+    h += ctxRow('Ungroup', `send('GROUP_UNGROUP:${gid}')`);
+    h += ctxRow('Close Group', `send('GROUP_CLOSE:${gid}')`, { danger: true });
+    document.getElementById('groupmenu-body').innerHTML = h;
+    if (activeDrawer === 'groupmenu') closeDrawer();
+    toggleDrawer('groupmenu', anchor);
+    setTimeout(() => { const i = document.getElementById('group-name'); i.focus(); i.select(); }, 40);
+  }
+  function renderGroupSwatches() {
+    document.getElementById('group-swatches').innerHTML = GROUP_COLORS.map(c =>
+      `<button class="swatch ${c === groupColor ? 'on' : ''}" style="background:${c}" onclick="groupColor='${c}'; renderGroupSwatches(); groupSaveNow()" title="${c}"></button>`).join('');
+  }
+  const GROUP_COLORS = ['#0A84FF', '#30D158', '#FF9F0A', '#FF375F', '#BF5AF2', '#64D2FF', '#FFD60A', '#8E8E93'];
+  function groupSaveNow() {
+    clearTimeout(groupSaveTimer);
+    if (ctxGroup === null) return;
+    send('GROUP_EDIT:' + ctxGroup + '|' + JSON.stringify({ name: document.getElementById('group-name').value, color: groupColor }));
+  }
+  function groupSaveSoon() { clearTimeout(groupSaveTimer); groupSaveTimer = setTimeout(groupSaveNow, 250); }
 
   window.setOverlayBackdropImage = function(dataUrl) {
     const el = document.getElementById('drawer');
@@ -1630,6 +1770,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Save Page as PDF (PrintToPdf)', run: () => send('PRINT_TO_PDF') },
       { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
       { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
+      { kind: 'Action', title: 'Add Current Tab to New Group', run: () => send('TAB_GROUP_NEW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
       { kind: 'Action', title: 'Profiles: switch or open another profile', run: () => toggleDrawer('profiles') },
       { kind: 'Action', title: 'New Profile', run: () => { toggleDrawer('profiles'); setTimeout(() => profileForm(null), 80); } },

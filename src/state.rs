@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.22.1";
+pub const APP_VERSION: &str = "v2.23.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -93,6 +93,73 @@ pub struct SavedTab {
     /// Space the tab belongs to (0 = the first Space, for sessions saved before Spaces existed).
     #[serde(default)]
     pub space: u32,
+    /// Tab group id (see tab_groups.json), if the tab was in a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tab groups: named, coloured runs of tabs inside one Space that can be collapsed.
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TabGroup {
+    pub id: u32,
+    pub name: String,
+    pub color: String,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+pub const GROUP_COLORS: &[&str] = &["#0A84FF", "#30D158", "#FF9F0A", "#FF375F", "#BF5AF2", "#64D2FF", "#FFD60A", "#8E8E93"];
+
+/// Trim a group name (may be empty: an unnamed group shows as a coloured dot) and check the colour.
+pub fn clean_group(name: &str, color: &str) -> (String, String) {
+    let n: String = name.trim().chars().take(30).collect();
+    let c = if GROUP_COLORS.contains(&color) { color.to_string() } else { GROUP_COLORS[0].to_string() };
+    (n, c)
+}
+
+/// A stable reordering that makes every group's tabs contiguous, gathered at the position of the
+/// group's first tab. Input: each tab's group. Output: old indices in their new order.
+pub fn group_contiguous_order(groups: &[Option<u32>]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(groups.len());
+    let mut placed = vec![false; groups.len()];
+    for i in 0..groups.len() {
+        if placed[i] {
+            continue;
+        }
+        match groups[i] {
+            None => {
+                out.push(i);
+                placed[i] = true;
+            }
+            Some(g) => {
+                for j in i..groups.len() {
+                    if !placed[j] && groups[j] == Some(g) {
+                        out.push(j);
+                        placed[j] = true;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// After a tab is dragged to index `to`, which group should it be in? Dropped between two tabs of
+/// one group: that group. Dropped next to a tab of its own group: unchanged. Otherwise: none.
+pub fn group_after_drop(groups: &[Option<u32>], to: usize) -> Option<u32> {
+    let left = to.checked_sub(1).and_then(|i| groups.get(i).copied().flatten());
+    let right = groups.get(to + 1).copied().flatten();
+    let own = groups.get(to).copied().flatten();
+    if left.is_some() && left == right {
+        return left;
+    }
+    match own {
+        Some(g) if left == Some(g) || right == Some(g) => Some(g),
+        _ => None,
+    }
 }
 
 /// Arc-style Space: a named, coloured set of tabs.
@@ -729,6 +796,16 @@ impl BrowserStorage {
         let path = Self::app_data_dir().join("spaces.json");
         if let Ok(json) = serde_json::to_string_pretty(sp) {
             let _ = fs::write(path, json);
+        }
+    }
+
+    pub fn load_tab_groups() -> Vec<TabGroup> {
+        let path = Self::app_data_dir().join("tab_groups.json");
+        fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+    pub fn save_tab_groups(groups: &[TabGroup]) {
+        if let Ok(t) = serde_json::to_string_pretty(groups) {
+            let _ = fs::write(Self::app_data_dir().join("tab_groups.json"), t);
         }
     }
 
