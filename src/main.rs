@@ -4,6 +4,7 @@ mod blocker;
 mod downloader;
 mod https_guard;
 mod importer;
+mod passwords;
 mod updater;
 mod sanitizer;
 mod state;
@@ -36,10 +37,80 @@ use state::{
 };
 
 const CHROME_BAR_HEIGHT: f64 = 112.0;
+
+/// Actual toolbar height reported by the chrome UI (`CHROME_H:`), as f64 bits. The bookmarks bar is
+/// shown only on the New Tab page, and the maximized tab strip is taller, so the height varies.
+static CHROME_BAR_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x405C_0000_0000_0000); // 112.0
+
+/// Arc-style Peek: one floating preview web view above the active tab. Lives on the UI thread.
+struct Peek {
+    id: usize,
+    webview: WebView,
+    incognito: bool,
+}
+thread_local! {
+    static CHROME_LAST_H: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    static PEEK: std::cell::RefCell<Option<Peek>> = const { std::cell::RefCell::new(None) };
+    /// Last laid-out Peek rectangle (x, y, w, h) in logical px, for the chrome UI's frame.
+    static PEEK_RECT: std::cell::Cell<[f64; 4]> = const { std::cell::Cell::new([0.0; 4]) };
+}
+fn peek_open() -> bool {
+    PEEK.with(|p| p.borrow().is_some())
+}
+fn peek_id() -> Option<usize> {
+    PEEK.with(|p| p.borrow().as_ref().map(|k| k.id))
+}
+fn close_peek() -> bool {
+    PEEK.with(|p| p.borrow_mut().take()).is_some()
+}
+
+#[derive(Serialize)]
+struct PeekView {
+    url: String,
+    rect: [f64; 4],
+}
+
+/// Active search engine name, for the right-click menu label (updated with every chrome state push).
+fn search_engine_label() -> &'static std::sync::Mutex<String> {
+    static L: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(String::from("the web")))
+}
+
+/// Run `js` in the content web view with this id (a tab or the Peek).
+fn eval_in_tab(tabs: &[BrowserTab], tab_id: usize, js: &str) {
+    if let Some(t) = tabs.iter().find(|t| t.id == tab_id) {
+        let _ = t.webview.evaluate_script(js);
+    } else {
+        PEEK.with(|p| {
+            if let Some(k) = p.borrow().as_ref().filter(|k| k.id == tab_id) {
+                let _ = k.webview.evaluate_script(js);
+            }
+        });
+    }
+}
+
+/// Current origin of a content web view (from the engine, not from page-supplied data), and whether it is private.
+fn tab_origin(tabs: &[BrowserTab], tab_id: usize) -> Option<(String, bool)> {
+    let (url, private) = match tabs.iter().find(|t| t.id == tab_id) {
+        Some(t) => (t.webview.url().ok()?, t.incognito),
+        None => PEEK.with(|p| p.borrow().as_ref().filter(|k| k.id == tab_id).and_then(|k| Some((k.webview.url().ok()?, k.incognito))))?,
+    };
+    Some((passwords::origin_of(&url)?, private))
+}
+
+fn chrome_bar_height() -> f64 {
+    f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
 const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// Windows switched between light and dark app mode.
+    SystemThemeChanged,
+    /// Windows Hello answer for a Passwords panel action: (action, credential id, verified, hello unavailable).
+    PwAuthorized(&'static str, u64, bool, bool),
+    /// Right-click → Search <engine> for the selected text (source tab id, raw selection).
+    SearchSelection(usize, String),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     ContentIpc(usize, String),
@@ -146,6 +217,12 @@ struct ChromeSnapshot {
     is_fullscreen: bool,
     is_maximized: bool,
     import_sources: Vec<importer::ImportSource>,
+    peek: Option<PeekView>,
+    pw_offer: Option<passwords::Offer>,
+    passwords: Vec<passwords::CredentialView>,
+    pw_status: String,
+    pw_csv_pending: bool,
+    force_dark_active: bool,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -249,6 +326,7 @@ fn build_content_init_script(
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
+        .replace("__SHUNNO_PEEK__", if global.peek_links { "true" } else { "false" })
         .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
         .replace("__SHUNNO_FP__", if policy.fp_protect { "true" } else { "false" })
         .replace("__SHUNNO_FP_SESSION__", fp_session_key());
@@ -794,7 +872,9 @@ fn apply_privacy_settings(webview: &WebView, save_passwords: bool, strict_tracki
         let Ok(core) = webview.controller().CoreWebView2() else { return };
         if let Ok(settings) = core.Settings() {
             if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
-                let _ = s4.SetIsPasswordAutosaveEnabled(save_passwords);
+                // Passwords are handled by the Shunno vault (src/passwords.rs); WebView2's own saver
+                // would double-prompt and keep a second, unmanageable store.
+                let _ = s4.SetIsPasswordAutosaveEnabled(false);
                 let _ = s4.SetIsGeneralAutofillEnabled(save_passwords);
             }
         }
@@ -1436,6 +1516,36 @@ fn attach_native_webview2_hooks(
                 let mut insert_pos = 0u32;
                 let mut added_link_uri = String::new();
 
+                // Selected text: "Search <engine> for “…”" at the top of the menu.
+                let mut has_sel = windows::Win32::Foundation::BOOL::default();
+                let _ = target.HasSelection(&mut has_sel);
+                if has_sel.as_bool() {
+                    let mut sel_ptr = windows::core::PWSTR::null();
+                    if target.SelectionText(&mut sel_ptr).is_ok() {
+                        let query = sanitizer::selection_query(&webview2_com::take_pwstr(sel_ptr));
+                        if !query.is_empty() {
+                            let engine = search_engine_label().lock().map(|g| g.clone()).unwrap_or_default();
+                            let shown: String = if query.chars().count() > 28 {
+                                format!("{}\u{2026}", query.chars().take(27).collect::<String>().trim_end())
+                            } else {
+                                query.clone()
+                            };
+                            let label = windows::core::HSTRING::from(format!("Search {engine} for \u{201C}{shown}\u{201D}"));
+                            if let Ok(search_item) = env9.CreateContextMenuItem(&label, None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND) {
+                                let mut s_token = Default::default();
+                                let s_proxy = ctx_proxy.clone();
+                                let s_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                                    let _ = s_proxy.send_event(AppEvent::SearchSelection(tab_id, query.clone()));
+                                    Ok(())
+                                }));
+                                let _ = search_item.add_CustomItemSelected(&s_handler, &mut s_token);
+                                let _ = items.InsertValueAtIndex(insert_pos, &search_item);
+                                insert_pos += 1;
+                            }
+                        }
+                    }
+                }
+
                 let mut has_link = windows::Win32::Foundation::BOOL::default();
                 let _ = target.HasLinkUri(&mut has_link);
                 if has_link.as_bool() {
@@ -1566,7 +1676,18 @@ fn create_tab_webview(
     let title_proxy = proxy.clone();
     let nav_proxy = proxy.clone();
 
-    let mut builder = WebViewBuilder::new_as_child(window);
+    let mut builder = WebViewBuilder::new_as_child(window)
+        // Painted in the theme colour until the page draws (no white flash on new tabs in dark mode),
+        // and hidden until layout_webviews places it.
+        .with_background_color(page_background(global.full_dark_mode))
+        .with_visible(false);
+    #[cfg(windows)]
+    {
+        use wry::WebViewBuilderExtWindows;
+        builder = builder
+            .with_additional_browser_args(state::browser_args(global.force_dark_pages))
+            .with_theme(page_theme(global.full_dark_mode));
+    }
     if policy.mobile_ua {
         // Real HTTP User-Agent (and navigator.userAgent), so servers send their mobile site.
         builder = builder.with_user_agent(MOBILE_UA);
@@ -1659,6 +1780,66 @@ fn set_frame_theme(window: &Window, dark: bool) {
 #[cfg(not(windows))]
 fn set_frame_theme(_window: &Window, _dark: bool) {}
 
+/// Windows "app mode" (Settings > Personalization > Colors): true when apps should be dark.
+#[cfg(windows)]
+fn system_prefers_dark() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut v: u32 = 1;
+    let mut sz = std::mem::size_of::<u32>() as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            windows::core::w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut v as *mut u32 as *mut core::ffi::c_void),
+            Some(&mut sz),
+        )
+    };
+    r.is_ok() && v == 0
+}
+#[cfg(not(windows))]
+fn system_prefers_dark() -> bool {
+    false
+}
+
+/// Proxy for the window procedure to report WM_SETTINGCHANGE("ImmersiveColorSet").
+/// "Darken All Sites" as it was when the browser started (the setting applies at next start).
+static FORCE_DARK_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+static THEME_PROXY: std::sync::OnceLock<std::sync::Mutex<EventLoopProxy<AppEvent>>> = std::sync::OnceLock::new();
+
+fn page_theme(dark: bool) -> wry::Theme {
+    if dark { wry::Theme::Dark } else { wry::Theme::Light }
+}
+
+/// Apply light/dark everywhere: window frame, pages' preferred colour scheme, pre-paint background.
+fn apply_theme(window: &Window, tabs: &[BrowserTab], dark: bool) {
+    set_frame_theme(window, dark);
+    #[cfg(windows)]
+    {
+        use wry::WebViewExtWindows;
+        let each = |wv: &WebView| {
+            let _ = wv.set_theme(page_theme(dark));
+            let _ = wv.set_background_color(page_background(dark));
+        };
+        for t in tabs {
+            each(&t.webview);
+        }
+        PEEK.with(|p| {
+            if let Some(k) = p.borrow().as_ref() {
+                each(&k.webview);
+            }
+        });
+    }
+}
+
+/// Default background shown before a page paints (no white flash in dark mode).
+fn page_background(dark: bool) -> (u8, u8, u8, u8) {
+    if dark { (0x1C, 0x1C, 0x1E, 255) } else { (255, 255, 255, 255) }
+}
+
 fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use tao::platform::windows::WindowExtWindows;
@@ -1709,27 +1890,38 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
 
-        // 2. Apply full-brightness embedded icon directly onto Window & Class (GCLP_HICON / WM_SETICON)
-        const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
-        if ICO_BYTES.len() >= 22 {
-            let count = u16::from_le_bytes([ICO_BYTES[4], ICO_BYTES[5]]) as usize;
-            for i in 0..count {
-                let off = 6 + i * 16;
-                if off + 16 > ICO_BYTES.len() { break; }
-                let w = ICO_BYTES[off] as i32;
-                if w == 0 { continue; }
-                let sz = u32::from_le_bytes([ICO_BYTES[off + 8], ICO_BYTES[off + 9], ICO_BYTES[off + 10], ICO_BYTES[off + 11]]) as usize;
-                let img_off = u32::from_le_bytes([ICO_BYTES[off + 12], ICO_BYTES[off + 13], ICO_BYTES[off + 14], ICO_BYTES[off + 15]]) as usize;
-                if img_off + sz <= ICO_BYTES.len() {
-                    let slice = &ICO_BYTES[img_off..img_off + sz];
-                    if let Ok(hicon) = CreateIconFromResourceEx(slice, true, 0x00030000, w, w, LR_DEFAULTCOLOR) {
-                        if w == 48 || w == 32 {
-                            SetClassLongPtrW(hwnd, GCLP_HICON, hicon.0);
-                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(hicon.0));
-                        } else if w == 16 || w == 24 {
-                            SetClassLongPtrW(hwnd, GCLP_HICONSM, hicon.0);
-                            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(hicon.0));
-                        }
+        // 2. Window/taskbar icons at the exact sizes Windows asks for at this DPI (32 px at 100%, 40 at
+        //    125%, 48 at 150%...). Handing Windows a 48 px icon at 100% made it downscale to a blurry 32.
+        {
+            use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+            use windows::Win32::UI::WindowsAndMessaging::{SM_CXICON, SM_CXSMICON};
+            const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+            let dpi = GetDpiForWindow(hwnd).max(96);
+            let entries: Vec<(i32, &[u8])> = (|| {
+                let count = u16::from_le_bytes([*ICO_BYTES.get(4)?, *ICO_BYTES.get(5)?]) as usize;
+                let mut v = Vec::new();
+                for i in 0..count {
+                    let e = ICO_BYTES.get(6 + i * 16..6 + i * 16 + 16)?;
+                    let w = if e[0] == 0 { 256 } else { e[0] as i32 };
+                    let sz = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+                    let off = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+                    v.push((w, ICO_BYTES.get(off..off + sz)?));
+                }
+                Some(v)
+            })()
+            .unwrap_or_default();
+            // Exact size if present, else the smallest larger one, else the largest.
+            let pick = |want: i32| -> Option<(i32, &[u8])> {
+                entries.iter().filter(|(w, _)| *w >= want).min_by_key(|(w, _)| *w)
+                    .or_else(|| entries.iter().max_by_key(|(w, _)| *w))
+                    .map(|(w, b)| (*w, *b))
+            };
+            for (metric, class_slot, which) in [(SM_CXICON, GCLP_HICON, ICON_BIG), (SM_CXSMICON, GCLP_HICONSM, ICON_SMALL)] {
+                let want = GetSystemMetricsForDpi(metric, dpi).max(16);
+                if let Some((_, bytes)) = pick(want) {
+                    if let Ok(hicon) = CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR) {
+                        SetClassLongPtrW(hwnd, class_slot, hicon.0);
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(hicon.0));
                     }
                 }
             }
@@ -1752,6 +1944,16 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             match msg {
                 // Paint the grip strips in the theme colour (the window class has no background brush).
                 0x0014 /* WM_ERASEBKGND */ => return LRESULT(1),
+                0x001A /* WM_SETTINGCHANGE */ => {
+                    if lparam.0 != 0 {
+                        let s = windows::core::PCWSTR(lparam.0 as *const u16).to_string().unwrap_or_default();
+                        if s == "ImmersiveColorSet" {
+                            if let Some(p) = THEME_PROXY.get().and_then(|m| m.lock().ok()) {
+                                let _ = p.send_event(AppEvent::SystemThemeChanged);
+                            }
+                        }
+                    }
+                }
                 0x000F /* WM_PAINT */ => {
                     use windows::Win32::Graphics::Gdi::{BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT};
                     use windows::Win32::Foundation::COLORREF;
@@ -1906,7 +2108,7 @@ fn layout_webviews(
     let is_max = window.is_maximized() || is_fs;
     let grip = if is_max { 0.0 } else { 3.0 };
 
-    let top_bar_h = if is_fs { 0.0 } else { CHROME_BAR_HEIGHT };
+    let top_bar_h = if is_fs { 0.0 } else { chrome_bar_height() };
     let inner_w = (w - grip * 2.0).max(200.0);
     let inner_h = (h - grip).max(200.0);
     let content_h = (inner_h - top_bar_h).max(80.0);
@@ -1918,7 +2120,7 @@ fn layout_webviews(
             .map(|t| t.url == "shunno://newtab")
             .unwrap_or(true);
 
-    let overlay_active = drawer_open || engine_menu_open || palette_open;
+    let overlay_active = drawer_open || engine_menu_open || palette_open || (peek_open() && !is_fs);
     let chrome_h = if is_fs {
         if is_home { inner_h } else { 0.0 }
     } else if overlay_active || is_home {
@@ -1927,11 +2129,20 @@ fn layout_webviews(
         top_bar_h
     };
 
-    let _ = chrome_wv.set_visible(!is_fs || is_home);
-    let _ = chrome_wv.set_bounds(Rect {
-        position: LogicalPosition::new(grip, 0.0).into(),
-        size: LogicalSize::new(inner_w, chrome_h).into(),
-    });
+    // Order matters to avoid a flash of the bare window: when the chrome grows (New Tab page, popovers),
+    // cover the page first and hide it after; when it shrinks, show the page first and shrink after.
+    let apply_chrome = || {
+        let _ = chrome_wv.set_visible(!is_fs || is_home);
+        let _ = chrome_wv.set_bounds(Rect {
+            position: LogicalPosition::new(grip, 0.0).into(),
+            size: LogicalSize::new(inner_w, chrome_h).into(),
+        });
+    };
+    let last_h = CHROME_LAST_H.with(|c| c.replace(chrome_h));
+    let chrome_grows = chrome_h >= last_h;
+    if chrome_grows {
+        apply_chrome();
+    }
 
     // Full-width webpage (zero splitting): Menu & Downloads float over the live webpage at 10% transparency.
     let web_w = inner_w;
@@ -1963,6 +2174,9 @@ fn layout_webviews(
         let show_web = idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
     }
+    if !chrome_grows {
+        apply_chrome();
+    }
 
     if !is_fs {
         if overlay_active || is_home {
@@ -1973,7 +2187,45 @@ fn layout_webviews(
             }
         }
     }
+
+    // Peek sits above everything, inset in the content area; the chrome draws the frame and backdrop.
+    PEEK.with(|p| {
+        if let Some(peek) = p.borrow().as_ref() {
+            if is_fs {
+                let _ = peek.webview.set_visible(false);
+                return;
+            }
+            let side = (inner_w * 0.07).clamp(24.0, 140.0);
+            let header = 46.0;
+            let x = grip + side;
+            let y = top_bar_h + 14.0 + header;
+            let pw = (inner_w - side * 2.0).max(200.0);
+            let ph = (inner_h - y - 18.0).max(120.0);
+            PEEK_RECT.with(|r| r.set([x, y, pw, ph]));
+            let _ = peek.webview.set_bounds(Rect {
+                position: LogicalPosition::new(x, y).into(),
+                size: LogicalSize::new(pw, ph).into(),
+            });
+            let _ = peek.webview.set_visible(true);
+            bring_webview_to_top(&peek.webview);
+        }
+    });
 }
+
+#[cfg(windows)]
+fn bring_webview_to_top(wv: &WebView) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use wry::WebViewExtWindows;
+    unsafe {
+        let mut h = HWND::default();
+        if wv.controller().ParentWindow(&mut h).is_ok() && h.0 != 0 {
+            let _ = SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn bring_webview_to_top(_wv: &WebView) {}
 
 fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
@@ -1993,6 +2245,8 @@ fn main() -> wry::Result<()> {
 
     let ipc_token = generate_ipc_token();
     let mut global_settings = BrowserStorage::load_global_settings();
+    // full_dark_mode is the effective theme for this run (System follows Windows).
+    global_settings.full_dark_mode = state::effective_dark(&global_settings.theme_mode, system_prefers_dark());
     https_guard::global().set_enabled(global_settings.https_only);
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
@@ -2015,7 +2269,15 @@ fn main() -> wry::Result<()> {
         .unwrap();
 
     let chrome_proxy = proxy.clone();
-    let chrome_wv = WebViewBuilder::new_as_child(&window)
+    #[allow(unused_mut)]
+    let mut chrome_builder = WebViewBuilder::new_as_child(&window);
+    #[cfg(windows)]
+    {
+        // Must match the tab web views' arguments: they share one WebView2 environment.
+        use wry::WebViewBuilderExtWindows;
+        chrome_builder = chrome_builder.with_additional_browser_args(state::browser_args(global_settings.force_dark_pages));
+    }
+    let chrome_wv = chrome_builder
         .with_web_context(&mut web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
@@ -2030,6 +2292,8 @@ fn main() -> wry::Result<()> {
 
     install_native_win32_window_features(&window, &chrome_wv);
     set_frame_theme(&window, global_settings.full_dark_mode);
+    let _ = THEME_PROXY.set(std::sync::Mutex::new(proxy.clone()));
+    FORCE_DARK_AT_START.store(global_settings.force_dark_pages, Ordering::Relaxed);
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -2045,6 +2309,8 @@ fn main() -> wry::Result<()> {
     let mut sniffed_streams: Vec<SniffedStreamItem> = Vec::new();
     let mut duplicate_alert: Option<DownloadTask> = None;
     let mut closed_tabs: Vec<SavedTab> = Vec::new();
+    // Last imported password CSV, so the Passwords panel can offer to delete it.
+    let mut pw_last_csv: Option<std::path::PathBuf> = None;
     let mut find_current: usize = 0;
     let mut find_total: usize = 0;
     let mut had_active_downloads = false;
@@ -2211,7 +2477,25 @@ fn main() -> wry::Result<()> {
             update_label: update_kind_label().1,
             is_fullscreen,
             is_maximized: window.is_maximized(),
-            import_sources: importer::ui_snapshot().0,
+            import_sources: {
+                if let (Ok(mut l), Some(e)) = (search_engine_label().lock(), global_settings.search_engines.get(global_settings.active_search_engine)) {
+                    if *l != e.name {
+                        *l = e.name.clone();
+                    }
+                }
+                importer::ui_snapshot().0
+            },
+            pw_offer: passwords::global().offer.lock().map(|o| o.clone()).unwrap_or(None),
+            passwords: passwords::global().with(|v| (v.views(), false)),
+            pw_status: passwords::global().status.lock().map(|s| s.clone()).unwrap_or_default(),
+            pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
+            force_dark_active: FORCE_DARK_AT_START.load(Ordering::Relaxed),
+            peek: PEEK.with(|p| {
+                p.borrow().as_ref().map(|k| PeekView {
+                    url: k.webview.url().unwrap_or_default(),
+                    rect: PEEK_RECT.with(|r| r.get()),
+                })
+            }),
             import_status: importer::ui_snapshot().1,
             has_closed_tabs,
             find_current,
@@ -2806,6 +3090,41 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
+            Event::UserEvent(AppEvent::SearchSelection(source_tab, query)) => {
+                // Opens next to the source like a link; a private tab's search stays private.
+                let url = sanitizer::search_url(&query, &global_settings);
+                let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(source_tab, url));
+            }
+
+            Event::UserEvent(AppEvent::PwAuthorized(action, id, ok, unavailable)) => {
+                let vault = passwords::global();
+                if !ok {
+                    vault.set_status("Not verified.");
+                } else {
+                    vault.unlock_for(120);
+                    if let Some(c) = vault.with(|v| (v.get(id).cloned(), false)) {
+                        if action == "reveal" {
+                            let _ = chrome_wv.evaluate_script(&format!("window.__pwReveal && window.__pwReveal({}, {});", id, serde_json::Value::String(c.password)));
+                            vault.set_status(if unavailable { "Tip: set up Windows Hello (Settings > Accounts > Sign-in options) so passwords need your PIN or face to show." } else { "" });
+                        } else if passwords::set_clipboard(&c.password) {
+                            vault.set_status(if unavailable { "Password copied. Tip: set up Windows Hello to protect this." } else { "Password copied." });
+                        }
+                    }
+                }
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::SystemThemeChanged) => {
+                if global_settings.theme_mode == "system" {
+                    let dark = system_prefers_dark();
+                    if dark != global_settings.full_dark_mode {
+                        global_settings.full_dark_mode = dark;
+                        apply_theme(&window, &tabs, dark);
+                        let _ = proxy.send_event(AppEvent::RefreshChrome);
+                    }
+                }
+            }
+
             Event::UserEvent(AppEvent::AdBlocked) => {
                 blocked_count += 1;
             }
@@ -2890,8 +3209,15 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::NewWindowBlockedOrOpened(opener_id, popup_url)) => {
-                let opener_private = tabs.iter().find(|t| t.id == opener_id).map(|t| t.incognito).unwrap_or(false);
-                let lower = popup_url.to_ascii_lowercase();
+                // A pop-up from a private Peek must stay private too.
+                let opener_private = tabs
+                    .iter()
+                    .find(|t| t.id == opener_id)
+                    .map(|t| t.incognito)
+                    .or_else(|| PEEK.with(|p| p.borrow().as_ref().filter(|k| k.id == opener_id).map(|k| k.incognito)))
+                    .unwrap_or(false);
+                // Match ad networks by host only, so a search query or path mentioning them is not blocked.
+                let lower = extract_host(&popup_url).to_ascii_lowercase();
                 let is_ad_popup = lower.contains("popads")
                     || lower.contains("popcash")
                     || lower.contains("doubleclick")
@@ -2956,7 +3282,78 @@ fn main() -> wry::Result<()> {
                 }
                 let page_url = tabs.iter().find(|t| t.id == tab_id).map(|t| t.url.clone());
 
-                if msg == "AD_BLOCKED" {
+                if let Some(target) = msg.strip_prefix("PEEK:") {
+                    let target = target.trim();
+                    let from_peek = peek_id() == Some(tab_id);
+                    if global_settings.peek_links && (target.starts_with("https://") || target.starts_with("http://")) {
+                        let clean = sanitize_url(target, &global_settings);
+                        if from_peek || peek_open() {
+                            // Shift+click inside a Peek just navigates the Peek.
+                            PEEK.with(|p| {
+                                if let Some(k) = p.borrow().as_ref() {
+                                    let _ = k.webview.load_url(&clean);
+                                }
+                            });
+                        } else if let Some(src) = tabs.iter().find(|t| t.id == tab_id) {
+                            let incognito = src.incognito;
+                            let pol = site_policies.get(&extract_host(&clean)).cloned().unwrap_or_default();
+                            let pid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, pid, &clean, &pol, &global_settings, &ipc_token, proxy.clone(), incognito) {
+                                drawer_open = false;
+                                engine_menu_open = false;
+                                palette_open = false;
+                                PEEK.with(|p| *p.borrow_mut() = Some(Peek { id: pid, webview: wv, incognito }));
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
+                        }
+                    }
+                } else if let Some(json) = msg.strip_prefix("PW_OFFER:") {
+                    // Never offer in private tabs or when the manager is off.
+                    if let (true, Some((origin, false))) = (global_settings.save_passwords, tab_origin(&tabs, tab_id)) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                            let user = v.get("u").and_then(|x| x.as_str()).unwrap_or("").chars().take(256).collect::<String>();
+                            let pass = v.get("p").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            if pass.len() <= 1024 {
+                                if let Some(kind) = passwords::global().with(|vd| (vd.offer_kind(&origin, &user, &pass), false)) {
+                                    if let Ok(mut o) = passwords::global().offer.lock() {
+                                        *o = Some(passwords::Offer { origin, username: user, password: pass, kind });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if msg == "PW_QUERY" {
+                    if !global_settings.save_passwords {
+                        return;
+                    }
+                    let Some((origin, _)) = tab_origin(&tabs, tab_id) else { return };
+                    let list = passwords::global().with(|v| (v.accounts_for(&origin), false));
+                    if list.is_empty() {
+                        return;
+                    }
+                    let arr: Vec<serde_json::Value> = list.into_iter().map(|(id, u)| serde_json::json!({ "id": id, "u": u })).collect();
+                    eval_in_tab(&tabs, tab_id, &format!("window.__shunnoPwAccounts && window.__shunnoPwAccounts({});", serde_json::Value::Array(arr)));
+                    return;
+                } else if let Some(id) = msg.strip_prefix("PW_FILL:") {
+                    // Re-check the site at fill time: the page may have navigated since the menu opened.
+                    let (Ok(id), Some((origin, _))) = (id.parse::<u64>(), tab_origin(&tabs, tab_id)) else { return };
+                    let cred = passwords::global().with(|v| (v.get(id).cloned(), false));
+                    if let Some(c) = cred.filter(|c| passwords::same_site(&c.origin, &origin)) {
+                        let js = format!(
+                            "window.__shunnoPwFill && window.__shunnoPwFill({}, {});",
+                            serde_json::Value::String(c.username),
+                            serde_json::Value::String(c.password)
+                        );
+                        eval_in_tab(&tabs, tab_id, &js);
+                    }
+                    return;
+                } else if msg == "KEY_ESC" {
+                    if peek_id() == Some(tab_id) && close_peek() {
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    } else {
+                        return;
+                    }
+                } else if msg == "AD_BLOCKED" {
                     blocked_count += 1;
                 } else if let Some(fc) = msg.strip_prefix("FIND_COUNT:") {
                     if let Some((cur_s, tot_s)) = fc.split_once('|') {
@@ -3248,7 +3645,43 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ChromeIpc(cmd)) => {
-                if cmd == "WIN_DRAG" {
+                // Peek is transient: anything that changes the tab or opens a popover dismisses it.
+                if peek_open()
+                    && ["SWITCH_TAB:", "NAV:", "NAV_NEW_TAB:", "NEW_TAB", "NEW_INCOGNITO", "NEXT_TAB", "PREV_TAB", "CLOSE_TAB:",
+                        "CLOSE_ACTIVE_TAB", "DRAWER_OPEN:", "PALETTE:", "TOGGLE_SPLIT_VIEW", "TOGGLE_FULLSCREEN"]
+                        .iter()
+                        .any(|p| cmd.starts_with(p))
+                {
+                    close_peek();
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                }
+                if cmd == "PEEK_CLOSE" {
+                    if close_peek() {
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
+                } else if cmd == "PEEK_OPEN" {
+                    // Promote the live preview to a real tab (keeps scroll position, logins, form state).
+                    if let Some(peek) = PEEK.with(|p| p.borrow_mut().take()) {
+                        let url = peek.webview.url().unwrap_or_default();
+                        tabs.push(BrowserTab {
+                            id: peek.id,
+                            title: extract_host(&url),
+                            url,
+                            cookie: None,
+                            incognito: peek.incognito,
+                            pinned: false,
+                            playing_audio: false,
+                            muted: false,
+                            reader_active: false,
+                            sleeping: false,
+                            last_active_secs: now_epoch_secs(),
+                            zoom: 1.0,
+                            webview: peek.webview,
+                        });
+                        active_tab_idx = tabs.len() - 1;
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    }
+                } else if cmd == "WIN_DRAG" {
                     let _ = window.drag_window();
                 } else if cmd == "WIN_MINIMIZE" {
                     window.set_minimized(true);
@@ -3367,6 +3800,8 @@ fn main() -> wry::Result<()> {
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
+                    // Draw the start page before the toolbar grows over the old page.
+                    let _ = chrome_wv.evaluate_script("window.__showHomeNow && window.__showHomeNow()");
                     let start = "shunno://newtab".to_string();
                     let pol = SitePolicy::default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
@@ -3567,17 +4002,13 @@ fn main() -> wry::Result<()> {
                 } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
                     match gkey {
                         "full_dark" => {
+                            // Legacy toggle (command palette): flip to an explicit light/dark.
+                            global_settings.theme_mode = if global_settings.full_dark_mode { "light" } else { "dark" }.to_string();
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
-                            set_frame_theme(&window, global_settings.full_dark_mode);
-                            let js = format!(
-                                "if (window.__shunnoSetDarkMode) window.__shunnoSetDarkMode({});",
-                                global_settings.full_dark_mode
-                            );
-                            for t in &tabs {
-                                if t.url != "shunno://newtab" {
-                                    let _ = t.webview.evaluate_script(&js);
-                                }
-                            }
+                            apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                        }
+                        "force_dark_pages" => {
+                            global_settings.force_dark_pages = !global_settings.force_dark_pages;
                         }
                         "drop_basket" => {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
@@ -3599,6 +4030,13 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "peek_links" => {
+                            global_settings.peek_links = !global_settings.peek_links;
+                            let js = format!("window.__shunnoPeekOn = {};", global_settings.peek_links);
+                            for t in &tabs {
+                                let _ = t.webview.evaluate_script(&js);
+                            }
+                        }
                         "auto_update" => global_settings.auto_update = !global_settings.auto_update,
                         "https_only" => {
                             global_settings.https_only = !global_settings.https_only;
@@ -3653,6 +4091,111 @@ fn main() -> wry::Result<()> {
                         refresh_filter_lists().await;
                         let _ = px.send_event(AppEvent::RefreshChrome);
                     });
+                } else if cmd == "PW_SAVE" || cmd == "PW_NEVER" || cmd == "PW_DISMISS" {
+                    let offer = passwords::global().offer.lock().ok().and_then(|mut o| o.take());
+                    if let Some(o) = offer {
+                        if cmd == "PW_SAVE" {
+                            passwords::global().with(|v| {
+                                v.upsert(&o.origin, &o.username, &o.password);
+                                ((), true)
+                            });
+                        } else if cmd == "PW_NEVER" {
+                            passwords::global().with(|v| {
+                                v.add_never(&o.origin);
+                                ((), true)
+                            });
+                        }
+                    }
+                } else if let Some(id) = cmd.strip_prefix("PW_DELETE:") {
+                    if let Ok(id) = id.parse::<u64>() {
+                        passwords::global().with(|v| {
+                            let changed = v.remove(id);
+                            ((), changed)
+                        });
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("PW_EDIT:") {
+                    // PW_EDIT:<id>|{"u":..,"p":..}
+                    if let Some((id, json)) = arg.split_once('|') {
+                        if let (Ok(id), Ok(v)) = (id.parse::<u64>(), serde_json::from_str::<serde_json::Value>(json)) {
+                            let u = v.get("u").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let p = v.get("p").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            let ok = passwords::global().with(|vd| {
+                                let ok = vd.edit(id, &u, &p);
+                                (ok, ok)
+                            });
+                            passwords::global().set_status(if ok { "Saved." } else { "Not saved: empty password, or that username already exists for this site." });
+                        }
+                    }
+                } else if let Some(id) = cmd.strip_prefix("PW_COPY_USER:") {
+                    if let Some(c) = id.parse::<u64>().ok().and_then(|id| passwords::global().with(|v| (v.get(id).cloned(), false))) {
+                        if passwords::set_clipboard(&c.username) {
+                            passwords::global().set_status("Username copied.");
+                        }
+                    }
+                } else if let Some((action, id)) = cmd
+                    .strip_prefix("PW_REVEAL:")
+                    .map(|i| ("reveal", i))
+                    .or_else(|| cmd.strip_prefix("PW_COPY:").map(|i| ("copy", i)))
+                {
+                    if let Ok(id) = id.parse::<u64>() {
+                        if passwords::global().is_unlocked() {
+                            let _ = proxy.send_event(AppEvent::PwAuthorized(action, id, true, false));
+                        } else {
+                            // Windows Hello blocks until answered: ask on a worker thread.
+                            #[cfg(windows)]
+                            let hwnd = {
+                                use tao::platform::windows::WindowExtWindows;
+                                window.hwnd() as isize
+                            };
+                            #[cfg(not(windows))]
+                            let hwnd = 0isize;
+                            let px = proxy.clone();
+                            std::thread::spawn(move || {
+                                let r = passwords::verify_user(hwnd, "Shunno Browser wants to show a saved password.");
+                                let (ok, unavailable) = match r {
+                                    passwords::HelloResult::Verified => (true, false),
+                                    passwords::HelloResult::Unavailable => (true, true),
+                                    passwords::HelloResult::Denied => (false, false),
+                                };
+                                let _ = px.send_event(AppEvent::PwAuthorized(action, id, ok, unavailable));
+                            });
+                        }
+                    }
+                } else if cmd == "PW_IMPORT" {
+                    #[cfg(windows)]
+                    let hwnd = {
+                        use tao::platform::windows::WindowExtWindows;
+                        window.hwnd() as isize
+                    };
+                    #[cfg(not(windows))]
+                    let hwnd = 0isize;
+                    if let Some(path) = passwords::pick_csv(hwnd) {
+                        let msg = match std::fs::read(&path) {
+                            Ok(bytes) => match passwords::global().with(|v| {
+                                let r = v.import_csv(&String::from_utf8_lossy(&bytes));
+                                let dirty = r.as_ref().map(|(a, u, _)| a + u > 0).unwrap_or(false);
+                                (r, dirty)
+                            }) {
+                                Ok((a, u, sk)) => {
+                                    pw_last_csv = Some(path.clone());
+                                    passwords::global().csv_pending.store(true, Ordering::Relaxed);
+                                    format!("Imported {a} new, updated {u}, skipped {sk}. The CSV file holds your passwords in plain text: delete it.")
+                                }
+                                Err(e) => e,
+                            },
+                            Err(e) => format!("Could not read the file: {e}"),
+                        };
+                        passwords::global().set_status(msg);
+                    }
+                } else if cmd == "PW_DELETE_CSV" {
+                    passwords::global().csv_pending.store(false, Ordering::Relaxed);
+                    if let Some(path) = pw_last_csv.take() {
+                        let msg = match std::fs::remove_file(&path) {
+                            Ok(()) => format!("Deleted {}.", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                            Err(e) => format!("Could not delete the CSV: {e}"),
+                        };
+                        passwords::global().set_status(msg);
+                    }
                 } else if cmd == "CLEAR_PASSWORDS" {
                     if let Some(tab) = tabs.iter().find(|t| !t.incognito) {
                         clear_saved_passwords(&tab.webview);
@@ -3747,6 +4290,13 @@ fn main() -> wry::Result<()> {
                     engine.install_ffmpeg_bundle(&rt_handle);
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
+                } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
+                    if matches!(mode, "system" | "light" | "dark") {
+                        global_settings.theme_mode = mode.to_string();
+                        global_settings.full_dark_mode = state::effective_dark(mode, system_prefers_dark());
+                        apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                        BrowserStorage::save_global_settings(&global_settings);
+                    }
                 } else if let Some(h) = cmd.strip_prefix("SET_AUTO_ARCHIVE:") {
                     if let Ok(h) = h.trim().parse::<u32>() {
                         global_settings.auto_archive_hours = h.min(24 * 30);
@@ -3823,6 +4373,15 @@ fn main() -> wry::Result<()> {
                     let _ = BrowserStorage::export_portable_txt_bookmarks(&bookmarks);
                 } else if cmd == "IMPORT_TXT_BOOKMARKS" {
                     let _ = BrowserStorage::import_portable_txt_bookmarks(&mut bookmarks);
+                } else if let Some(h) = cmd.strip_prefix("CHROME_H:") {
+                    if let Ok(h) = h.trim().parse::<f64>() {
+                        let h = h.clamp(40.0, 200.0).round();
+                        if (h - chrome_bar_height()).abs() >= 1.0 {
+                            CHROME_BAR_H_BITS.store(h.to_bits(), Ordering::Relaxed);
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                    return;
                 } else if cmd == "IMPORT_SCAN" {
                     importer::scan();
                 } else if let Some(arg) = cmd.strip_prefix("IMPORT_BROWSER:") {

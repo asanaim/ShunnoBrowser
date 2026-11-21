@@ -16,6 +16,8 @@ mod blocker;
 mod updater;
 #[path = "../src/importer.rs"]
 mod importer;
+#[path = "../src/passwords.rs"]
+mod passwords;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -40,6 +42,11 @@ fn test_search_engine_query_formatting() {
         sanitize_url("rust webview2", &cfg),
         "https://duckduckgo.com/?q=rust+webview2"
     );
+    // Right-click search always searches, even for domain-like or multi-line selections.
+    assert_eq!(sanitizer::search_url("example.com", &cfg), "https://duckduckgo.com/?q=example.com");
+    assert_eq!(sanitizer::selection_query("  রবীন্দ্রনাথ\n  ঠাকুর \t"), "রবীন্দ্রনাথ ঠাকুর");
+    assert_eq!(sanitizer::search_url(&sanitizer::selection_query("C++ & Rust?"), &cfg), "https://duckduckgo.com/?q=C%2B%2B+%26+Rust%3F");
+    assert_eq!(sanitizer::selection_query(&"a".repeat(500)).len(), 300);
 }
 
 #[test]
@@ -371,4 +378,93 @@ fn test_auto_archive_selection() {
     assert!(tabs_to_archive(now, 24, &tabs).is_empty());
     // Never archives every tab.
     assert!(tabs_to_archive(now, 12, &[p(old, false, false, false, false)]).is_empty());
+}
+
+// ---------------------------------------------------------------- password vault
+
+#[test]
+fn test_password_origins_and_matching() {
+    use passwords::{origin_of, same_site};
+    assert_eq!(origin_of("https://Accounts.Example.com/login?x=1").as_deref(), Some("https://accounts.example.com"));
+    assert_eq!(origin_of("http://127.0.0.1:8080/a").as_deref(), Some("http://127.0.0.1:8080"));
+    assert_eq!(origin_of("file:///c:/x"), None);
+    assert_eq!(origin_of("javascript:alert(1)"), None);
+    assert!(same_site("https://www.github.com", "https://github.com"));
+    assert!(!same_site("https://github.com", "http://github.com")); // scheme matters
+    assert!(!same_site("https://a.com.bd", "https://b.com.bd")); // no guessing across sites
+    assert!(!same_site("https://login.example.com", "https://example.com"));
+    assert!(!same_site("https://example.com:8443", "https://example.com"));
+}
+
+#[test]
+fn test_password_offer_upsert_edit_never() {
+    use passwords::{OfferKind, VaultData};
+    let mut v = VaultData::default();
+    let o = "https://github.com";
+    assert_eq!(v.offer_kind(o, "naim", "pw1"), Some(OfferKind::Save));
+    let id = v.upsert(o, "naim", "pw1");
+    assert_eq!(v.offer_kind("https://www.github.com", "naim", "pw1"), None); // unchanged
+    assert_eq!(v.offer_kind(o, "naim", "pw2"), Some(OfferKind::Update));
+    assert_eq!(v.upsert(o, "naim", "pw2"), id); // same entry updated
+    assert_eq!(v.get(id).unwrap().password, "pw2");
+    assert_eq!(v.offer_kind(o, "", ""), None); // empty password never offered
+    let id2 = v.upsert(o, "work", "pw3");
+    assert_eq!(v.accounts_for("https://www.github.com").len(), 2);
+    assert!(v.accounts_for("https://gitlab.com").is_empty());
+    assert!(!v.edit(id2, "naim", "x")); // would duplicate (site, username)
+    assert!(!v.edit(id2, "work2", "")); // empty password refused
+    assert!(v.edit(id2, "work2", "pw4"));
+    v.add_never("https://bank.example");
+    assert_eq!(v.offer_kind("https://bank.example", "u", "p"), None);
+    assert!(v.remove(id));
+    assert!(v.get(id).is_none());
+    assert_eq!(v.views().len(), 1);
+}
+
+#[test]
+fn test_password_csv_import_formats() {
+    use passwords::{parse_csv, VaultData};
+    // RFC 4180: quotes, doubled quotes, comma and newline inside a field, CRLF, BOM.
+    let rows = parse_csv("\u{feff}a,b\r\n\"x,1\",\"he said \"\"hi\"\"\nline2\"\r\n");
+    assert_eq!(rows, vec![vec!["a".to_string(), "b".to_string()], vec!["x,1".to_string(), "he said \"hi\"\nline2".to_string()]]);
+
+    let chrome = "name,url,username,password,note\n\
+github.com,https://github.com/login,naim,\"p,w\"\"1\",\n\
+bad,chrome://settings,x,y,\n\
+empty,https://e.com/,x,,\n";
+    let mut v = VaultData::default();
+    assert_eq!(v.import_csv(chrome).unwrap(), (1, 0, 2));
+    let c = &v.creds[0];
+    assert_eq!((c.origin.as_str(), c.username.as_str(), c.password.as_str()), ("https://github.com", "naim", "p,w\"1"));
+
+    let firefox = "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\",\"timeLastUsed\",\"timePasswordChanged\"\n\
+\"https://github.com\",\"naim\",\"newpw\",,\"https://github.com\",\"{x}\",\"1\",\"1\",\"1\"\n\
+\"https://www.prothomalo.com\",\"নাঈম\",\"পাসওয়ার্ড\",,,\"{y}\",\"1\",\"1\",\"1\"\n";
+    assert_eq!(v.import_csv(firefox).unwrap(), (1, 1, 0));
+    assert_eq!(v.accounts_for("https://prothomalo.com"), vec![(2, "নাঈম".to_string())]);
+    assert_eq!(v.import_csv(firefox).unwrap(), (0, 0, 2)); // idempotent
+
+    let bitwarden = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n,,login,X,,,0,https://x.org,me,secret,\n";
+    assert_eq!(v.import_csv(bitwarden).unwrap(), (1, 0, 0));
+    assert!(v.import_csv("just,some,columns\n1,2,3\n").is_err());
+    assert!(v.import_csv("").is_err());
+}
+
+#[test]
+fn test_theme_mode_and_browser_args() {
+    use state::{browser_args, effective_dark};
+    assert!(effective_dark("system", true));
+    assert!(!effective_dark("system", false));
+    assert!(effective_dark("dark", false));
+    assert!(!effective_dark("light", true));
+    assert!(effective_dark("unknown", true)); // falls back to following Windows
+    let off = browser_args(false);
+    let on = browser_args(true);
+    assert!(off.starts_with("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    assert!(!off.contains("WebContentsForceDark"));
+    assert!(on.starts_with(&off) && on.contains("--enable-features=WebContentsForceDark"));
+    // Default settings follow the system theme and leave pages undarkened.
+    let g = state::GlobalSettings::default();
+    assert_eq!(g.theme_mode, "system");
+    assert!(!g.force_dark_pages);
 }

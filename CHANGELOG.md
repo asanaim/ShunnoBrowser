@@ -1,3 +1,61 @@
+## v2.17.1
+
+### Appearance
+* **Follows Windows**: Menu, Appearance: System / Light / Dark (default System). With System, switching Windows between light and dark mode updates Shunno immediately.
+* **True colours in dark mode.** The old page dark mode inverted every page with a CSS filter, which distorted colours. Pages are now told the preferred colour scheme natively, so sites with their own dark theme (YouTube, GitHub, Wikipedia, Google...) use it with their real colours; other sites stay as designed.
+* **Darken All Sites** (optional, after restart): Chromium's built-in auto dark mode for sites without a dark theme. It uses perceptual colour inversion and leaves photos alone.
+
+### Smoothness
+* New tabs no longer flash: the start page is drawn before the toolbar grows, new web views stay hidden until placed, and they are painted in the theme colour before the page draws (no white flash in dark mode).
+* Showing or hiding the start page, Menu, Downloads and Peek now reorders native steps so the bare window is never visible in between.
+* Download filters (All, Downloading, Downloaded, Paused, Failed, file types) respond instantly; they no longer wait for a round trip to the browser core.
+* Colour transitions shortened from 0.36 s to 0.18 s.
+
+### Icon
+* Larger taskbar icon: the tile now fills the icon area like other browsers' icons, with a bolder ring.
+
+## v2.17.0
+
+### Password manager
+* **Saves** after you sign in: a small prompt in the toolbar, "Save password for github.com?", with Save, Never (this site) and Not now. It never blocks the page. Changed passwords offer **Update**. Private tabs never save.
+* **Fills** from a menu under the login field listing your accounts for that site; the password goes into the page only when you pick one. Works with React and other script-driven forms.
+* **Passwords panel** (Menu, Passwords): search, show, copy username, copy password, edit, delete. Show and copy ask for Windows Hello.
+* **Import** CSV exports from Chrome, Edge, Brave, Opera, Vivaldi, Firefox and Bitwarden; the panel then offers to delete the plaintext CSV.
+* Encrypted with your Windows account (DPAPI); exact-site matching only. Details in docs/SECURITY.md.
+* WebView2's own password saver is turned off (one prompt, one store). Passwords it saved before cannot be exported; sign in once to save them to Shunno, or import a CSV.
+
+## v2.16.1
+
+### Context menu
+* Select text, right-click: **Search <your default engine> for “…”** at the top of the menu. Opens in a new tab; from a private tab, a private tab. Always searches, even when the selection looks like a web address. Line breaks are collapsed; long selections are cut to 300 characters.
+
+### Fixes
+* The pop-up blocker matched ad-network names anywhere in a URL (so a search for one of them was blocked); it now matches the host only.
+
+## v2.16.0
+
+### Peek (from Arc)
+* **Shift+click** any link to preview it in a floating panel over the current page, without leaving it.
+* **Open in New Tab** keeps the live preview as a tab (scroll position, logins and form input are preserved). **Esc**, clicking outside, or the close button dismisses it.
+* Shift+click inside a Peek navigates the Peek. Switching tabs, navigating, or opening Menu/Downloads closes it.
+* The preview uses the same protections as tabs (ad blocking, HTTPS-only, fingerprint shield); a Peek opened from a private tab is private, and so are its pop-ups.
+* Toggle: Menu, **Shift-Click Peek** (on by default).
+
+## v2.15.1
+
+### Downloads
+* Finished downloads stay in the list. "Auto-Clean Done" is now **Tidy Finished on Start**: completed items are removed at the next launch, not the moment they finish (which emptied the list and hid the filters).
+* The All / Downloading / Downloaded / Paused / Failed bar is always shown.
+
+### Bookmarks bar
+* Shown only on the New Tab page (Safari's Favorites behaviour). Web pages get the full height.
+* The page now sits flush under the toolbar at its real height (reported by the toolbar), fixing a 1 to 2 px overlap, larger when maximized.
+
+### Icon
+* New app icon: blue rounded tile, white open ring for *shunno* (zero), amber dot. Sizes 16 to 256 px, small sizes as BMP, large as PNG. Source: `assets/brand/make_icon.py`.
+* Taskbar and title-bar icons are chosen for the display DPI (32 px at 100%, 40 px at 125%, 48 px at 150%); previously a 48 px icon was downscaled, which blurred it.
+* Toolbar logo updated to match.
+
 ## v2.15.0
 
 ### Tabs (from Arc)

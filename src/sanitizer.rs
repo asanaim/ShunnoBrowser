@@ -30,6 +30,34 @@ pub fn resolve_amp_url(parsed: &Url) -> Option<String> {
     None
 }
 
+/// Search URL for `query` with the active search engine (always a search, even if `query` looks like a domain).
+pub fn search_url(query: &str, global: &GlobalSettings) -> String {
+    let encoded: String = query
+        .trim()
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b' ' => "+".to_string(),
+            _ => format!("%{:02X}", b),
+        })
+        .collect();
+    let template = global
+        .search_engines
+        .get(global.active_search_engine)
+        .map(|e| e.query_url.as_str())
+        .unwrap_or("https://duckduckgo.com/?q=%s");
+    if template.contains("%s") {
+        template.replace("%s", &encoded)
+    } else {
+        format!("{}{}", template, encoded)
+    }
+}
+
+/// Selected page text as a search query: whitespace collapsed, at most 300 characters.
+pub fn selection_query(sel: &str) -> String {
+    sel.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect()
+}
+
 pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("shunno://newtab") || trimmed.eq_ignore_ascii_case("about:newtab") {
@@ -40,28 +68,7 @@ pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
     } else if trimmed.contains('.') && !trimmed.contains(' ') {
         format!("https://{}", trimmed)
     } else {
-        let encoded: String = trimmed
-            .bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    (b as char).to_string()
-                }
-                b' ' => "+".to_string(),
-                _ => format!("%{:02X}", b),
-            })
-            .collect();
-
-        let template = global
-            .search_engines
-            .get(global.active_search_engine)
-            .map(|e| e.query_url.as_str())
-            .unwrap_or("https://duckduckgo.com/?q=%s");
-
-        if template.contains("%s") {
-            template.replace("%s", &encoded)
-        } else {
-            format!("{}{}", template, encoded)
-        }
+        search_url(trimmed, global)
     };
 
     if !global.strip_tracking_params {

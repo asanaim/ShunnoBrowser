@@ -9,6 +9,7 @@
   const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
   const FP_ON = __SHUNNO_FP__;
   const FP_SESSION = "__SHUNNO_FP_SESSION__";
+  window.__shunnoPeekOn = __SHUNNO_PEEK__;
 
   // 0. Fingerprinting protection ("farbling", the approach Brave uses).
   // Each site sees small, stable-per-site, different-per-launch changes to the values trackers hash
@@ -223,55 +224,9 @@
 
   // 2. (Mobile site is now a real HTTP User-Agent set natively; no JS spoofing here.)
 
-  // 3. Smooth macOS-Style Ambient Cross-Dissolve Dark Mode (Zero grey/rainbow flicker!)
-  window.__shunnoSetDarkMode = function(enabled, instant) {
-    const root = document.head || document.documentElement;
-    if (!root) return;
-    const applyTheme = () => {
-      let st = document.getElementById('shunno-full-dark');
-      if (enabled) {
-        if (!st) {
-          st = document.createElement('style');
-          st.id = 'shunno-full-dark';
-          st.textContent = 'html { color-scheme: dark; filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
-          root.appendChild(st);
-        }
-      } else if (st) {
-        st.remove();
-      }
-    };
-    if (instant || !document.body) {
-      applyTheme();
-      return;
-    }
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (document.startViewTransition && !reduce) {
-      try { document.startViewTransition(applyTheme); return; } catch (e) {}
-    }
-    const oldVeil = document.getElementById('shunno-theme-veil');
-    if (oldVeil) oldVeil.remove();
-    const veil = document.createElement('div');
-    veil.id = 'shunno-theme-veil';
-    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:' + (enabled ? '#111114' : '#F5F5F7') + ';opacity:0;transition:opacity 0.18s cubic-bezier(0.22,1,0.36,1);will-change:opacity;';
-    document.documentElement.appendChild(veil);
-    requestAnimationFrame(() => {
-      veil.style.opacity = '0.98';
-      setTimeout(() => {
-        applyTheme();
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            veil.style.transition = 'opacity 0.28s cubic-bezier(0.22,1,0.36,1)';
-            veil.style.opacity = '0';
-            setTimeout(() => veil.remove(), 300);
-          });
-        });
-      }, 185);
-    });
-  };
-  if (FULL_DARK_ON) {
-    if (document.documentElement) window.__shunnoSetDarkMode(true, true);
-    else window.addEventListener('DOMContentLoaded', () => window.__shunnoSetDarkMode(true, true), { once: true });
-  }
+  // 3. Dark mode: no CSS filters. The browser sets the page's preferred colour scheme natively
+  //    (prefers-color-scheme), so sites with a real dark theme use it with their true colours;
+  //    "Darken All Sites" uses Chromium's built-in auto dark mode, which keeps images intact.
 
   // 4. Image Blocker
   if (IMAGES_DISABLED) {
@@ -1470,4 +1425,144 @@
       }
     }
   }, true);
+
+  // Peek (Arc): Shift+click a link previews it in a floating panel instead of a new window.
+  document.addEventListener('click', (e) => {
+    if (!window.__shunnoPeekOn || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.button !== 0) return;
+    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || a.hasAttribute('download')) return;
+    let href = '';
+    try { href = new URL(a.href, location.href).href; } catch (err) { return; }
+    if (!/^https?:/i.test(href)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    postSecure('PEEK:' + href);
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.fullscreenElement) postSecure('KEY_ESC');
+  }, true);
+
+  // ---------------------------------------------------------------- Password manager (Shunno vault)
+  // Saves: a submitted login posts PW_OFFER; the browser asks the user before storing anything.
+  // Fills: focusing a login field asks for usernames only; the password reaches the page only after
+  // the user picks an account in the menu.
+  (function passwordManager() {
+    if (!/^https?:$/.test(location.protocol)) return;
+    const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const pwFieldsIn = (scope) => Array.from((scope || document).querySelectorAll('input[type=password]')).filter(shown);
+    const isTextLike = (el) => el instanceof HTMLInputElement && /^(text|email|tel|)$/i.test(el.getAttribute('type') || '');
+    function userFieldFor(pw) {
+      const scope = pw.form || document;
+      const cands = Array.from(scope.querySelectorAll('input')).filter((el) => isTextLike(el) && shown(el));
+      let best = null;
+      for (const c of cands) if (c.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING) best = c;
+      return best || cands[0] || null;
+    }
+    let lastOffer = '';
+    function capture(fromEl) {
+      const scope = (fromEl && (fromEl.form || (fromEl.closest && fromEl.closest('form')))) || null;
+      const filled = pwFieldsIn(scope).filter((p) => p.value);
+      if (!filled.length) return;
+      // Sign-up and change-password forms: the last filled password field is the new one.
+      const pw = filled[filled.length - 1];
+      const u = userFieldFor(pw);
+      const payload = JSON.stringify({ u: u ? u.value.trim() : '', p: pw.value });
+      if (payload === lastOffer) return;
+      lastOffer = payload;
+      postSecure('PW_OFFER:' + payload);
+    }
+    document.addEventListener('submit', (e) => capture(e.target && e.target.querySelector ? e.target.querySelector('input[type=password]') || e.target : null), true);
+    document.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest ? e.target.closest('button, input[type=submit], [role=button]') : null;
+      if (!b) return;
+      const form = b.form || b.closest('form');
+      const pw = (form && form.querySelector('input[type=password]')) || document.querySelector('input[type=password]');
+      if (pw && pw.value) capture(pw);
+    }, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target && e.target.type === 'password' && e.target.value) capture(e.target);
+    }, true);
+
+    // ---- fill menu
+    let field = null, host = null, root = null, hideTimer = 0;
+    function closeMenu() { if (host) host.style.display = 'none'; }
+    function ensureMenu() {
+      if (host) return;
+      host = document.createElement('div');
+      host.style.cssText = 'position:fixed;z-index:2147483647;display:none;';
+      root = host.attachShadow({ mode: 'closed' });
+      const css = new CSSStyleSheet();
+      css.replaceSync(`
+        .m{min-width:220px;max-width:340px;background:#fff;color:#1d1d1f;border-radius:10px;padding:4px;
+           box-shadow:0 10px 30px rgba(0,0,0,.18),0 0 0 .5px rgba(0,0,0,.12);font:13px -apple-system,"Segoe UI",sans-serif}
+        .h{font-size:11px;color:#6e6e73;padding:5px 9px 3px}
+        .i{display:flex;gap:8px;align-items:center;padding:7px 9px;border-radius:7px;cursor:pointer}
+        .i:hover{background:#0a84ff;color:#fff}
+        .k{width:20px;height:20px;border-radius:5px;background:#0a84ff1f;display:flex;align-items:center;justify-content:center;font-size:11px}
+        .u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        @media (prefers-color-scheme: dark){.m{background:#2c2c2e;color:#f5f5f7}}`);
+      root.adoptedStyleSheets = [css];
+      // Created on focus, so the page body exists; <head> children are never rendered.
+      (document.body || document.documentElement).appendChild(host);
+    }
+    function place() {
+      if (!field || !host) return;
+      const r = field.getBoundingClientRect();
+      host.style.left = Math.max(4, r.left) + 'px';
+      host.style.top = (r.bottom + 4) + 'px';
+    }
+    window.addEventListener('scroll', () => { if (host && host.style.display !== 'none') place(); }, true);
+    document.addEventListener('focusin', (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLInputElement)) return;
+      const isPw = t.type === 'password';
+      const hasPwNear = (t.form ? t.form.querySelector('input[type=password]') : document.querySelector('input[type=password]'));
+      if (!isPw && !(isTextLike(t) && hasPwNear)) return;
+      field = t;
+      postSecure('PW_QUERY');
+    }, true);
+    document.addEventListener('focusout', () => { clearTimeout(hideTimer); hideTimer = setTimeout(closeMenu, 180); }, true);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); }, true);
+
+    function setValue(el, v) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const accounts = function (list) {
+      if (!field || !Array.isArray(list) || !list.length || !document.contains(field)) return;
+      ensureMenu();
+      const m = document.createElement('div');
+      m.className = 'm';
+      const h = document.createElement('div');
+      h.className = 'h';
+      h.textContent = 'Shunno Passwords';
+      m.appendChild(h);
+      list.forEach((a) => {
+        const i = document.createElement('div');
+        i.className = 'i';
+        const k = document.createElement('span'); k.className = 'k'; k.textContent = '🔑';
+        const u = document.createElement('span'); u.className = 'u'; u.textContent = a.u || '(no username)';
+        i.appendChild(k); i.appendChild(u);
+        i.addEventListener('mousedown', (ev) => { ev.preventDefault(); postSecure('PW_FILL:' + a.id); closeMenu(); });
+        m.appendChild(i);
+      });
+      root.replaceChildren(m);
+      host.style.display = 'block';
+      place();
+    };
+    const fill = function (u, p) {
+      const pw = (field && field.type === 'password' && field) || (field && field.form && field.form.querySelector('input[type=password]')) || pwFieldsIn(null)[0];
+      if (!pw) return;
+      const uf = (field && field.type !== 'password' && field) || userFieldFor(pw);
+      if (uf && u) setValue(uf, u);
+      setValue(pw, p);
+    };
+    // Fixed entry points the browser calls; pages cannot replace them.
+    try {
+      Object.defineProperty(window, '__shunnoPwAccounts', { value: accounts, writable: false, configurable: false });
+      Object.defineProperty(window, '__shunnoPwFill', { value: fill, writable: false, configurable: false });
+    } catch (e) {}
+  })();
 })();

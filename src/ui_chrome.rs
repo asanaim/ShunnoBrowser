@@ -56,10 +56,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     display: flex;
     flex-direction: column;
     height: 100vh;
-    transition: color 0.36s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .chrome-shell, .floating-sheet, .card, .home-canvas, .home-search-box, .shortcut-tile, .engine-menu, .nav-icon-btn, .tab, .bookmarks-strip {
-    transition: background-color 0.36s cubic-bezier(0.22, 1, 0.36, 1), color 0.36s ease, border-color 0.36s ease, box-shadow 0.36s ease;
+    transition: background-color 0.18s var(--ease-fluid), color 0.18s var(--ease-fluid), border-color 0.18s var(--ease-fluid), box-shadow 0.18s var(--ease-fluid);
   }
 
   body.maximized, html.maximized { border-radius: 0; }
@@ -94,13 +93,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Chrome/Safari-inspired Compass-Ring Logo */
   .brand-emblem {
-    width: 28px; height: 28px; border-radius: 50%;
+    width: 28px; height: 28px; border-radius: 7px;
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0; cursor: pointer;
     box-shadow: 0 2px 6px rgba(10, 132, 255, 0.28);
     transition: transform 0.28s var(--ease-spring);
   }
-  .brand-emblem:hover { transform: scale(1.08) rotate(12deg); }
+  .brand-emblem:hover { transform: scale(1.06); }
 
   #tabs-container {
     display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
@@ -265,7 +264,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .home-canvas {
     flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center;
     padding: 24px; background: var(--bg); overflow-y: auto;
-    border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;
   }
   .home-canvas.active { display: flex; }
   .home-hero {
@@ -372,6 +370,40 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.22s var(--ease-fluid);
   }
   .switch.on { background: var(--blue); }
+
+  /* Password save prompt: inline in the toolbar, never blocks the page. */
+  .pw-offer {
+    display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 10px; margin-right: 4px;
+    border-radius: 15px; background: var(--blue-soft); font-size: 12px; white-space: nowrap; max-width: 420px;
+    animation: popoverIn var(--dur) var(--ease-fluid) both;
+  }
+  .pw-offer .t { overflow: hidden; text-overflow: ellipsis; }
+  .pw-offer .t b { font-weight: 600; }
+  .pw-offer .save { border: none; background: var(--blue); color: #fff; border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .pw-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; position: relative; }
+  .pw-row + .pw-row::before { content: ""; position: absolute; top: 0; left: 44px; right: 0; border-top: 1px solid var(--border); }
+  .pw-av { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(180deg, #48b2ff, #0062eb); }
+  .pw-main { flex: 1; min-width: 0; }
+  .pw-host { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pw-user { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pw-secret { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; color: var(--text); user-select: text; }
+  .pw-edit { display: flex; flex-direction: column; gap: 5px; padding: 6px 10px 10px 45px; }
+
+  /* Peek: dimmed backdrop + a floating sheet whose body is the native preview web view. */
+  #peek-layer { position: fixed; inset: 0; z-index: 80; display: none; }
+  #peek-layer.open { display: block; }
+  #peek-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.28); animation: fadeIn var(--dur) var(--ease-fluid) both; }
+  body.dark #peek-backdrop { background: rgba(0, 0, 0, 0.45); }
+  #peek-frame {
+    position: absolute; border-radius: 14px; background: var(--surface-solid);
+    box-shadow: 0 24px 70px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.12);
+    animation: popoverIn var(--dur) var(--ease-fluid) both; transform-origin: 50% 0;
+  }
+  #peek-head { height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; }
+  #peek-url { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #peek-url b { color: var(--text); font-weight: 600; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   .switch.on > i { transform: translateX(12px); }
   .sheet-scroll .card {
     background: rgba(118, 118, 128, 0.07); border: none; border-radius: 12px; padding: 11px 12px; margin-bottom: 8px;
@@ -613,26 +645,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <!-- 1. Borderless Tab Strip (No redundant top title bar!) -->
     <div class="tab-bar" id="tab-bar">
       <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-          <defs>
-            <linearGradient id="shunnoCompass" x1="2" y1="2" x2="26" y2="26" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#38C6FF"/>
-              <stop offset="52%" stop-color="#0A84FF"/>
-              <stop offset="100%" stop-color="#0442D6"/>
-            </linearGradient>
-            <linearGradient id="shunnoArc" x1="15" y1="5" x2="23" y2="13" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#FF4E42"/>
-              <stop offset="100%" stop-color="#FF942E"/>
-            </linearGradient>
-          </defs>
-          <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
-          <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
-          <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
-          <circle cx="14" cy="14" r="1.6" fill="white"/>
-        </svg>
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><defs><linearGradient id="shunnoTile" x1="0" y1="1.5" x2="0" y2="26.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#48B2FF"/><stop offset="100%" stop-color="#0062EB"/></linearGradient></defs><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg>
       </div>
       <div id="tabs-container"></div>
-      <button class="tab-add" onclick="send('NEW_TAB')" title="New Tab (Ctrl+T)">
+      <button class="tab-add" onclick="openNewTab()" title="New Tab (Ctrl+T)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <button class="tab-add" style="color:var(--text)" onclick="send('NEW_INCOGNITO')" title="New Private Tab">
@@ -682,6 +698,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div class="nav-group right">
+        <div id="pw-offer" class="pw-offer" style="display:none"></div>
         <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
@@ -740,12 +757,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <!-- 4. Clean Home Page Canvas (Displayed when active tab is shunno://newtab) -->
   <div class="home-canvas" id="home-canvas">
     <div class="home-hero">
-      <svg width="58" height="58" viewBox="0 0 28 28" fill="none">
-        <circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/>
-        <circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/>
-        <path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/>
-        <circle cx="14" cy="14" r="1.6" fill="white"/>
-      </svg>
+      <svg width="58" height="58" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg>
       <div class="home-search-box">
         <span style="font-size:16px;opacity:0.65;">🔎</span>
         <input class="home-search-input" id="home-search-input" placeholder="Search the web or enter website address..."
@@ -791,7 +803,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
           </div>
 
+          <div style="display:flex;align-items:center;gap:10px;margin:2px 0 6px;">
+            <span style="font-size:11.5px;font-weight:500;white-space:nowrap;">🌓 Appearance</span>
+            <div class="segmented" id="theme-seg" style="flex:1;margin:0;">
+              <button data-mode="system" onclick="setThemeMode('system')">System</button>
+              <button data-mode="light" onclick="setThemeMode('light')">Light</button>
+              <button data-mode="dark" onclick="setThemeMode('dark')">Dark</button>
+            </div>
+          </div>
           <div class="grid-toggles" id="global-toggles-grid"></div>
+          <div class="meta" id="force-dark-note" style="display:none;margin-top:2px;">Darken All Sites applies after you restart Shunno.</div>
           <div class="toggle-tile" style="border-top:1px solid var(--border);border-bottom:none;margin-top:0;" title="Unpinned tabs you have not looked at for this long close by themselves (Arc-style). Reopen with Ctrl+Shift+T or from History. Pinned, playing and private tabs are kept.">
             <span>🗄️ Close unused tabs after</span>
             <select class="select-box" id="auto-archive-select" style="padding:3px 6px;font-size:11.5px;" onchange="send('SET_AUTO_ARCHIVE:' + this.value)">
@@ -807,7 +828,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="card-header">
             <span class="card-title" id="site-domain-title">🌐 Site Controls</span>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
-            <button class="pill-btn pill-soft" onclick="if (confirm('Delete every saved password and autofill entry?')) send('CLEAR_PASSWORDS')" title="Delete all passwords saved by Shunno">🔑 Clear Passwords</button>
+            <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
@@ -908,6 +929,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <!-- Panel E: Downloads Downloads -->
+      <div id="panel-passwords" style="display:none">
+        <div class="sheet-head">
+          <h3>Passwords</h3>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <button class="text-btn" onclick="send('PW_IMPORT')" title="Import a CSV exported from Chrome, Edge, Brave, Firefox, Opera, Vivaldi or Bitwarden">Import…</button>
+          </div>
+        </div>
+        <input class="text-box" id="pw-search" placeholder="Search sites and usernames" style="width:100%;margin-bottom:8px;" oninput="renderPasswords(lastState)" />
+        <div id="pw-list"></div>
+        <div class="meta" id="pw-status" style="margin-top:8px;"></div>
+        <button class="pill-btn pill-red" id="pw-del-csv" style="display:none;margin-top:6px;" onclick="send('PW_DELETE_CSV')">Delete the imported CSV file</button>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">
+          Stored only on this PC, encrypted with your Windows account. Showing or copying a password asks for Windows Hello.
+          <a href="#" onclick="event.preventDefault(); if (confirm('Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.')) send('CLEAR_PASSWORDS');" style="color:var(--blue);">Clear old built-in passwords</a>
+        </div>
+      </div>
+
       <div id="panel-downloads" style="display:none">
         <div class="sheet-head">
           <h3>Downloads <span class="meta" id="dl-live-speed" style="font-weight:500;letter-spacing:0;"></span></h3>
@@ -988,6 +1026,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="peek-layer">
+    <div id="peek-backdrop" onclick="send('PEEK_CLOSE')" title="Close preview (Esc)"></div>
+    <div id="peek-frame">
+      <div id="peek-head">
+        <div id="peek-url"></div>
+        <button class="text-btn" onclick="send('PEEK_OPEN')" title="Keep this page as a tab">Open in New Tab</button>
+        <button class="icon-btn" onclick="send('PEEK_CLOSE')" title="Close (Esc)"><svg width="9" height="9" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>
+      </div>
+    </div>
+  </div>
+
 <script>
   let activeDrawer = null;
   let currentSpeed = 1.0;
@@ -1004,7 +1053,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     ['paused', 'Paused', d => d.status === 'PAUSED'],
     ['failed', 'Failed', d => d.status === 'FAILED'],
   ];
-  function setDlStatus(k) { activeDlStatus = k; send('REFRESH_UI'); }
+  function setDlStatus(k) { activeDlStatus = k; renderDownloadsList(lastState); }
   function fmtEta(sec) {
     if (!isFinite(sec) || sec <= 0) return '';
     if (sec < 60) return Math.ceil(sec) + ' s left';
@@ -1141,7 +1190,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1167,6 +1216,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       sheet.classList.remove('closing');
       send('DRAWER_CLOSE');
     }, 150);
+  }
+
+  // Instant feedback: highlight the choice now; the native side applies it and pushes state.
+  function setThemeMode(m) {
+    document.querySelectorAll('#theme-seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    send('SET_THEME:' + m);
   }
 
   function applyTheme(dark) {
@@ -1344,7 +1399,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         const tabLogoHtml = t.incognito
           ? anonSvg
           : ((!hasAudio && (isNewTab || t.pinned))
-              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13.5" fill="url(#shunnoCompass)"/><circle cx="14" cy="14" r="7.2" stroke="white" stroke-width="3.2"/><path d="M 16.5 7.2 A 7.2 7.2 0 0 1 20.9 11.9" stroke="url(#shunnoArc)" stroke-width="3.2" stroke-linecap="round"/><circle cx="14" cy="14" r="1.6" fill="white"/></svg></span>`
+              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`
               : '');
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
@@ -1503,7 +1558,215 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     send('IMPORT_BROWSER:' + i + ':' + what);
   }
 
+  // Report the toolbar's real height so the native layer places web pages flush beneath it.
+  (function reportChromeHeight() {
+    let last = 0;
+    const measure = () => {
+      const shell = document.querySelector('.chrome-shell');
+      if (!shell) return;
+      const h = Math.ceil(shell.getBoundingClientRect().bottom);
+      if (h > 0 && h !== last) { last = h; send('CHROME_H:' + h); }
+    };
+    const start = () => {
+      const shell = document.querySelector('.chrome-shell');
+      if (!shell) return;
+      if (window.ResizeObserver) new ResizeObserver(measure).observe(shell);
+      measure();
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  })();
+
+  let peekShownUrl = null;
+  function renderPeek(state) {
+    const layer = document.getElementById('peek-layer');
+    const pk = state.peek;
+    if (!pk) { layer.classList.remove('open'); peekShownUrl = null; return; }
+    const [x, y, w, h] = pk.rect;
+    const frame = document.getElementById('peek-frame');
+    frame.style.left = x + 'px';
+    frame.style.top = (y - 46) + 'px';
+    frame.style.width = w + 'px';
+    frame.style.height = (h + 46 + 6) + 'px';
+    let host = '', rest = pk.url || '';
+    try { const u = new URL(pk.url); host = u.host; rest = u.pathname + u.search; } catch (e) {}
+    document.getElementById('peek-url').innerHTML = `<b>${escapeHtml(host)}</b>${escapeHtml(rest === '/' ? '' : rest)}`;
+    if (!layer.classList.contains('open')) layer.classList.add('open');
+    peekShownUrl = pk.url;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('peek-layer').classList.contains('open')) send('PEEK_CLOSE');
+  });
+
+  let lastState = null;
+  let pwEditing = null;
+  const pwRevealed = new Map();
+  window.__pwReveal = function (id, pw) {
+    pwRevealed.set(id, pw);
+    setTimeout(() => { pwRevealed.delete(id); if (lastState) renderPasswords(lastState); }, 30000);
+    if (lastState) renderPasswords(lastState);
+  };
+  function pwHost(o) { try { return new URL(o).host.replace(/^www\./, ''); } catch (e) { return o; } }
+  function renderPwOffer(state) {
+    const el = document.getElementById('pw-offer');
+    const o = state.pw_offer;
+    if (!o) { el.style.display = 'none'; el.dataset.k = ''; return; }
+    const k = o.origin + '|' + o.username + '|' + o.kind;
+    if (el.dataset.k === k) return;
+    el.dataset.k = k;
+    const verb = o.kind === 'Update' ? 'Update password' : 'Save password';
+    el.title = o.username ? o.username + ' on ' + pwHost(o.origin) : pwHost(o.origin);
+    el.innerHTML = `<span class="t">🔑 ${verb} for <b>${escapeHtml(pwHost(o.origin))}</b>?</span>
+      <button class="save" onclick="send('PW_SAVE')">${o.kind === 'Update' ? 'Update' : 'Save'}</button>
+      ${o.kind === 'Update' ? '' : `<button class="text-btn" onclick="send('PW_NEVER')" title="Never offer for this site">Never</button>`}
+      <button class="icon-btn" onclick="send('PW_DISMISS')" title="Not now">${SVG_X}</button>`;
+    el.style.display = 'flex';
+  }
+  function renderPasswords(state) {
+    const list = document.getElementById('pw-list');
+    if (!list) return;
+    document.getElementById('pw-status').textContent = state.pw_status || '';
+    document.getElementById('pw-del-csv').style.display = state.pw_csv_pending ? '' : 'none';
+    const q = (document.getElementById('pw-search').value || '').trim().toLowerCase();
+    const items = (state.passwords || []).filter(c => !q || c.origin.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
+    // Redraw only when something visible changed (state pushes are frequent; an edit box must keep its text).
+    const sig = JSON.stringify([items, q, pwEditing, Array.from(pwRevealed.entries())]);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    if (!items.length) {
+      list.innerHTML = `<div class="meta" style="text-align:center;padding:20px 8px;">${(state.passwords || []).length ? 'No matches.' : 'No saved passwords yet.<br>Sign in to a site and choose Save, or import a CSV.'}</div>`;
+      return;
+    }
+    const EYE = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+    const COPY = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>';
+    const EDIT = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg>';
+    list.innerHTML = '<div class="dl-group">' + items.slice(0, 400).map(c => {
+      const host = pwHost(c.origin);
+      const shown = pwRevealed.get(c.id);
+      const editing = pwEditing === c.id;
+      return `<div class="pw-row-wrap">
+        <div class="pw-row" title="${escapeHtml(c.origin)}">
+          <div class="pw-av">${escapeHtml(host.charAt(0).toUpperCase())}</div>
+          <div class="pw-main">
+            <div class="pw-host">${escapeHtml(host)}</div>
+            <div class="pw-user">${escapeHtml(c.username || '(no username)')}${shown !== undefined ? ` \u00b7 <span class="pw-secret">${escapeHtml(shown)}</span>` : ''}</div>
+          </div>
+          <div class="dl-actions">
+            <button class="icon-btn" onclick="send('PW_COPY_USER:${c.id}')" title="Copy username">@</button>
+            <button class="icon-btn" onclick="send('PW_COPY:${c.id}')" title="Copy password">${COPY}</button>
+            <button class="icon-btn ${shown !== undefined ? 'primary' : ''}" onclick="${shown !== undefined ? `pwRevealed.delete(${c.id}); renderPasswords(lastState)` : `send('PW_REVEAL:${c.id}')`}" title="${shown !== undefined ? 'Hide' : 'Show password'}">${EYE}</button>
+            <button class="icon-btn" onclick="pwEditing = ${editing ? 'null' : c.id}; renderPasswords(lastState)" title="Edit">${EDIT}</button>
+            <button class="icon-btn" onclick="if (confirm('Delete the saved password for ${encodeAttr(c.username || host)} on ${encodeAttr(host)}?')) send('PW_DELETE:${c.id}')" title="Delete">${SVG_X}</button>
+          </div>
+        </div>
+        ${editing ? `<div class="pw-edit">
+          <input class="text-box" id="pw-e-u-${c.id}" value="${encodeAttr(c.username)}" placeholder="Username" />
+          <input class="text-box" id="pw-e-p-${c.id}" type="password" placeholder="New password" />
+          <div style="display:flex;gap:6px;justify-content:flex-end;">
+            <button class="text-btn" onclick="pwEditing = null; renderPasswords(lastState)">Cancel</button>
+            <button class="pill-btn pill-blue" onclick="pwSaveEdit(${c.id})">Save</button>
+          </div>
+        </div>` : ''}
+      </div>`;
+    }).join('') + '</div>';
+  }
+  function pwSaveEdit(id) {
+    const u = document.getElementById('pw-e-u-' + id).value;
+    const p = document.getElementById('pw-e-p-' + id).value;
+    if (!p) { document.getElementById('pw-status').textContent = 'Enter the new password.'; return; }
+    pwEditing = null;
+    pwRevealed.delete(id);
+    send('PW_EDIT:' + id + '|' + JSON.stringify({ u, p }));
+  }
+
+  // New Tab: draw the start page first, then ask for the tab, so the window never shows an empty frame
+  // while the toolbar grows to full height.
+  let pendingHomeUntil = 0;
+  function openNewTab() {
+    pendingHomeUntil = Date.now() + 700;
+    const hc = document.getElementById('home-canvas');
+    if (hc) hc.classList.add('active');
+    document.getElementById('bookmarks-strip').style.display = '';
+    send('NEW_TAB');
+  }
+  // Called by the native side just before it opens a New Tab it initiated (e.g. Ctrl+T inside a page).
+  window.__showHomeNow = function () {
+    pendingHomeUntil = Date.now() + 700;
+    const hc = document.getElementById('home-canvas');
+    if (hc) hc.classList.add('active');
+  };
+
+  // Downloads list: also called directly by the filters, so they respond without a native round trip.
+  function renderDownloadsList(state) {
+    if (!state) return;
+    const statusBar = document.getElementById('dl-status-bar');
+    statusBar.innerHTML = DL_STATUS_GROUPS.map(([k, label, f]) => {
+      const n = state.downloads.filter(f).length;
+      return `<button class="${activeDlStatus === k ? 'on' : ''}" onclick="setDlStatus('${k}')">${label}${k !== 'all' && n ? `<span class="n">${n}</span>` : ''}</button>`;
+    }).join('');
+
+    const dlCats = ['All', 'Videos', 'Audio', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
+    const catBar = document.getElementById('dl-category-bar');
+    catBar.style.display = state.downloads.length >= 6 ? '' : 'none';
+    if (catBar.style.display === 'none') activeDlCategory = 'All';
+    catBar.innerHTML = dlCats.map(c => `
+      <button class="folder-pill ${activeDlCategory === c ? 'active' : ''}"
+              onclick="activeDlCategory = '${c}'; renderDownloadsList(lastState);">${c}</button>
+    `).join('');
+
+    const statusFilter = (DL_STATUS_GROUPS.find(g => g[0] === activeDlStatus) || DL_STATUS_GROUPS[0])[2];
+    const visibleDownloads = state.downloads.filter(d => statusFilter(d) && (activeDlCategory === 'All' || d.category === activeDlCategory));
+    const listEl = document.getElementById('downloads-list');
+    if (visibleDownloads.length === 0) {
+      listEl.innerHTML = state.downloads.length === 0
+        ? '<div class="meta" style="text-align:center;padding:22px 8px;">No downloads.<br>Hover a video or file to download it, or search this page for downloadable files.</div>'
+        : '<div class="meta" style="text-align:center;padding:18px 8px;">Nothing here.</div>';
+    } else {
+      listEl.innerHTML = '<div class="dl-group">' + visibleDownloads.map(d => {
+        const known = d.total_bytes > 0;
+        const pct = d.status === 'COMPLETED' ? 100 : (known ? Math.min(100, d.downloaded_bytes * 100 / d.total_bytes) : 0);
+        const ofTotal = known ? `${fmtBytes(d.downloaded_bytes)} of ${fmtBytes(d.total_bytes)}` : fmtBytes(d.downloaded_bytes);
+        const ext = ((String(d.file_name).match(/\.([A-Za-z0-9]{1,5})$/) || [])[1] || 'FILE').toUpperCase();
+        let sub = '', subCls = '', bar = '';
+        switch (d.status) {
+          case 'DOWNLOADING': {
+            const eta = known && d.speed_bps > 0 ? fmtEta((d.total_bytes - d.downloaded_bytes) / d.speed_bps) : '';
+            sub = `${ofTotal} \u2014 ${fmtBytes(d.speed_bps)}/s${eta ? ' \u00b7 ' + eta : ''}`;
+            bar = `<div class="dl-bar"><i style="width:${known ? pct : 8}%"></i></div>`;
+            break;
+          }
+          case 'QUEUED': sub = 'Waiting\u2026'; bar = '<div class="dl-bar paused"><i style="width:0%"></i></div>'; break;
+          case 'MUXING': sub = /audio\]/i.test(d.segment_map || '') ? 'Converting audio\u2026' : 'Merging audio and video\u2026'; bar = '<div class="dl-bar"><i style="width:100%"></i></div>'; break;
+          case 'PAUSED': sub = `Paused \u2014 ${ofTotal}`; bar = `<div class="dl-bar paused"><i style="width:${pct}%"></i></div>`; break;
+          case 'FAILED': sub = d.error_message || 'Failed'; subCls = 'err'; break;
+          case 'COMPLETED': sub = `${fmtBytes(d.total_bytes > 0 ? d.total_bytes : d.downloaded_bytes)} \u00b7 ${(d.url.match(/^https?:\/\/([^/]+)/) || [])[1] || ''}`; break;
+          default: sub = d.status;
+        }
+        const tip = `${d.category}${d.supports_ranges ? ' \u00b7 ' + d.threads + ' connections' : ''}${d.segment_map ? ' ' + d.segment_map : ''}${d.sha256 ? '\nSHA-256 ' + d.sha256 : ''}`;
+        const actions =
+          d.status === 'DOWNLOADING' || d.status === 'QUEUED'
+            ? `<button class="icon-btn" onclick="send('DL_PAUSE:${d.id}')" title="Pause">${SVG_PAUSE}</button>`
+          : d.status === 'PAUSED' || d.status === 'FAILED'
+            ? `<button class="icon-btn primary" onclick="send('DL_RESUME:${d.id}')" title="${d.status === 'FAILED' ? 'Retry' : 'Resume'}">${SVG_RESUME}</button>
+               <button class="icon-btn" onclick="const u=prompt('Paste a fresh link for this file:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);" title="Use a new link">${SVG_LINK}</button>`
+          : d.status === 'COMPLETED'
+            ? `<button class="icon-btn primary" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')" title="Show in folder">${SVG_REVEAL}</button>`
+            : '';
+        return `
+          <div class="dl-row" title="${escapeHtml(tip)}">
+            <div class="dl-icon ${dlIconClass(d.category)}"><b>${escapeHtml(ext)}</b></div>
+            <div class="dl-main">
+              <div class="dl-name">${escapeHtml(d.file_name)}</div>
+              ${bar}
+              <div class="dl-sub ${subCls}">${escapeHtml(sub)}</div>
+            </div>
+            <div class="dl-actions">${actions}<button class="icon-btn" onclick="send('DL_DEL:${d.id}')" title="Remove from list">${SVG_X}</button></div>
+          </div>`;
+      }).join('') + '</div>';
+    }
+  }
+
   window.renderChromeState = function(state) {
+    lastState = state;
     window.__shunnoLastState = state;
     window.__shunnoSplitTabIdx = (typeof state.split_tab === 'number') ? state.split_tab : -1;
     const spBtn = document.getElementById('btn-split-toggle');
@@ -1596,7 +1859,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     // Home page canvas visibility when on shunno://newtab
-    const isHome = state.active_url === 'shunno://newtab';
+    // Until the native side confirms, keep showing the New Tab page we opened optimistically.
+    const isHome = state.active_url === 'shunno://newtab' || Date.now() < pendingHomeUntil;
+    // Favorites bar only on the New Tab page (Safari); web pages get the full height.
+    document.getElementById('bookmarks-strip').style.display = isHome ? '' : 'none';
     const homeCanvas = document.getElementById('home-canvas');
     if (isHome) {
       homeCanvas.classList.add('active');
@@ -1708,18 +1974,22 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
 
     const globalItems = [
-      ['full_dark', '🌙 Dark Mode', state.global.full_dark_mode],
+      ['force_dark_pages', '🌑 Darken All Sites', state.global.force_dark_pages],
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
-      ['auto_clean', '🧹 Auto-Clean Done', state.global.auto_clean_completed],
+      ['auto_clean', '🧹 Tidy on Start', state.global.auto_clean_completed],
       ['strip_tracking', '✂️ Strip Trackers', state.global.strip_tracking_params],
       ['block_popups', '🚫 Block Pop-Ups', state.global.block_popups],
       ['https_only', '🔒 HTTPS Only', state.global.https_only],
       ['auto_update', '⬆️ Auto Update', state.global.auto_update],
       ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
-      ['strict_tracking', '🛡️ Strict Tracking', state.global.strict_tracking]
+      ['strict_tracking', '🛡️ Strict Tracking', state.global.strict_tracking],
+      ['peek_links', '👁️ Shift-Click Peek', state.global.peek_links]
     ];
+    const mode = state.global.theme_mode || 'system';
+    document.querySelectorAll('#theme-seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    document.getElementById('force-dark-note').style.display = (!!state.global.force_dark_pages !== !!state.force_dark_active) ? '' : 'none';
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
         <span>${label}</span>
@@ -1778,6 +2048,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     `).join('');
 
     renderImport(state);
+    renderPeek(state);
+    renderPwOffer(state);
+    renderPasswords(state);
 
     const folderBar = document.getElementById('bookmark-folders-bar');
     folderBar.innerHTML = allFolders.map(f => `
@@ -1858,72 +2131,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    const statusBar = document.getElementById('dl-status-bar');
-    statusBar.style.display = state.downloads.length ? '' : 'none';
-    statusBar.innerHTML = DL_STATUS_GROUPS.map(([k, label, f]) => {
-      const n = state.downloads.filter(f).length;
-      return `<button class="${activeDlStatus === k ? 'on' : ''}" onclick="setDlStatus('${k}')">${label}${k !== 'all' && n ? `<span class="n">${n}</span>` : ''}</button>`;
-    }).join('');
-
-    const dlCats = ['All', 'Videos', 'Audio', 'Lossless Audio', 'Archives', 'Programs', 'Documents'];
-    const catBar = document.getElementById('dl-category-bar');
-    catBar.style.display = state.downloads.length >= 6 ? '' : 'none';
-    if (catBar.style.display === 'none') activeDlCategory = 'All';
-    catBar.innerHTML = dlCats.map(c => `
-      <button class="folder-pill ${activeDlCategory === c ? 'active' : ''}"
-              onclick="activeDlCategory = '${c}'; send('REFRESH_UI');">${c}</button>
-    `).join('');
-
-    const statusFilter = (DL_STATUS_GROUPS.find(g => g[0] === activeDlStatus) || DL_STATUS_GROUPS[0])[2];
-    const visibleDownloads = state.downloads.filter(d => statusFilter(d) && (activeDlCategory === 'All' || d.category === activeDlCategory));
-    const listEl = document.getElementById('downloads-list');
-    if (visibleDownloads.length === 0) {
-      listEl.innerHTML = state.downloads.length === 0
-        ? '<div class="meta" style="text-align:center;padding:22px 8px;">No downloads.<br>Hover a video or file to download it, or search this page for downloadable files.</div>'
-        : '<div class="meta" style="text-align:center;padding:18px 8px;">Nothing here.</div>';
-    } else {
-      listEl.innerHTML = '<div class="dl-group">' + visibleDownloads.map(d => {
-        const known = d.total_bytes > 0;
-        const pct = d.status === 'COMPLETED' ? 100 : (known ? Math.min(100, d.downloaded_bytes * 100 / d.total_bytes) : 0);
-        const ofTotal = known ? `${fmtBytes(d.downloaded_bytes)} of ${fmtBytes(d.total_bytes)}` : fmtBytes(d.downloaded_bytes);
-        const ext = ((String(d.file_name).match(/\.([A-Za-z0-9]{1,5})$/) || [])[1] || 'FILE').toUpperCase();
-        let sub = '', subCls = '', bar = '';
-        switch (d.status) {
-          case 'DOWNLOADING': {
-            const eta = known && d.speed_bps > 0 ? fmtEta((d.total_bytes - d.downloaded_bytes) / d.speed_bps) : '';
-            sub = `${ofTotal} \u2014 ${fmtBytes(d.speed_bps)}/s${eta ? ' \u00b7 ' + eta : ''}`;
-            bar = `<div class="dl-bar"><i style="width:${known ? pct : 8}%"></i></div>`;
-            break;
-          }
-          case 'QUEUED': sub = 'Waiting\u2026'; bar = '<div class="dl-bar paused"><i style="width:0%"></i></div>'; break;
-          case 'MUXING': sub = /audio\]/i.test(d.segment_map || '') ? 'Converting audio\u2026' : 'Merging audio and video\u2026'; bar = '<div class="dl-bar"><i style="width:100%"></i></div>'; break;
-          case 'PAUSED': sub = `Paused \u2014 ${ofTotal}`; bar = `<div class="dl-bar paused"><i style="width:${pct}%"></i></div>`; break;
-          case 'FAILED': sub = d.error_message || 'Failed'; subCls = 'err'; break;
-          case 'COMPLETED': sub = `${fmtBytes(d.total_bytes > 0 ? d.total_bytes : d.downloaded_bytes)} \u00b7 ${(d.url.match(/^https?:\/\/([^/]+)/) || [])[1] || ''}`; break;
-          default: sub = d.status;
-        }
-        const tip = `${d.category}${d.supports_ranges ? ' \u00b7 ' + d.threads + ' connections' : ''}${d.segment_map ? ' ' + d.segment_map : ''}${d.sha256 ? '\nSHA-256 ' + d.sha256 : ''}`;
-        const actions =
-          d.status === 'DOWNLOADING' || d.status === 'QUEUED'
-            ? `<button class="icon-btn" onclick="send('DL_PAUSE:${d.id}')" title="Pause">${SVG_PAUSE}</button>`
-          : d.status === 'PAUSED' || d.status === 'FAILED'
-            ? `<button class="icon-btn primary" onclick="send('DL_RESUME:${d.id}')" title="${d.status === 'FAILED' ? 'Retry' : 'Resume'}">${SVG_RESUME}</button>
-               <button class="icon-btn" onclick="const u=prompt('Paste a fresh link for this file:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);" title="Use a new link">${SVG_LINK}</button>`
-          : d.status === 'COMPLETED'
-            ? `<button class="icon-btn primary" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')" title="Show in folder">${SVG_REVEAL}</button>`
-            : '';
-        return `
-          <div class="dl-row" title="${escapeHtml(tip)}">
-            <div class="dl-icon ${dlIconClass(d.category)}"><b>${escapeHtml(ext)}</b></div>
-            <div class="dl-main">
-              <div class="dl-name">${escapeHtml(d.file_name)}</div>
-              ${bar}
-              <div class="dl-sub ${subCls}">${escapeHtml(sub)}</div>
-            </div>
-            <div class="dl-actions">${actions}<button class="icon-btn" onclick="send('DL_DEL:${d.id}')" title="Remove from list">${SVG_X}</button></div>
-          </div>`;
-      }).join('') + '</div>';
-    }
+    renderDownloadsList(state);
   };
 
   function getEngineLogoSvg(name) {
@@ -1998,7 +2206,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       send('REOPEN_CLOSED_TAB');
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
-      if (k === 't') { e.preventDefault(); send('NEW_TAB'); }
+      if (k === 't') { e.preventDefault(); openNewTab(); }
       else if (k === 'k') { e.preventDefault(); openPalette(); }
       else if (k === 'w') { e.preventDefault(); send('CLOSE_ACTIVE_TAB'); }
       else if (k === 'l') { e.preventDefault(); const u = document.getElementById('url-input'); u.focus(); u.select(); }
