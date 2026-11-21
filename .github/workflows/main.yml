@@ -20,7 +20,7 @@ jobs:
       UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Stable Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -37,7 +37,7 @@ jobs:
           copy target\release\ShunnoBrowser.exe release-exe\ShunnoBrowser.exe
 
       - name: Upload ShunnoBrowser Windows EXE Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ShunnoBrowser-Rust-Windows-EXE
           path: release-exe/ShunnoBrowser.exe
@@ -71,7 +71,7 @@ jobs:
 
       - name: Publish 1-Click Direct Download Release
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest
           name: "Shunno Browser (latest build: Native Rust + Edge WebView2 + 32-Thread Shunno Get)"

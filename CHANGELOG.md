@@ -1,3 +1,12 @@
+## v2.17.3
+
+### Keyboard
+* **Ctrl+T works every time.** Shortcuts were handled only by the toolbar, so after the first new tab (when focus moved into a page) they stopped. Browser shortcuts are now caught natively in every page too: Ctrl+T, Ctrl+Shift+T, Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+L, Ctrl+K, Ctrl+J, Ctrl+F. Holding a key does not repeat it.
+* A new tab puts the cursor in the start page's search box.
+
+### Build
+* GitHub Actions moved to their Node 24 versions (checkout v5, upload-artifact v6, action-gh-release v3); removes the Node 20 deprecation warning.
+
 ## v2.17.2
 
 ### Window

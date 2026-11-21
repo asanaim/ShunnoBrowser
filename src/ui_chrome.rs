@@ -1700,8 +1700,29 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const hc = document.getElementById('home-canvas');
     if (hc) hc.classList.add('active');
     document.getElementById('bookmarks-strip').style.display = '';
+    window.__focusHomeSearch();
     send('NEW_TAB');
   }
+  // One place for browser shortcuts: the toolbar's keydown and pages (via the native hook) both land here.
+  function runShortcut(id) {
+    switch (id) {
+      case 'new-tab': openNewTab(); break;
+      case 'reopen-tab': send('REOPEN_CLOSED_TAB'); break;
+      case 'close-tab': send('CLOSE_ACTIVE_TAB'); break;
+      case 'next-tab': send('NEXT_TAB'); break;
+      case 'prev-tab': send('PREV_TAB'); break;
+      case 'focus-url': { const u = document.getElementById('url-input'); u.focus(); u.select(); break; }
+      case 'palette': openPalette(); break;
+      case 'find': toggleDrawer('find', document.getElementById('btn-controls')); setTimeout(() => document.getElementById('find-input').focus(), 50); break;
+      case 'downloads': toggleDrawer('downloads', document.getElementById('btn-downloads')); break;
+    }
+  }
+  window.__shunnoShortcut = runShortcut;
+  window.__focusHomeSearch = function () {
+    const i = document.getElementById('home-search-input');
+    if (i) { i.focus(); i.select(); }
+  };
+
   // Called by the native side just before it opens a New Tab it initiated (e.g. Ctrl+T inside a page).
   window.__showHomeNow = function () {
     pendingHomeUntil = Date.now() + 700;
@@ -2215,19 +2236,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       send('TOGGLE_FULLSCREEN');
     } else if (e.ctrlKey && e.key === 'Tab') {
       e.preventDefault();
-      send(e.shiftKey ? 'PREV_TAB' : 'NEXT_TAB');
+      if (!e.repeat) runShortcut(e.shiftKey ? 'prev-tab' : 'next-tab');
     } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
       e.preventDefault();
-      send('REOPEN_CLOSED_TAB');
+      if (!e.repeat) runShortcut('reopen-tab');
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && ({ t: 'new-tab', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]) {
+      e.preventDefault();
+      if (!e.repeat) runShortcut(({ t: 'new-tab', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]);
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
-      if (k === 't') { e.preventDefault(); openNewTab(); }
-      else if (k === 'k') { e.preventDefault(); openPalette(); }
-      else if (k === 'w') { e.preventDefault(); send('CLOSE_ACTIVE_TAB'); }
-      else if (k === 'l') { e.preventDefault(); const u = document.getElementById('url-input'); u.focus(); u.select(); }
-      else if (k === 'f') { e.preventDefault(); toggleDrawer('find'); setTimeout(() => document.getElementById('find-input').focus(), 50); }
-      else if (k === 'j') { e.preventDefault(); toggleDrawer('downloads'); }
-      else if (k === 'r') { e.preventDefault(); send('RELOAD'); }
+      if (k === 'r') { e.preventDefault(); send('RELOAD'); }
       else if (k === '=' || k === '+') { e.preventDefault(); send('ZOOM_IN'); }
       else if (k === '-') { e.preventDefault(); send('ZOOM_OUT'); }
       else if (k === '0') { e.preventDefault(); send('ZOOM_RESET'); }
