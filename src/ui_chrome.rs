@@ -162,20 +162,45 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .space-pill .ic { font-size: 13px; line-height: 1; }
   .space-pill .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Profiles: a round avatar in the toolbar, coloured like Safari's profile badge. */
-  .profile-btn { width: 26px; height: 26px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; margin-right: 4px;
-    background: var(--profile-accent, #0A84FF); color: #fff; font-size: 12px; font-weight: 700; display: none;
-    align-items: center; justify-content: center; box-shadow: 0 0 0 2px var(--bg, transparent), 0 0 0 3px color-mix(in srgb, var(--profile-accent, #0A84FF) 35%, transparent);
-    transition: transform .16s var(--ease-fluid); }
-  .profile-btn.on { display: inline-flex; }
-  .profile-btn:hover { transform: scale(1.06); }
+  /* Toolbar buttons, Safari style: one size, one glyph size, no fill until hovered. Every button in
+     the toolbar row (sidebar, back, forward, extensions, downloads, profile, more) uses .tb. */
+  .tb { width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px; background: transparent; color: var(--text);
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; position: relative;
+    opacity: 0.78; transition: background var(--dur-fast) var(--ease-fluid), opacity var(--dur-fast) var(--ease-fluid), transform var(--dur-fast) var(--ease-fluid); }
+  .tb:hover { background: var(--input-bg); opacity: 1; }
+  .tb:active { transform: scale(0.92); }
+  .tb.open { background: var(--input-bg); opacity: 1; }
+  .tb > svg { width: 18px; height: 18px; display: block; }
+  .tb > img { width: 20px; height: 20px; border-radius: 5px; display: block; }
+  .tb .ph { width: 20px; height: 20px; }
+  .tb .avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--profile-accent, #0A84FF); color: #fff;
+    font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .tb .badge { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3.5px; border-radius: 7px;
+    background: var(--blue); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 14px; text-align: center;
+    font-variant-numeric: tabular-nums; box-shadow: 0 0 0 1.5px var(--surface-solid); }
+  .tb .badge:empty { display: none; }
+  #btn-downloads .dl-track { stroke: currentColor; opacity: 0.0; }
+  #btn-downloads .dl-ring { stroke: var(--blue); stroke-dasharray: 51.5; stroke-dashoffset: 51.5; opacity: 0;
+    transition: stroke-dashoffset .4s var(--ease-fluid), opacity .2s; }
+  #btn-downloads.active .dl-track { opacity: 0.18; }
+  #btn-downloads.active .dl-ring { opacity: 1; }
+  #btn-downloads.active { color: var(--blue); opacity: 1; }
+  /* Buttons inside the address field (Reader, Bookmark, Reload): smaller, quieter. */
+  .field-btn { width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px; background: transparent; color: var(--muted);
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-fluid), color var(--dur-fast) var(--ease-fluid); }
+  .field-btn:hover { background: rgba(118,118,128,.14); color: var(--text); }
+  .field-btn > svg { width: 15px; height: 15px; display: block; }
+  .field-btn.marked, .field-btn.on { color: var(--blue); }
   /* Extensions: Safari-style toolbar icons for extensions with a popup, plus a puzzle button. */
   .ext-bar { display: none; align-items: center; gap: 2px; }
   .ext-bar.on { display: inline-flex; }
-  .ext-ic { width: 30px; height: 30px; border: none; border-radius: 9px; background: transparent; cursor: pointer; display: inline-flex;
+  .ext-ic { width: 30px; height: 30px; border: none; border-radius: 8px; background: transparent; cursor: pointer; display: inline-flex;
     align-items: center; justify-content: center; padding: 0; transition: background .15s var(--ease-fluid); }
   .ext-ic:hover { background: rgba(118,118,128,.14); }
-  .ext-ic img { width: 22px; height: 22px; border-radius: 5px; }
-  .ph { width: 22px; height: 22px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 700;
+  .ext-ic img { width: 20px; height: 20px; border-radius: 5px; }
+  .ext-ic svg { width: 18px; height: 18px; }
+  .ph { width: 20px; height: 20px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 700;
     display: flex; align-items: center; justify-content: center; }
   .ext-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; }
   .ext-row:hover { background: rgba(118,118,128,.08); }
@@ -272,7 +297,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     padding: 5px 14px;
     height: 46px;
   }
-  .nav-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .nav-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
   .nav-group.left { justify-self: start; }
   .nav-group.right { justify-self: end; }
   .nav-btn {
@@ -300,7 +325,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .firefox-capsule {
     width: 100%; min-width: 0; height: 32px;
     display: flex; align-items: center; gap: 6px;
-    background: var(--input-bg); border-radius: 16px; padding: 2px 10px 2px 4px;
+    background: var(--input-bg); border-radius: 16px; padding: 2px 4px 2px 4px; gap: 2px;
     border: 1.5px solid transparent;
     transition: background 0.32s var(--ease-fluid), border-color 0.25s var(--ease-fluid), box-shadow 0.28s var(--ease-fluid);
   }
@@ -345,12 +370,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* 3. Chrome-Inspired Bookmarks & Library Strip Beneath Address Bar */
   .bookmarks-strip {
-    display: flex; align-items: center; gap: 6px; padding: 0 12px;
-    height: 30px; border-top: 1px solid var(--border); overflow-x: auto;
+    display: flex; align-items: center; gap: 2px; padding: 0 12px 2px;
+    height: 28px; overflow-x: auto;
   }
+  .bm-chip span { overflow: hidden; text-overflow: ellipsis; }
   .bookmarks-strip::-webkit-scrollbar { display: none; }
   .bm-chip {
-    display: inline-flex; align-items: center; gap: 5px;
+    display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 9px; border-radius: 8px; font-size: 11.5px; font-weight: 500;
     color: var(--text); background: transparent; border: none; cursor: pointer;
     max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
@@ -385,6 +411,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     border: none; background: transparent; outline: none; flex: 1;
     font-size: 15px; color: var(--text); user-select: text;
   }
+  .home-favs { width: 100%; margin-top: 10px; }
   .shortcuts-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
     gap: 12px; width: 100%; margin-top: 8px;
@@ -789,6 +816,68 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     color: var(--text); font-size: 12.5px; cursor: pointer; }
   #ask-card button.ok { background: var(--blue); border-color: transparent; color: #fff; font-weight: 600; }
   #ask-card button.ok.danger { background: var(--red); }
+  #ask-card select { width: 100%; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--input-bg);
+    color: var(--text); padding: 0 8px; font-size: 13px; outline: none; }
+  #ask-card select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+  #ask-card button.rm { border: none; background: transparent; color: var(--red); padding: 0 4px; }
+  #ask-card .ask-btns { align-items: center; }
+  /* Library popover: Safari's sidebar content (segmented Bookmarks / History, search, folders). */
+  .lib { display: flex; flex-direction: column; gap: 8px; width: 340px; max-width: 100%; }
+  .lib-top { display: flex; align-items: center; justify-content: center; }
+  .seg { display: inline-flex; background: var(--input-bg); border-radius: 8px; padding: 2px; gap: 2px; width: 100%; }
+  .seg button { flex: 1; height: 24px; border: none; border-radius: 6px; background: transparent; color: var(--text);
+    font-size: 12px; font-weight: 500; cursor: pointer; transition: background var(--dur-fast) var(--ease-fluid); }
+  .seg button.on { background: var(--surface-solid); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+  .lib-search { height: 28px; border-radius: 8px; border: 1px solid transparent; background: var(--input-bg); color: var(--text);
+    padding: 0 10px; font-size: 12.5px; outline: none; user-select: text; }
+  .lib-search:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); background: var(--surface-solid); }
+  .lib-body { max-height: min(420px, calc(100vh - 230px)); overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+  .lib-folder { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border-radius: 7px; cursor: pointer;
+    font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .lib-folder:hover { background: rgba(118,118,128,.10); }
+  .lib-folder .chev { color: var(--muted); transition: transform var(--dur-fast) var(--ease-fluid); }
+  .lib-folder.open .chev { transform: rotate(90deg); }
+  .lib-folder .fi { width: 16px; display: inline-flex; justify-content: center; color: var(--blue); font-size: 12px; }
+  .lib-folder .fn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-folder .fc { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  .lib-group { font-size: 11px; font-weight: 600; color: var(--muted); padding: 8px 6px 4px; }
+  .lib-row { display: flex; align-items: center; gap: 9px; padding: 5px 6px 5px 22px; border-radius: 7px; cursor: pointer; min-height: 36px; }
+  .lib-group + .lib-row, .lib-group ~ .lib-row { padding-left: 6px; }
+  .lib-row:hover { background: rgba(118,118,128,.10); }
+  .lib-tx { flex: 1; min-width: 0; }
+  .lib-tx .t { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-tx .s { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lib-acts { display: flex; gap: 2px; opacity: 0; transition: opacity var(--dur-fast); }
+  .lib-row:hover .lib-acts, .lib-row:focus-within .lib-acts { opacity: 1; }
+  .lib-acts button { width: 24px; height: 24px; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .lib-acts button:hover { background: rgba(118,118,128,.16); color: var(--text); }
+  .lib-empty { font-size: 12px; color: var(--muted); padding: 6px 6px 8px 28px; }
+  .lib-empty.big { text-align: center; padding: 26px 10px; line-height: 1.5; }
+  .lib-foot { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .lib-foot button:not(.switch) { border: none; background: transparent; color: var(--blue); font-size: 12px; font-weight: 500; cursor: pointer;
+    padding: 4px 6px; border-radius: 6px; }
+  .lib-foot button:not(.switch):hover { background: var(--blue-soft); }
+  .lib-foot button.danger { color: var(--red); }
+  .lib-foot .lbl { font-size: 12px; color: var(--muted); }
+  .site-ic, .chip-ic, .fav-ic { display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; flex-shrink: 0; }
+  .site-ic { width: 22px; height: 22px; border-radius: 6px; font-size: 11px; }
+  .chip-ic { width: 16px; height: 16px; border-radius: 4px; font-size: 9px; }
+  /* New Tab Favorites (Safari start page). */
+  .fav-title { width: 100%; font-size: 15px; font-weight: 700; color: var(--text); margin: 6px 0 10px; }
+  .fav-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 14px 10px; width: 100%; }
+  .fav-tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 6px 2px; border-radius: 12px; cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-fluid); }
+  .fav-tile:hover { background: rgba(118,118,128,.10); }
+  .fav-ic { width: 56px; height: 56px; border-radius: 14px; font-size: 22px; box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 4px 12px rgba(0,0,0,.06);
+    transition: transform var(--dur) var(--ease-fluid); }
+  .fav-tile:hover .fav-ic { transform: scale(1.04); }
+  .fav-ic.plus { background: var(--input-bg); color: var(--muted); box-shadow: none; border: 1px dashed rgba(118,118,128,.45); }
+  .fav-label { font-size: 11.5px; color: var(--text); max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fav-x { position: absolute; top: 0; right: 10px; width: 18px; height: 18px; border-radius: 50%; border: none; background: var(--surface-solid);
+    color: var(--muted); font-size: 9px; cursor: pointer; opacity: 0; box-shadow: 0 1px 4px rgba(0,0,0,.2); transition: opacity var(--dur-fast); z-index: 1; }
+  .fav-tile:hover .fav-x { opacity: 1; }
+  .fav-x:hover { color: var(--red); }
 </style>
 </head>
 <body>
@@ -822,17 +911,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     <!-- 2. Firefox-Inspired Compact Centered Address + Search Bar -->
     <div class="nav-bar">
       <div class="nav-group left">
-        <button class="nav-icon-btn" onclick="send('BACK')" title="Back">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        <!-- Safari: the sidebar (bookmarks, history) button leads the toolbar, then Back / Forward. -->
+        <button class="tb" id="btn-library" onclick="toggleDrawer('bookmarks', this)" title="Bookmarks and History"><svg viewBox="0 0 20 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="1.75" y="2.25" width="16.5" height="13.5" rx="3"/><path d="M7.25 2.5v13"/><path d="M3.9 5.6h1.6M3.9 8.1h1.6M3.9 10.6h1.6" stroke-linecap="round"/></svg></button>
+        <button class="tb" onclick="send('BACK')" title="Back">
+          <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11.2 3.6L5.8 9l5.4 5.4"/></svg>
         </button>
-        <button class="nav-icon-btn" onclick="send('FORWARD')" title="Forward">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-        </button>
-        <button class="nav-icon-btn" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-        </button>
-        <button class="nav-icon-btn" onclick="send('NAV:shunno://newtab')" title="Home">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <button class="tb" onclick="send('FORWARD')" title="Forward">
+          <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 3.6L12.2 9l-5.4 5.4"/></svg>
         </button>
       </div>
 
@@ -844,31 +929,36 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
         <button class="store-add" id="store-add" style="display:none" onclick="storeAdd()" title="Install this extension in Shunno">Add to Shunno</button>
-        <button class="reader-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
-          <svg width="16" height="14" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
+        <button class="field-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
+          <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
+        </button>
+        <!-- Page actions live in the address field, as in Safari: bookmark, then reload. -->
+        <button class="field-btn" id="btn-bookmark" onclick="bookmarkCurrentPage()" title="Add Bookmark (Ctrl+D)">
+          <svg viewBox="0 0 15 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 1.75h9a.75.75 0 0 1 .75.75v12.1l-5.25-3.3-5.25 3.3V2.5A.75.75 0 0 1 3 1.75z"/></svg>
+        </button>
+        <button class="field-btn" id="btn-reload" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8A5.2 5.2 0 1 1 11.6 4.3"/><path d="M13.3 2.4v2.9h-2.9"/></svg>
         </button>
       </div>
 
       <div class="nav-group right">
         <div id="perm-offer" class="pw-offer perm-offer" style="display:none"></div>
-        <div class="ext-bar" id="ext-bar"></div>
-        <button class="profile-btn" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"></button>
         <div id="pw-offer" class="pw-offer" style="display:none"></div>
-        <button class="tb-icon" id="btn-bookmark" onclick="promptSaveBookmarkWithFolder()" title="Bookmark this page">
-          <svg width="15" height="16" viewBox="0 0 15 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 1.75h9a.75.75 0 0 1 .75.75v12.1l-5.25-3.3-5.25 3.3V2.5A.75.75 0 0 1 3 1.75z"/></svg>
+        <div class="ext-bar" id="ext-bar"></div>
+        <!-- Shown once there are downloads; a ring shows the progress of running ones (Safari). -->
+        <button class="tb" id="btn-downloads" onclick="toggleDrawer('downloads', this)" title="Downloads (Ctrl+J)">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle class="dl-track" cx="10" cy="10" r="8.2"/><circle class="dl-ring" cx="10" cy="10" r="8.2" transform="rotate(-90 10 10)"/><path d="M10 5.8v7.4M6.9 10.3L10 13.4l3.1-3.1"/></svg>
+          <span class="badge" id="dl-count"></span>
         </button>
-        <button class="tb-icon" id="btn-library" onclick="toggleDrawer('bookmarks', this)" title="Library: bookmarks and history">
-          <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="1.25" y="2.25" width="3.5" height="12" rx=".8"/><rect x="5.75" y="1.25" width="3.5" height="13" rx=".8"/><path d="M10.6 3.4l2.9-.9a.8.8 0 0 1 1 .5l2.9 9.9a.8.8 0 0 1-.5 1l-2.9.9a.8.8 0 0 1-1-.5L10 4.4a.8.8 0 0 1 .6-1z"/></svg>
+        <button class="tb" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"><span class="avatar" id="profile-avatar"></span></button>
+        <button class="tb" id="btn-controls" onclick="toggleDrawer('controls', this)" title="Settings and more">
+          <svg viewBox="0 0 20 20" fill="currentColor"><circle cx="4.6" cy="10" r="1.55"/><circle cx="10" cy="10" r="1.55"/><circle cx="15.4" cy="10" r="1.55"/></svg>
         </button>
-        <button class="nav-btn on dl" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">
-          <svg width="12" height="13" viewBox="0 0 12 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1.5v7.2M2.8 5.6L6 8.8l3.2-3.2M1.5 11.6h9"/></svg><span class="n" id="dl-count"></span>
-        </button>
-        <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
     </div>
 
-    <!-- 3. Always-Visible Bookmarks & Library Strip Under Address Bar -->
-    <div class="bookmarks-strip" id="bookmarks-strip"></div>
+    <!-- 3. Favorites bar (Safari: off by default; shows the Favorites folder on web pages). -->
+    <div class="bookmarks-strip" id="bookmarks-strip" style="display:none"></div>
   </div>
   <div class="engine-menu" id="engine-menu"></div>
   <div class="snap-flyout" id="snap-flyout" onmouseenter="keepSnapOpen()" onmouseleave="scheduleSnapClose()">
@@ -926,7 +1016,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <input class="home-search-input" id="home-search-input" placeholder="Search the web or enter website address..."
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); if(this.value.trim()) send('NAV:' + this.value.trim()); }" />
       </div>
-      <div class="shortcuts-grid" id="home-shortcuts-grid"></div>
+      <div class="home-favs" id="home-shortcuts-grid"></div>
     </div>
   </div>
 
@@ -1075,30 +1165,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="meta" id="import-status" style="margin-top:6px;"></div>
           <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; then use Import… in the Passwords panel.</div>
         </div>
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">⭐ Bookmarks</span>
-            <div style="display:flex;gap:5px;">
-              <button class="pill-btn pill-blue" onclick="promptSaveBookmarkWithFolder()">+ Save</button>
-              <button class="pill-btn pill-soft" onclick="openImport()">Import…</button>
-              <button class="pill-btn pill-soft" onclick="send('EXPORT_TXT_BOOKMARKS')" title="Save shunno_bookmarks.txt to your downloads folder">Export</button>
-              <button class="pill-btn pill-red" onclick="closeDrawer()">✕</button>
+        <!-- Safari sidebar: Bookmarks / History, search, folders that open and close. -->
+        <div class="lib">
+          <div class="lib-top">
+            <div class="seg" id="lib-seg">
+              <button data-v="bookmarks" class="on" onclick="setLibView('bookmarks')">Bookmarks</button>
+              <button data-v="history" onclick="setLibView('history')">History</button>
             </div>
           </div>
-          <div class="folder-pills" id="bookmark-folders-bar"></div>
-          <div id="bookmarks-list"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title">🕒 History</span>
-            <button class="pill-btn pill-red" onclick="send('CLEAR_HISTORY')">Clear</button>
-          </div>
-          <div id="history-list"></div>
+          <input class="lib-search" id="lib-search" placeholder="Search" spellcheck="false" oninput="renderLibrary()">
+          <div class="lib-body" id="lib-body"></div>
+          <div class="lib-foot" id="lib-foot"></div>
         </div>
       </div>
 
-      <!-- Panel E: Downloads Downloads -->
       <div id="panel-spaces" style="display:none">
         <div class="sheet-head">
           <h3>Spaces</h3>
@@ -1350,6 +1430,24 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // values (array), true for a plain question, or null when cancelled. While it is open the
   // toolbar is laid out over the page (SHEET:1), so the sheet is never hidden behind the page.
   let askResolve = null;
+  // Shows a sheet with the given inner HTML; askClose(value) closes it.
+  function sheetOpen(inner) {
+    let scrim = document.getElementById('ask-scrim');
+    if (!scrim) {
+      scrim = document.createElement('div');
+      scrim.id = 'ask-scrim';
+      scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) askClose(null); });
+      document.body.appendChild(scrim);
+    }
+    scrim.innerHTML = `<div id="ask-card" role="dialog" aria-modal="true">${inner}</div>`;
+    const card = scrim.querySelector('#ask-card');
+    card.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); askClose(null); } });
+    askResolve = () => {};
+    send('SHEET:1');
+    scrim.classList.add('show');
+    requestAnimationFrame(() => requestAnimationFrame(() => scrim.classList.add('in')));
+    return card;
+  }
   function askSheet(o) {
     if (askResolve) askClose(null);
     let scrim = document.getElementById('ask-scrim');
@@ -1393,14 +1491,152 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   window.askNotice = (title, message) => askSheet({ title, message, ok: 'OK' });
   window.askConfirm = (title, message, ok, danger) => askSheet({ title, message, ok: ok || 'OK', danger: danger !== false }).then(v => v === true);
 
-  function promptSaveBookmarkWithFolder() {
-    const folders = Array.from(new Set(((lastState && lastState.bookmarks) || []).map(b => b.folder || 'General')));
-    if (!folders.includes('General')) folders.unshift('General');
-    askSheet({
-      title: 'Add Bookmark',
-      fields: [{ label: 'Folder', value: activeBookmarkFolder === 'All' ? 'General' : activeBookmarkFolder, list: folders }],
-      ok: 'Add',
-    }).then(v => { if (v) send('ADD_BOOKMARK:' + (v[0].trim() || 'General')); });
+  // ---------------------------------------------------------------- Library (sidebar popover)
+  let libView = 'bookmarks';
+  const libOpenFolders = new Set(['Favorites']);
+  function setLibView(v) {
+    libView = v;
+    document.querySelectorAll('#lib-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+    const q = document.getElementById('lib-search'); q.value = '';
+    q.placeholder = v === 'history' ? 'Search History' : 'Search Bookmarks';
+    renderLibrary();
+  }
+  function toggleLibFolder(f) { libOpenFolders.has(f) ? libOpenFolders.delete(f) : libOpenFolders.add(f); renderLibrary(); }
+  function libRow(url, title, sub, actions) {
+    return `<div class="lib-row" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(url)}'); closeDrawer();"
+         onauxclick="if(event.button===1){ send('NAV_NEW_TAB:${encodeAttr(url)}'); }" title="${escapeHtml(url)}">
+      ${siteIcon(url, title)}<div class="lib-tx"><div class="t">${escapeHtml(title || url)}</div><div class="s">${escapeHtml(sub)}</div></div>${actions || ''}</div>`;
+  }
+  const SVG_EDIT = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M10.8 2.7l2.5 2.5L6 12.5l-3.2.7.7-3.2z"/></svg>';
+  const SVG_TRASH = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.3 4.5V3h3.4v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>';
+  function renderLibrary() {
+    const st = lastState;
+    const body = document.getElementById('lib-body');
+    if (!st || !body) return;
+    const q = (document.getElementById('lib-search').value || '').trim().toLowerCase();
+    const match = (t, u) => !q || (t || '').toLowerCase().includes(q) || (u || '').toLowerCase().includes(q);
+    let html = '';
+    if (libView === 'bookmarks') {
+      const all = st.bookmarks || [];
+      const folders = bmFolders().filter(f => f === FAV || all.some(b => (b.folder || FAV) === f));
+      for (const f of folders) {
+        const items = all.filter(b => (b.folder || FAV) === f && match(b.title, b.url));
+        if (q && !items.length) continue;
+        const open = q || libOpenFolders.has(f);
+        html += `<div class="lib-folder ${open ? 'open' : ''}" onclick="toggleLibFolder('${encodeAttr(f)}')">
+          <svg class="chev" viewBox="0 0 10 10" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2l3 3-3 3"/></svg>
+          <span class="fi">${f === FAV ? '★' : '<svg viewBox="0 0 16 14" width="14" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 3a1 1 0 0 1 1-1h3.6l1.5 1.6h5.9a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg>'}</span>
+          <span class="fn">${escapeHtml(f)}</span><span class="fc">${items.length}</span></div>`;
+        if (open) {
+          html += items.slice(0, 400).map(b => libRow(b.url, b.title, hostOf(b.url),
+            `<span class="lib-acts"><button onclick="event.stopPropagation(); editBookmarkByUrl('${encodeAttr(b.url)}')" title="Edit">${SVG_EDIT}</button>
+             <button onclick="event.stopPropagation(); send('BOOKMARK_REMOVE_URL:${encodeAttr(b.url)}')" title="Remove">${SVG_TRASH}</button></span>`)).join('')
+            || '<div class="lib-empty">No bookmarks here.</div>';
+        }
+      }
+      if (!all.length) html = `<div class="lib-empty big">No bookmarks yet.<br>Press ★ in the address field or Ctrl+D to add the page you are on.</div>`;
+      else if (!html) html = '<div class="lib-empty">No matches.</div>';
+    } else {
+      const items = (st.history || []).filter(h => match(h.title, h.url));
+      const day = 86400;
+      const now = Date.now() / 1000;
+      const start = new Date(); start.setHours(0, 0, 0, 0);
+      const today = start.getTime() / 1000;
+      const groups = [['Today', h => h.visited_at >= today], ['Yesterday', h => h.visited_at >= today - day && h.visited_at < today],
+                      ['Earlier', h => h.visited_at < today - day]];
+      for (const [label, f] of groups) {
+        const g = items.filter(f).slice(0, 200);
+        if (!g.length) continue;
+        html += `<div class="lib-group">${label}</div>` + g.map(h => {
+          const t = new Date(h.visited_at * 1000);
+          const when = label === 'Earlier' ? t.toLocaleDateString() : t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          return libRow(h.url, h.title, hostOf(h.url) + ' \u00b7 ' + when, '');
+        }).join('');
+      }
+      if (!html) html = `<div class="lib-empty big">${q ? 'No matches.' : 'No history yet.'}</div>`;
+      void now;
+    }
+    if (body.dataset.h !== html) { body.dataset.h = html; body.innerHTML = html; }
+    const foot = libView === 'bookmarks'
+      ? `<button onclick="openImport()">Import…</button><button onclick="send('EXPORT_TXT_BOOKMARKS')" title="Saves shunno_bookmarks.txt to your downloads folder">Export</button>
+         <span style="flex:1"></span><span class="lbl">Favorites Bar</span>
+         <button class="switch ${st.global.show_favorites_bar ? 'on' : ''}" role="switch" aria-checked="${!!st.global.show_favorites_bar}" aria-label="Show Favorites Bar"
+           onclick="this.classList.toggle('on'); send('TOGGLE_GLOBAL:favorites_bar')"><i></i></button>`
+      : `<span style="flex:1"></span><button class="danger" onclick="askConfirm('Clear History?', 'This removes every page from your history.', 'Clear History').then(ok => { if (ok) send('CLEAR_HISTORY'); })">Clear History…</button>`;
+    const fe = document.getElementById('lib-foot');
+    if (fe.dataset.h !== foot) { fe.dataset.h = foot; fe.innerHTML = foot; }
+  }
+
+  // ---------------------------------------------------------------- Bookmarks (Safari model)
+  // Favorites is the folder the Favorites bar and the New Tab page show; other folders are kept in
+  // the sidebar. One sheet adds and edits a bookmark: folder, title, and (when editing) address.
+  const FAV = 'Favorites';
+  function bmFolders() {
+    const set = new Set([FAV]);
+    ((lastState && lastState.bookmarks) || []).forEach(b => set.add(b.folder || FAV));
+    return Array.from(set);
+  }
+  function siteIcon(url, title, cls) {
+    let host = '';
+    try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (e) {}
+    const letter = (Array.from((title || host || '?').trim())[0] || '?').toUpperCase();
+    let h = 0;
+    for (const c of host || title || '?') h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return `<span class="${cls || 'site-ic'}" style="background:hsl(${h % 360},52%,50%)">${escapeHtml(letter)}</span>`;
+  }
+  function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return url; } }
+  function bookmarkCurrentPage() {
+    const st = lastState || {};
+    const url = st.active_url || '';
+    if (!/^(https?:|file:)/.test(url)) return;
+    const existing = (st.bookmarks || []).find(b => b.url === url);
+    const tab = (st.tabs || [])[st.active_tab] || {};
+    bookmarkSheet(existing ? { orig: url, url, title: existing.title, folder: existing.folder || FAV, edit: true }
+                           : { orig: '', url, title: tab.title || hostOf(url), folder: FAV, edit: false });
+  }
+  // o: {orig, url, title, folder, edit, askUrl}
+  function bookmarkSheet(o) {
+    if (askResolve) askClose(null);
+    const showUrl = o.edit || o.askUrl;
+    const folders = bmFolders();
+    if (o.folder && !folders.includes(o.folder)) folders.push(o.folder);
+    const card = sheetOpen(`
+      <h3>${o.edit ? 'Edit Bookmark' : (o.askUrl ? 'Add to Favorites' : 'Add Bookmark')}</h3>
+      ${o.askUrl ? '' : `<label for="bm-folder">${o.edit ? 'Folder' : 'Add this page to'}</label>
+      <select id="bm-folder">${folders.map(f => `<option value="${escapeHtml(f)}"${f === o.folder ? ' selected' : ''}>${f === FAV ? '\u2605 ' : ''}${escapeHtml(f)}</option>`).join('')}
+        <option value="__new">New Folder…</option></select>
+      <input id="bm-newfolder" placeholder="Folder name" style="display:none;margin-top:6px" spellcheck="false">`}
+      <label for="bm-title">Title</label>
+      <input id="bm-title" value="${escapeHtml(o.title || '')}" spellcheck="false">
+      ${showUrl ? `<label for="bm-url">Address</label><input id="bm-url" value="${escapeHtml(o.url || '')}" placeholder="example.com" spellcheck="false">` : ''}
+      <div class="ask-btns">${o.edit ? '<button class="rm">Remove</button><span style="flex:1"></span>' : ''}<button class="cancel">Cancel</button><button class="ok">${o.edit ? 'Done' : 'Add'}</button></div>`);
+    const sel = card.querySelector('#bm-folder');
+    const nf = card.querySelector('#bm-newfolder');
+    if (sel) sel.onchange = () => { nf.style.display = sel.value === '__new' ? '' : 'none'; if (sel.value === '__new') nf.focus(); };
+    const done = () => {
+      let folder = o.askUrl ? FAV : sel.value;
+      if (folder === '__new') folder = nf.value.trim();
+      if (!folder) { nf.focus(); return; }
+      let url = showUrl ? card.querySelector('#bm-url').value.trim() : o.url;
+      if (url && !/^(https?:|file:)/i.test(url)) url = 'https://' + url;
+      const title = card.querySelector('#bm-title').value.trim();
+      if (!url) { card.querySelector('#bm-url').focus(); return; }
+      send('BOOKMARK_SAVE:' + JSON.stringify({ orig_url: o.orig || '', url, title, folder }));
+      askClose(true);
+    };
+    card.querySelector('.ok').onclick = done;
+    card.querySelector('.cancel').onclick = () => askClose(null);
+    const rm = card.querySelector('.rm');
+    if (rm) rm.onclick = () => { send('BOOKMARK_REMOVE_URL:' + o.orig); askClose(true); };
+    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); done(); } });
+    setTimeout(() => { const f = card.querySelector(o.askUrl ? '#bm-title' : '#bm-title'); f.focus(); f.select(); }, 30);
+  }
+  // Kept for older callers (menu, palette).
+  function promptSaveBookmarkWithFolder() { bookmarkCurrentPage(); }
+  function promptAddFavorite() { bookmarkSheet({ orig: '', url: '', title: '', folder: FAV, askUrl: true }); }
+  function editBookmarkByUrl(url) {
+    const b = ((lastState && lastState.bookmarks) || []).find(x => x.url === url);
+    if (b) bookmarkSheet({ orig: b.url, url: b.url, title: b.title, folder: b.folder || FAV, edit: true });
   }
 
   let snapHoverTimer = null;
@@ -1547,7 +1783,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     // Only anchor to toolbar elements; buttons inside the sheet keep the current anchor.
     if (clicked && !sheet.contains(clicked)) drawerAnchor = clicked;
     else if (!activeDrawer) drawerAnchor = defaultAnchorFor(name);
+    document.querySelectorAll('.tb.open').forEach(b => b.classList.remove('open'));
+    if (drawerAnchor && drawerAnchor.classList.contains('tb')) drawerAnchor.classList.add('open');
     activeDrawer = name;
+    if (name === 'bookmarks') renderLibrary();
 
     sheet.dataset.panel = name;
 
@@ -1566,6 +1805,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function closeDrawer() {
     if (!activeDrawer) return;
     activeDrawer = null;
+    document.querySelectorAll('.tb.open').forEach(b => b.classList.remove('open'));
     const drawer = document.getElementById('drawer');
     const sheet = document.getElementById('floating-sheet');
     sheet.classList.add('closing');
@@ -2243,8 +2483,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const bar = document.getElementById('ext-bar');
     const shown = list.filter(e => e.enabled && e.popup).slice(0, 4);
     const barHtml = list.length ? shown.map(e =>
-      `<button class="ext-ic" title="${escapeHtml(e.name)}" onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">${extIcon(e)}</button>`).join('') +
-      `<button class="ext-ic" id="ext-puzzle" title="Extensions" onclick="toggleDrawer('extensions', this)">${PUZZLE_SVG}</button>` : '';
+      `<button class="tb ext-ic" title="${escapeHtml(e.name)}" onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">${extIcon(e)}</button>`).join('') +
+      `<button class="tb ext-ic" id="ext-puzzle" title="Extensions" onclick="toggleDrawer('extensions', this)">${PUZZLE_SVG}</button>` : '';
     if (bar.dataset.h !== barHtml) { bar.dataset.h = barHtml; bar.innerHTML = barHtml; }
     bar.classList.toggle('on', list.length > 0);
     // Panel.
@@ -2306,14 +2546,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const list = state.profiles || [];
     const me = list.find(p => p.id === state.profile_id) || list[0];
     const btn = document.getElementById('profile-btn');
+    const av = document.getElementById('profile-avatar');
     if (me) {
       document.documentElement.style.setProperty('--profile-accent', me.color);
       const t = profileInitial(me.name);
-      if (btn.textContent !== t) btn.textContent = t;
+      if (av.textContent !== t) av.textContent = t;
       btn.title = 'Profile: ' + me.name;
     }
     // Shown once there is more than one profile (one profile needs no switcher).
-    btn.classList.toggle('on', list.length > 1);
+    btn.style.display = list.length > 1 ? '' : 'none';
     const el = document.getElementById('profiles-list');
     const html = list.map(p => {
       const mine = me && p.id === me.id;
@@ -2448,6 +2689,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       case 'find': toggleDrawer('find', document.getElementById('btn-controls')); setTimeout(() => document.getElementById('find-input').focus(), 50); break;
       case 'downloads': toggleDrawer('downloads', document.getElementById('btn-downloads')); break;
       case 'reader': send('READER_MODE'); break;
+      case 'bookmark': bookmarkCurrentPage(); break;
     }
   }
   window.__shunnoShortcut = runShortcut;
@@ -2641,48 +2883,35 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     // Home page canvas visibility when on shunno://newtab
     // Until the native side confirms, keep showing the New Tab page we opened optimistically.
     const isHome = state.active_url === 'shunno://newtab' || Date.now() < pendingHomeUntil;
-    // Favorites bar only on the New Tab page (Safari); web pages get the full height.
-    document.getElementById('bookmarks-strip').style.display = isHome ? '' : 'none';
+    // Safari: the New Tab page shows Favorites as tiles; the Favorites bar (off unless turned on in
+    // the sidebar) shows them on web pages. No bar and no empty strip otherwise.
+    const favs = (state.bookmarks || []).filter(b => (b.folder || FAV) === FAV);
+    const bmStrip = document.getElementById('bookmarks-strip');
+    const barOn = !isHome && !!state.global.show_favorites_bar && favs.length > 0;
+    bmStrip.style.display = barOn ? '' : 'none';
+    const barHtml = barOn ? favs.slice(0, 30).map(b => `
+      <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
+              oncontextmenu="event.preventDefault(); editBookmarkByUrl('${encodeAttr(b.url)}')" title="${escapeHtml(b.title)}\n${escapeHtml(b.url)}">${siteIcon(b.url, b.title, 'chip-ic')}<span>${escapeHtml(b.title)}</span></button>`).join('') : '';
+    if (bmStrip.dataset.h !== barHtml) { bmStrip.dataset.h = barHtml; bmStrip.innerHTML = barHtml; }
     const homeCanvas = document.getElementById('home-canvas');
     if (isHome) {
       homeCanvas.classList.add('active');
       const grid = document.getElementById('home-shortcuts-grid');
-      const shortcuts = state.global.quick_shortcuts || [];
-      grid.innerHTML = shortcuts.map((sc, i) => `
-        <div class="shortcut-tile" onclick="send('NAV:${encodeAttr(sc.url)}')">
-          <button class="shortcut-del" onclick="event.stopPropagation(); send('DEL_SHORTCUT:${i}')" title="Remove">✕</button>
-          <div class="shortcut-icon">${escapeHtml((sc.title || 'W').charAt(0).toUpperCase())}</div>
-          <div class="shortcut-label">${escapeHtml(sc.title)}</div>
-        </div>
-      `).join('') + `
-        <div class="shortcut-tile" onclick="promptAddShortcut()" style="border-style:dashed;">
-          <div class="shortcut-icon" style="background:rgba(128,128,128,0.14);color:var(--text);">+</div>
-          <div class="shortcut-label">Add Shortcut</div>
-        </div>
-      `;
+      const gridHtml = `<div class="fav-title">Favorites</div><div class="fav-grid">` + favs.slice(0, 24).map(b => `
+        <div class="fav-tile" role="button" tabindex="0" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
+             oncontextmenu="event.preventDefault(); editBookmarkByUrl('${encodeAttr(b.url)}')" title="${escapeHtml(b.url)}">
+          <button class="fav-x" onclick="event.stopPropagation(); send('BOOKMARK_REMOVE_URL:${encodeAttr(b.url)}')" title="Remove from Favorites">✕</button>
+          ${siteIcon(b.url, b.title, 'fav-ic')}
+          <div class="fav-label">${escapeHtml(b.title)}</div>
+        </div>`).join('') + `
+        <div class="fav-tile add" role="button" tabindex="0" onclick="promptAddFavorite()" title="Add a website to Favorites">
+          <span class="fav-ic plus"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span>
+          <div class="fav-label">Add</div>
+        </div></div>`;
+      if (grid.dataset.h !== gridHtml) { grid.dataset.h = gridHtml; grid.innerHTML = gridHtml; }
     } else {
       homeCanvas.classList.remove('active');
     }
-
-    // Bookmarks & Folder Grouping Bar under address bar
-    const allFolders = ['All'].concat(Array.from(new Set(state.bookmarks.map(b => b.folder || 'General'))));
-    if (!allFolders.includes(activeBookmarkFolder)) activeBookmarkFolder = 'All';
-
-    const bmStrip = document.getElementById('bookmarks-strip');
-    const visibleBarBms = state.bookmarks
-      .map((b, i) => ({ b, i }))
-      .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
-
-    bmStrip.innerHTML = `
-    ` + allFolders.filter(f => f !== 'All').map(f => `
-      <button class="bm-chip ${activeBookmarkFolder === f ? 'action' : ''}"
-              onclick="activeBookmarkFolder = (activeBookmarkFolder === '${encodeAttr(f)}' ? 'All' : '${encodeAttr(f)}'); send('REFRESH_UI');"
-              title="Filter folder: ${escapeHtml(f)}">📁 ${escapeHtml(f)}</button>
-    `).join('') + visibleBarBms.slice(0, 12).map(({ b, i }) => `
-      <button class="bm-chip" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
-              oncontextmenu="event.preventDefault(); askText('Rename bookmark (leave empty to remove)', '${encodeAttr(b.title)}', 'Save').then(nt => { if (nt === null) return; if (nt.trim() === '') send('DEL_BOOKMARK:${i}'); else send('RENAME_BOOKMARK:${i}|' + nt.trim()); })"
-              title="[${escapeHtml(b.folder || 'General')}] ${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
-    `).join('');
 
     const seBtn = document.getElementById('engine-logo-btn');
     const seMenu = document.getElementById('engine-menu');
@@ -2706,18 +2935,28 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
 
 
-    // Compact Downloads button: the count shows only while there is something in the list.
+    // Downloads (Safari): the button appears once there are downloads; while some run, a ring shows
+    // their combined progress and the badge counts them.
+    const dlBtn = document.getElementById('btn-downloads');
+    const running = state.downloads.filter(d => d.status === 'DOWNLOADING' || d.status === 'QUEUED' || d.status === 'MUXING');
     const dlCount = document.getElementById('dl-count');
-    const dlN = state.downloads.length ? String(state.downloads.length) : '';
+    const dlN = running.length ? String(running.length) : '';
     if (dlCount.textContent !== dlN) dlCount.textContent = dlN;
-    document.getElementById('btn-downloads').title = 'Downloads (Ctrl+J)' + (dlN ? ': ' + dlN : '');
-    // Bookmark button is filled when this page is already bookmarked.
+    dlBtn.style.display = state.downloads.length || activeDrawer === 'downloads' ? '' : 'none';
+    dlBtn.classList.toggle('active', running.length > 0);
+    const tot = running.reduce((a, d) => a + (d.total_bytes > 0 ? d.total_bytes : 0), 0);
+    const got = running.reduce((a, d) => a + (d.total_bytes > 0 ? Math.min(d.downloaded_bytes, d.total_bytes) : 0), 0);
+    dlBtn.querySelector('.dl-ring').style.strokeDashoffset = String(51.5 * (1 - (tot > 0 ? got / tot : 0.08)));
+    dlBtn.title = 'Downloads (Ctrl+J)' + (running.length ? ': ' + running.length + ' running' : '');
+    // Bookmark (in the address field) is filled when this page is bookmarked; it then edits it.
     const bmBtn = document.getElementById('btn-bookmark');
     const marked = !!state.active_url && (state.bookmarks || []).some(b => b.url === state.active_url);
     bmBtn.classList.toggle('marked', marked);
     bmBtn.querySelector('path').setAttribute('fill', marked ? 'currentColor' : 'none');
-    bmBtn.title = marked ? 'Bookmarked (add again to another folder)' : 'Bookmark this page';
-    bmBtn.style.display = isHome ? 'none' : '';
+    bmBtn.title = marked ? 'Edit Bookmark (Ctrl+D)' : 'Add Bookmark (Ctrl+D)';
+    const webPage = !isHome && /^(https?:|file:)/.test(state.active_url || '');
+    bmBtn.style.display = webPage ? '' : 'none';
+    document.getElementById('btn-reload').style.display = isHome ? 'none' : '';
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
     const dupBanner = document.getElementById('duplicate-banner');
@@ -2856,47 +3095,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     renderPermissions(state);
     renderPasswords(state);
 
-    const folderBar = document.getElementById('bookmark-folders-bar');
-    folderBar.innerHTML = allFolders.map(f => `
-      <button class="folder-pill ${activeBookmarkFolder === f ? 'active' : ''}"
-              onclick="activeBookmarkFolder = '${encodeAttr(f)}'; send('REFRESH_UI');">${f === 'All' ? 'All Folders' : '📁 ' + escapeHtml(f)}</button>
-    `).join('');
-
-    const filteredBms = state.bookmarks
-      .map((b, i) => ({ b, i }))
-      .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
-
-    const BM_RENDER_CAP = 300;
-    document.getElementById('bookmarks-list').innerHTML = filteredBms.length === 0
-      ? '<div class="meta">No bookmarks in this folder.</div>'
-      : (filteredBms.length > BM_RENDER_CAP
-          ? `<div class="meta" style="margin-bottom:6px;">Showing ${BM_RENDER_CAP} of ${filteredBms.length}. Pick a folder to narrow the list.</div>`
-          : '') + filteredBms.slice(0, BM_RENDER_CAP).map(({ b, i }) => `
-          <div class="list-row">
-            <div style="overflow:hidden;">
-              <div style="font-size:12.5px;font-weight:600;">${escapeHtml(b.title)} <span class="pill-btn pill-soft" style="padding:1px 6px;font-size:10px;">📁 ${escapeHtml(b.folder || 'General')}</span></div>
-              <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(b.url)}</div>
-            </div>
-            <div style="display:flex;gap:4px;flex-shrink:0;">
-              <button class="pill-btn pill-soft" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}'); closeDrawer();" title="Open in new tab">Open</button>
-              <button class="pill-btn pill-soft" onclick="askText('Move to folder', '${encodeAttr(b.folder || 'General')}', 'Move').then(nf => { if (nf && nf.trim()) send('SET_BOOKMARK_FOLDER:${i}|' + nf.trim()); })" title="Move Folder">📁</button>
-              <button class="pill-btn pill-soft" onclick="askText('Rename bookmark', '${encodeAttr(b.title)}', 'Save').then(nt => { if (nt && nt.trim()) send('RENAME_BOOKMARK:${i}|' + nt.trim()); })" title="Rename">✎</button>
-              <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
-            </div>
-          </div>
-        `).join('');
-
-    document.getElementById('history-list').innerHTML = state.history.length === 0
-      ? '<div class="meta">No history recorded yet.</div>'
-      : state.history.slice(0, 30).map(h => `
-          <div class="list-row">
-            <div style="overflow:hidden;">
-              <div style="font-size:12px;font-weight:600;">${escapeHtml(h.title || h.url)}</div>
-              <div class="meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(h.url)}</div>
-            </div>
-            <button class="pill-btn pill-soft" onclick="send('NAV:${encodeAttr(h.url)}'); closeDrawer();">Visit</button>
-          </div>
-        `).join('');
+    renderLibrary();
 
     // Update live download speed sparkline
     const totalSpeed = state.downloads
@@ -3008,9 +3207,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
       e.preventDefault();
       if (!e.repeat) runShortcut('reopen-tab');
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && ({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]) {
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && ({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads', d: 'bookmark' })[e.key.toLowerCase()]) {
       e.preventDefault();
-      if (!e.repeat) runShortcut(({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]);
+      if (!e.repeat) runShortcut(({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads', d: 'bookmark' })[e.key.toLowerCase()]);
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 'r') { e.preventDefault(); send('RELOAD'); }

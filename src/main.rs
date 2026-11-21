@@ -1737,6 +1737,7 @@ fn page_shortcut_id(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<&'sta
         (0x4A, false) => "downloads",     // Ctrl+J
         (0x46, false) => "find",          // Ctrl+F
         (0x4E, false) => "new-window",    // Ctrl+N
+        (0x44, false) => "bookmark",      // Ctrl+D (Add Bookmark)
         _ => return None,
     })
 }
@@ -3524,6 +3525,12 @@ fn main() -> wry::Result<()> {
     https_guard::global().set_enabled(global_settings.https_only);
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
+    if !global_settings.favorites_migrated {
+        state::migrate_to_favorites(&mut bookmarks, &global_settings.quick_shortcuts, now_epoch_secs());
+        BrowserStorage::save_bookmarks(&bookmarks);
+        global_settings.favorites_migrated = true;
+        BrowserStorage::save_global_settings(&global_settings);
+    }
     let mut history = BrowserStorage::load_history();
     let engine = Arc::new(NativeDownloadEngine::new(
         global_settings.speed_limit_bps,
@@ -4905,7 +4912,7 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(AppEvent::PageShortcut(id)) => {
                 // Run it through the toolbar's one shortcut handler; shortcuts that type into the
                 // toolbar (address bar, palette, find) need it to have keyboard focus.
-                if matches!(id, "focus-url" | "palette" | "find" | "new-tab") {
+                if matches!(id, "focus-url" | "palette" | "find" | "new-tab" | "bookmark") {
                     let _ = chrome_wv.focus();
                 }
                 let _ = chrome_wv.evaluate_script(&format!("window.__shunnoShortcut && window.__shunnoShortcut('{id}')"));
@@ -5795,12 +5802,9 @@ fn main() -> wry::Result<()> {
                 } else if let Some(payload) = cmd.strip_prefix("ADD_SHORTCUT:") {
                     if let Some((t, u)) = payload.split_once('|') {
                         let clean_u = sanitize_url(u, &global_settings);
-                        if !t.trim().is_empty() && clean_u.starts_with("http") {
-                            global_settings.quick_shortcuts.push(state::QuickShortcut {
-                                title: t.trim().to_string(),
-                                url: clean_u,
-                            });
-                            BrowserStorage::save_global_settings(&global_settings);
+                        // New Tab "Add Favorite": a bookmark in Favorites (typed addresses are completed).
+                        if clean_u.starts_with("http") && state::save_bookmark(&mut bookmarks, "", &clean_u, t, state::FAVORITES, now_epoch_secs()) {
+                            BrowserStorage::save_bookmarks(&bookmarks);
                         }
                     }
                 } else if let Some(idx_str) = cmd.strip_prefix("DEL_SHORTCUT:") {
@@ -6170,6 +6174,7 @@ fn main() -> wry::Result<()> {
                         }
                         "strip_tracking" => global_settings.strip_tracking_params = !global_settings.strip_tracking_params,
                         "block_popups" => global_settings.block_popups = !global_settings.block_popups,
+                        "favorites_bar" => global_settings.show_favorites_bar = !global_settings.show_favorites_bar,
                         "peek_links" => {
                             global_settings.peek_links = !global_settings.peek_links;
                             let js = format!("window.__shunnoPeekOn = {};", global_settings.peek_links);
@@ -6999,7 +7004,7 @@ fn main() -> wry::Result<()> {
                         .strip_prefix("ADD_BOOKMARK:")
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
-                        .unwrap_or("General")
+                        .unwrap_or(state::FAVORITES)
                         .to_string();
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         if tab.url != "shunno://newtab" && !bookmarks.iter().any(|b| b.url == tab.url) {
@@ -7012,6 +7017,21 @@ fn main() -> wry::Result<()> {
                             });
                             BrowserStorage::save_bookmarks(&bookmarks);
                         }
+                    }
+                } else if let Some(json) = cmd.strip_prefix("BOOKMARK_SAVE:") {
+                    // {"orig_url","url","title","folder"}: Add Bookmark, Edit Bookmark, Library edit,
+                    // New Tab "Add Favorite".
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                        let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        if state::save_bookmark(&mut bookmarks, &g("orig_url"), &g("url"), &g("title"), &g("folder"), now_epoch_secs()) {
+                            BrowserStorage::save_bookmarks(&bookmarks);
+                        }
+                    }
+                } else if let Some(url) = cmd.strip_prefix("BOOKMARK_REMOVE_URL:") {
+                    let before = bookmarks.len();
+                    bookmarks.retain(|b| b.url != url);
+                    if bookmarks.len() != before {
+                        BrowserStorage::save_bookmarks(&bookmarks);
                     }
                 } else if let Some(payload) = cmd.strip_prefix("SET_BOOKMARK_FOLDER:") {
                     if let Some((idx_str, new_folder)) = payload.split_once('|') {
