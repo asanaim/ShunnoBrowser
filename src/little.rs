@@ -219,6 +219,10 @@ pub fn register_hotkey(hwnd: isize) -> bool {
     HOTKEY_HELD.store(ok, std::sync::atomic::Ordering::Relaxed);
     ok
 }
+/// The window holding Ctrl+Alt+N closed (Windows frees the shortcut): allow registering again.
+pub fn hotkey_owner_closed() {
+    HOTKEY_HELD.store(false, std::sync::atomic::Ordering::Relaxed);
+}
 static HOTKEY_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(not(windows))]
 pub fn register_hotkey(_hwnd: isize) -> bool {

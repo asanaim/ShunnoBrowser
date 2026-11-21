@@ -921,6 +921,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('permissions', document.getElementById('btn-controls'))" title="Camera, microphone, location and more, per site">🛡️ Permissions</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('profiles', document.getElementById('btn-controls'))" title="Separate cookies, logins and history">👤 Profiles</button>
+            <button class="pill-btn pill-soft" onclick="send('NEW_WINDOW'); closeDrawer()" title="New Window (Ctrl+N)">🪟 New Window</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
@@ -1589,9 +1590,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         }
         draggedTabIdx = null;
       };
-      el.ondragend = () => {
+      el.ondragend = (ev) => {
+        const from = draggedTabIdx;
         draggedTabIdx = null;
         el.classList.remove('drag-over-left', 'drag-over-right');
+        // Dropped well away from the tab bar, where nothing took it: tear the tab off into a new window.
+        const bar = document.getElementById('tab-bar').getBoundingClientRect();
+        const away = ev.clientY > bar.bottom + 40 || ev.clientY < -20 || ev.clientX < -20 || ev.clientX > window.innerWidth + 20;
+        const st = window.__shunnoLastState;
+        if (from !== null && ev.dataTransfer && ev.dataTransfer.dropEffect === 'none' && away && st && st.tabs.length > 1) {
+          const dpr = window.devicePixelRatio || 1;
+          send('MOVE_TAB_NEW_WINDOW:' + from + '|' + Math.round(ev.screenX * dpr) + '|' + Math.round(ev.screenY * dpr));
+        }
       };
       el.onclick = () => send('SWITCH_TAB:' + idx);
       el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
@@ -1690,6 +1700,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       if (t.group != null) h += ctxRow('Remove from Group', `send('TAB_UNGROUP:${idx}')`);
     }
     h += '<div class="ctx-sep"></div>';
+    if (st.tabs.length > 1) h += ctxRow('Move Tab to New Window', `send('MOVE_TAB_NEW_WINDOW:${idx}')`);
+    (st.other_windows || []).forEach((w, n) => {
+      h += ctxRow('Move to Window: ' + (w.title || 'Window ' + (n + 2)), `send('MOVE_TAB_TO_WINDOW:${idx}|${w.key}')`);
+    });
+    h += '<div class="ctx-sep"></div>';
     h += ctxRow(t.muted ? 'Unmute Tab' : 'Mute Tab', `send('TOGGLE_MUTE_TAB:${idx}')`);
     h += ctxRow('Close Tab', `send('CLOSE_TAB:${idx}')`, { danger: true });
     document.getElementById('tabmenu-body').innerHTML = h;
@@ -1770,6 +1785,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Save Page as PDF (PrintToPdf)', run: () => send('PRINT_TO_PDF') },
       { kind: 'Action', title: 'Capture Page Screenshot (PNG)', run: () => send('CAPTURE_SCREENSHOT') },
       { kind: 'Action', title: 'Duplicate Current Tab', run: () => send('DUPLICATE_TAB') },
+      { kind: 'Action', title: 'New Window (Ctrl+N)', run: () => send('NEW_WINDOW') },
+      { kind: 'Action', title: 'Move Current Tab to New Window', run: () => send('MOVE_TAB_NEW_WINDOW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Add Current Tab to New Group', run: () => send('TAB_GROUP_NEW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
       { kind: 'Action', title: 'Profiles: switch or open another profile', run: () => toggleDrawer('profiles') },
@@ -2192,6 +2209,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function runShortcut(id) {
     switch (id) {
       case 'new-tab': openNewTab(); break;
+      case 'new-window': send('NEW_WINDOW'); break;
       case 'reopen-tab': send('REOPEN_CLOSED_TAB'); break;
       case 'close-tab': send('CLOSE_ACTIVE_TAB'); break;
       case 'next-tab': send('NEXT_TAB'); break;
@@ -2747,9 +2765,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
       e.preventDefault();
       if (!e.repeat) runShortcut('reopen-tab');
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && ({ t: 'new-tab', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]) {
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && ({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]) {
       e.preventDefault();
-      if (!e.repeat) runShortcut(({ t: 'new-tab', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]);
+      if (!e.repeat) runShortcut(({ t: 'new-tab', n: 'new-window', k: 'palette', w: 'close-tab', l: 'focus-url', f: 'find', j: 'downloads' })[e.key.toLowerCase()]);
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 'r') { e.preventDefault(); send('RELOAD'); }

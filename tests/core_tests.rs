@@ -675,3 +675,17 @@ fn tab_groups_order_and_drop() {
     let t: SavedTab = serde_json::from_str(r#"{"title":"a","url":"https://a.b","space":0}"#).unwrap();
     assert_eq!(t.group, None);
 }
+
+#[test]
+fn session_split_into_windows() {
+    use state::*;
+    let t = |u: &str, w: u32| SavedTab { title: u.into(), url: u.into(), space: 0, group: None, window: w };
+    let ws = session_windows(vec![t("a", 0), t("b", 2), t("c", 0), t("d", 2)]);
+    let urls: Vec<Vec<&str>> = ws.iter().map(|w| w.iter().map(|x| x.url.as_str()).collect()).collect();
+    assert_eq!(urls, vec![vec!["a", "c"], vec!["b", "d"]]);
+    assert!(session_windows(vec![]).is_empty());
+    // Sessions saved before windows existed load as one window; window 0 is not written out.
+    let old: SavedTab = serde_json::from_str(r#"{"title":"x","url":"https://x.org","space":1}"#).unwrap();
+    assert_eq!(old.window, 0);
+    assert!(!serde_json::to_string(&old).unwrap().contains("window"));
+}
