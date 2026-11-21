@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.21.1";
+pub const APP_VERSION: &str = "v2.22.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -319,14 +319,141 @@ impl Default for GlobalSettings {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Profiles (Safari-style): each profile is a separate Shunno process with its own data folder:
+// cookies, logins, history, bookmarks, passwords, permissions, settings, Spaces and downloads.
+// The default profile keeps the original folder, so existing users need no migration.
+// ---------------------------------------------------------------------------------------------
+
+pub const DEFAULT_PROFILE: &str = "default";
+static PROFILE_ID: OnceLock<String> = OnceLock::new();
+
+/// A profile id is a short slug: lowercase ASCII letters, digits and '-', 1..=32 chars.
+pub fn valid_profile_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !id.starts_with('-')
+}
+
+/// `--profile=<id>` among the process arguments; anything invalid means the default profile.
+pub fn profile_from_args<I: IntoIterator<Item = String>>(args: I) -> String {
+    args.into_iter()
+        .find_map(|a| a.strip_prefix("--profile=").map(|v| v.trim().to_string()))
+        .filter(|v| valid_profile_id(v))
+        .unwrap_or_else(|| DEFAULT_PROFILE.to_string())
+}
+
+/// Fix the profile for this process. Call once, before anything reads app data.
+pub fn set_profile(id: &str) {
+    let _ = PROFILE_ID.set(if valid_profile_id(id) { id.to_string() } else { DEFAULT_PROFILE.to_string() });
+}
+
+pub fn profile_id() -> &'static str {
+    PROFILE_ID.get().map(|s| s.as_str()).unwrap_or(DEFAULT_PROFILE)
+}
+
+/// Data folder of a profile, relative to the shared folder.
+pub fn profile_dir_in(shared: &std::path::Path, id: &str) -> PathBuf {
+    if id == DEFAULT_PROFILE {
+        shared.to_path_buf()
+    } else {
+        shared.join("Profiles").join(id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
+/// Swatches offered for profiles (also accepted when saved).
+pub const PROFILE_COLORS: &[&str] = &["#0A84FF", "#30D158", "#FF9F0A", "#FF375F", "#BF5AF2", "#64D2FF", "#8E8E93"];
+
+pub fn default_profiles() -> Vec<Profile> {
+    vec![Profile { id: DEFAULT_PROFILE.into(), name: "Personal".into(), color: PROFILE_COLORS[0].into() }]
+}
+
+/// Clean a profile list read from disk: valid unique ids, names 1..=40 chars, known colours,
+/// and the default profile always present and first.
+pub fn sanitize_profiles(list: Vec<Profile>) -> Vec<Profile> {
+    let mut out: Vec<Profile> = Vec::new();
+    for mut p in list {
+        p.name = p.name.trim().chars().take(40).collect();
+        if !valid_profile_id(&p.id) || p.name.is_empty() || out.iter().any(|q| q.id == p.id) {
+            continue;
+        }
+        if !PROFILE_COLORS.contains(&p.color.as_str()) {
+            p.color = PROFILE_COLORS[0].into();
+        }
+        out.push(p);
+    }
+    match out.iter().position(|p| p.id == DEFAULT_PROFILE) {
+        Some(0) => {}
+        Some(i) => {
+            let d = out.remove(i);
+            out.insert(0, d);
+        }
+        None => out.insert(0, default_profiles().remove(0)),
+    }
+    out.truncate(12);
+    out
+}
+
+/// A new id from a name ("Work Stuff" -> "work-stuff"), unique within `taken`.
+pub fn new_profile_id(name: &str, taken: &[Profile]) -> String {
+    let mut slug: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    slug.truncate(24);
+    let slug = slug.trim_matches('-').to_string();
+    let base = if slug.is_empty() || slug == DEFAULT_PROFILE { "profile".to_string() } else { slug };
+    let mut id = base.clone();
+    let mut n = 2;
+    while taken.iter().any(|p| p.id == id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
+}
+
 pub struct BrowserStorage;
 
 impl BrowserStorage {
-    pub fn app_data_dir() -> PathBuf {
+    /// Folder shared by every profile: helper tools, block lists and the profile list.
+    pub fn shared_data_dir() -> PathBuf {
         let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
         let dir = base.join("ShunnoBrowser");
         let _ = fs::create_dir_all(&dir);
         dir
+    }
+
+    /// This process's profile folder.
+    pub fn app_data_dir() -> PathBuf {
+        let dir = profile_dir_in(&Self::shared_data_dir(), profile_id());
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    pub fn load_profiles() -> Vec<Profile> {
+        let path = Self::shared_data_dir().join("profiles.json");
+        let list = fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        sanitize_profiles(list)
+    }
+
+    pub fn save_profiles(list: &[Profile]) {
+        let path = Self::shared_data_dir().join("profiles.json");
+        if let Ok(t) = serde_json::to_string_pretty(list) {
+            let tmp = path.with_extension("json.tmp");
+            if fs::write(&tmp, t).is_ok() {
+                let _ = fs::rename(tmp, path);
+            }
+        }
     }
 
     fn custom_dl_lock() -> &'static Mutex<Option<String>> {
@@ -363,7 +490,7 @@ impl BrowserStorage {
     /// Helper tools (ffmpeg.exe, yt-dlp.exe) live in app data, so changing the
     /// downloads folder never "loses" them.
     pub fn ffmpeg_bin_dir() -> PathBuf {
-        let dir = Self::app_data_dir().join("bin");
+        let dir = Self::shared_data_dir().join("bin");
         let _ = fs::create_dir_all(&dir);
         dir
     }

@@ -35,6 +35,42 @@ pub fn url_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> 
     args.into_iter().skip(1).find_map(|a| url_from_arg(&a))
 }
 
+/// Named mutex that marks a running profile (the default keeps the original name).
+pub fn instance_mutex_name(profile: &str) -> String {
+    if profile == crate::state::DEFAULT_PROFILE {
+        "Local\\ShunnoBrowser.SingleInstance".to_string()
+    } else {
+        format!("Local\\ShunnoBrowser.SingleInstance.{profile}")
+    }
+}
+
+/// Is a profile open in some Shunno process right now?
+#[cfg(windows)]
+pub fn profile_running(profile: &str) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let name: Vec<u16> = instance_mutex_name(profile).encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, windows::core::PCWSTR(name.as_ptr())) {
+            Ok(h) => {
+                let _ = CloseHandle(h);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+#[cfg(not(windows))]
+pub fn profile_running(_profile: &str) -> bool {
+    false
+}
+
+/// Start (or bring forward) a profile's own Shunno window.
+pub fn launch_profile(profile: &str) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    std::process::Command::new(exe).arg(format!("--profile={profile}")).spawn().is_ok()
+}
+
 fn hwnd_file() -> std::path::PathBuf {
     crate::state::BrowserStorage::app_data_dir().join("instance.hwnd")
 }
@@ -48,13 +84,14 @@ pub fn publish_main_window(hwnd: isize) {
 /// the caller should exit. Holds a named mutex for the life of the first instance.
 #[cfg(windows)]
 pub fn hand_off_to_running_instance(url: Option<&str>) -> bool {
-    use windows::core::w;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, WPARAM};
     use windows::Win32::System::DataExchange::COPYDATASTRUCT;
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, IsWindow, SendMessageTimeoutW, ASFW_ANY, SMTO_ABORTIFHUNG, WM_COPYDATA};
     unsafe {
-        let m = CreateMutexW(None, true, w!("Local\\ShunnoBrowser.SingleInstance"));
+        // One instance per profile: each profile is its own process and window.
+        let name: Vec<u16> = instance_mutex_name(crate::state::profile_id()).encode_utf16().chain(std::iter::once(0)).collect();
+        let m = CreateMutexW(None, true, windows::core::PCWSTR(name.as_ptr()));
         if m.is_err() || GetLastError() != ERROR_ALREADY_EXISTS {
             // First instance: keep the handle open (leaked on purpose) so the name stays taken.
             std::mem::forget(m);
