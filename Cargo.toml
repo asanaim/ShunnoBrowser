@@ -1,6 +1,6 @@
 [package]
 name = "shunno-browser"
-version = "2.24.0"
+version = "2.25.0"
 edition = "2021"
 description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
@@ -64,3 +64,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# ShunnoBrowser patch of webview2-com 0.30.0: environment options also implement
+# ICoreWebView2EnvironmentOptions6 (AreBrowserExtensionsEnabled), which wry 0.40 cannot set.
+[patch.crates-io]
+webview2-com = { path = "vendor/webview2-com" }
