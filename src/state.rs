@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.19.1";
+pub const APP_VERSION: &str = "v2.20.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -237,6 +237,9 @@ pub struct GlobalSettings {
     /// Hand page-started downloads to Shunno's multi-connection engine when it can fetch them.
     #[serde(default = "default_true")]
     pub download_takeover: bool,
+    /// Reader appearance (JSON: size, font, theme, width), validated by the page script.
+    #[serde(default = "default_reader_prefs")]
+    pub reader_prefs: String,
     /// Links opened from other apps go to Little Shunno (Arc's Little Arc) instead of a main-window tab.
     #[serde(default = "default_true")]
     pub little_for_links: bool,
@@ -276,6 +279,7 @@ impl Default for GlobalSettings {
             theme_mode: default_theme_mode(),
             force_dark_pages: false,
             download_takeover: true,
+            reader_prefs: default_reader_prefs(),
             little_for_links: true,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
@@ -617,4 +621,18 @@ pub fn browser_args(force_dark_pages: bool) -> String {
         a.push_str(" --enable-features=WebContentsForceDark:inversion_method/cielab_based/image_behavior/selective_image_inversion");
     }
     a
+}
+
+fn default_reader_prefs() -> String {
+    r#"{"size":19,"font":"serif","theme":"auto","width":"normal"}"#.to_string()
+}
+
+/// Reader preferences to store, or None if the JSON is not a small object.
+pub fn valid_reader_prefs(json: &str) -> Option<String> {
+    if json.len() > 300 {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.as_object()?;
+    Some(v.to_string())
 }

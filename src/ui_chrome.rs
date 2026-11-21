@@ -399,6 +399,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .switch.on { background: var(--blue); }
 
+  /* Reader button in the address bar: shown only when the page is an article (Safari-style). */
+  .reader-btn { border: none; background: transparent; color: var(--muted); width: 28px; height: 24px; border-radius: 7px;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
+    animation: popoverIn var(--dur) var(--ease-fluid) both; transition: background .16s var(--ease-fluid), color .16s var(--ease-fluid); }
+  .reader-btn:hover { background: rgba(118,118,128,.14); color: var(--text); }
+  .reader-btn.on { background: var(--blue); color: #fff; }
+
   /* Password save prompt: inline in the toolbar, never blocks the page. */
   .pw-offer {
     display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 10px; margin-right: 4px;
@@ -719,6 +726,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
                onmouseup="if(this.dataset.justFocused==='1'){ event.preventDefault(); this.dataset.justFocused='0'; }"
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
+        <button class="reader-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
+          <svg width="16" height="14" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
+        </button>
       </div>
 
       <div class="nav-group right">
@@ -1868,6 +1878,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       case 'palette': openPalette(); break;
       case 'find': toggleDrawer('find', document.getElementById('btn-controls')); setTimeout(() => document.getElementById('find-input').focus(), 50); break;
       case 'downloads': toggleDrawer('downloads', document.getElementById('btn-downloads')); break;
+      case 'reader': send('READER_MODE'); break;
     }
   }
   window.__shunnoShortcut = runShortcut;
@@ -2251,6 +2262,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     renderImport(state);
     renderSpaces(state);
     renderPeek(state);
+    const rb = document.getElementById('reader-btn');
+    const showReader = !!(state.active_reader_available || state.active_reader);
+    rb.style.display = showReader ? '' : 'none';
+    rb.classList.toggle('on', !!state.active_reader);
+    rb.title = state.active_reader ? 'Close Reader (F9 or Esc)' : 'Reader (F9)';
     renderPwOffer(state);
     renderPasswords(state);
 
@@ -2397,9 +2413,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       send('TOGGLE_FULLSCREEN');
       return;
     }
-    if (e.key === 'F11') {
+    if (e.key === 'F9') {
       e.preventDefault();
-      send('TOGGLE_FULLSCREEN');
+      runShortcut('reader');
     } else if (e.ctrlKey && e.key === 'Tab') {
       e.preventDefault();
       if (!e.repeat) runShortcut(e.shiftKey ? 'prev-tab' : 'next-tab');
