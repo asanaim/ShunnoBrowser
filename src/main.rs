@@ -226,7 +226,7 @@ fn sweep_permissions(tabs: &[BrowserTab], extra_live: &[usize]) {
             .iter()
             .filter(|p| match tabs.iter().find(|t| t.id == p.tab_id) {
                 Some(t) => t.webview.url().ok().and_then(|u| passwords::origin_of(&u)).as_deref() != Some(p.origin.as_str()),
-                None => !extra_live.contains(&p.tab_id),
+                None => !extra_live.contains(&p.tab_id) && peek_id() != Some(p.tab_id),
             })
             .map(|p| p.id)
             .collect()
@@ -238,11 +238,11 @@ fn sweep_permissions(tabs: &[BrowserTab], extra_live: &[usize]) {
 #[cfg(not(windows))]
 fn sweep_permissions(_tabs: &[BrowserTab], _extra_live: &[usize]) {}
 
-/// The request to show in the toolbar: the oldest one from the visible tab.
+/// The oldest request waiting from one web view.
 #[cfg(windows)]
-fn permission_prompt(active_tab_id: Option<usize>) -> Option<permissions::PromptView> {
+fn pending_prompt(tab_id: usize) -> Option<permissions::PromptView> {
     PERM_PENDING.with(|q| {
-        q.borrow().iter().find(|p| Some(p.tab_id) == active_tab_id).map(|p| {
+        q.borrow().iter().find(|p| p.tab_id == tab_id).map(|p| {
             let (label, icon) = permissions::label(p.kind);
             permissions::PromptView {
                 id: p.id,
@@ -257,8 +257,13 @@ fn permission_prompt(active_tab_id: Option<usize>) -> Option<permissions::Prompt
     })
 }
 #[cfg(not(windows))]
-fn permission_prompt(_active_tab_id: Option<usize>) -> Option<permissions::PromptView> {
+fn pending_prompt(_tab_id: usize) -> Option<permissions::PromptView> {
     None
+}
+
+/// The request to show in the main toolbar: from an open Peek (it sits in front), else the visible tab.
+fn permission_prompt(active_tab_id: Option<usize>) -> Option<permissions::PromptView> {
+    peek_id().or(active_tab_id).and_then(pending_prompt)
 }
 
 fn chrome_bar_height() -> f64 {
@@ -2967,6 +2972,12 @@ fn main() -> wry::Result<()> {
     }
     let mut little: Option<Little> = None;
     const LITTLE_BAR_H: f64 = 44.0;
+    /// Little Shunno asks in its own bar (it has no main toolbar).
+    fn little_sync_permission(l: &Little) {
+        let v = pending_prompt(l.id);
+        let js = serde_json::to_string(&v).unwrap_or_else(|_| "null".into());
+        let _ = l.bar.evaluate_script(&format!("window.__perm && window.__perm({js});"));
+    }
     fn layout_little(l: &Little) {
         let size = l.window.inner_size().to_logical::<f64>(l.window.scale_factor());
         let _ = l.bar.set_bounds(Rect { position: LogicalPosition::new(0.0, 0.0).into(), size: LogicalSize::new(size.width, LITTLE_BAR_H).into() });
@@ -3206,7 +3217,10 @@ fn main() -> wry::Result<()> {
         if let Event::WindowEvent { window_id, event: ref wev, .. } = event {
             if little.as_ref().map(|l| l.window.id()) == Some(window_id) {
                 match wev {
-                    WindowEvent::CloseRequested => little = None,
+                    WindowEvent::CloseRequested => {
+                        little = None;
+                        sweep_permissions(&tabs, &[]);
+                    }
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                         if let Some(l) = little.as_ref() {
                             layout_little(l);
@@ -3296,23 +3310,18 @@ fn main() -> wry::Result<()> {
                             Some(t) => t.incognito,
                             None => PEEK.with(|k| k.borrow().as_ref().filter(|k| k.id == p.tab_id).map(|k| k.incognito)).unwrap_or(false),
                         };
-                        Some((p.origin.clone(), p.kind, p.private, main_tab.is_some()))
+                        Some((p.origin.clone(), p.kind, p.private))
                     });
-                    if let Some((origin, kind, private, in_main)) = found {
+                    if let Some((origin, kind, private)) = found {
                         let saved = permissions::global().lock().ok().and_then(|s| s.get(&origin, kind));
-                        match permissions::resolve(saved, kind, private) {
-                            Some(d) => {
-                                answer_permission(id, d, false);
-                                return;
-                            }
-                            // Peek and Little have no toolbar to ask in: undecided means Block.
-                            None if !in_main => {
-                                answer_permission(id, permissions::Decision::Block, false);
-                                return;
-                            }
-                            None => {}
+                        if let Some(d) = permissions::resolve(saved, kind, private) {
+                            answer_permission(id, d, false);
+                            return;
                         }
                     }
+                }
+                if let Some(l) = little.as_ref() {
+                    little_sync_permission(l);
                 }
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
@@ -4015,8 +4024,18 @@ fn main() -> wry::Result<()> {
                     }
                 } else if msg == "BACK" {
                     let _ = l.content.evaluate_script("history.back()");
+                } else if let Some(arg) = msg.strip_prefix("PERM:") {
+                    if let Some((id, d)) = arg.split_once('|') {
+                        if let Ok(id) = id.parse::<u64>() {
+                            answer_permission(id, if d == "allow" { permissions::Decision::Allow } else { permissions::Decision::Block }, true);
+                        }
+                    }
+                    if let Some(l) = little.as_ref() {
+                        little_sync_permission(l);
+                    }
                 } else if msg == "CLOSE" {
                     little = None;
+                    sweep_permissions(&tabs, &[]);
                 }
                 return;
             }

@@ -5,7 +5,8 @@
 * Your answer is **remembered per site** (stored in `permissions.json`, not in WebView2's profile). Saved Blocks apply everywhere.
 * **Private tabs** always ask and never remember; a saved Allow does not carry into a private tab, a saved Block does.
 * New **Site Permissions** panel (Menu, or the command palette): every site's decisions, an Allow/Block switch per permission, forget one, or **Reset** a whole site.
-* A pending request is refused automatically when its tab closes or navigates to another site. Peek and Little windows have no toolbar, so undecided requests from them are blocked.
+* **Peek** asks in the main toolbar (its request is shown ahead of the tab behind it). **Little Shunno** asks with the same pill in its own bar, and a request still waiting when you choose *Open in Shunno* moves to the main toolbar with the page.
+* A pending request is refused automatically when its tab, Peek or Little window closes, or when the tab navigates to another site.
 
 ## v2.20.0
 
