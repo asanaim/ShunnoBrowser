@@ -999,3 +999,17 @@ fn bookmarks_follow_the_favorites_model() {
     assert!(save_bookmark(&mut b, "", "https://t.example/", "  ", "", 24));
     assert_eq!(b.last().unwrap().title, "https://t.example/");
 }
+
+#[test]
+fn runtime_components_are_not_listed_as_extensions() {
+    let mut reg = std::collections::BTreeMap::new();
+    reg.insert("aaaabbbbccccddddeeeeffffgggghhhh".to_string(), extensions::Meta { name: "Mine".into(), ..Default::default() });
+    let installed = vec![
+        ("aaaabbbbccccddddeeeeffffgggghhhh".to_string(), "Mine".to_string(), true),
+        ("mhjfbmdgcfjbbpaeojofohoefgiehjai".to_string(), "Microsoft Edge PDF Viewer".to_string(), true),
+        ("pkknlnfkflmbhlcbepoeakdgkhkdnpib".to_string(), "Microsoft Clipboard Extension".to_string(), true),
+    ];
+    let v = extensions::entries(&installed, &reg);
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].name, "Mine");
+}

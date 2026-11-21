@@ -1,3 +1,14 @@
+## v2.29.0
+
+* **Extension icons:** shown in their own colours at full strength (they were dimmed like the
+  toolbar glyphs), taken from the 48 px icon so they stay sharp, and filled in for extensions saved
+  by older versions. Extensions without an icon get a neutral grey letter instead of a blue square.
+* **Extensions list shows only what you added.** WebView2's own built-in parts (Microsoft Edge PDF
+  Viewer, Microsoft Clipboard Extension) are no longer listed; they belong to the runtime.
+* **New Tab no longer flashes the Favorites bar** for a moment before the start page.
+* **Many tabs:** a narrow tab no longer loses its close button. The current tab shows it in place
+  of its icon (Safari); other narrow tabs select on click and close with a middle click.
+
 ## v2.28.0
 
 Toolbar and bookmarks, rebuilt the way Safari does them.
