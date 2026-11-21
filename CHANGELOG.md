@@ -7,6 +7,12 @@
 - My Filters: your own rules in Adblock Plus / uBlock syntax, with Save, Revert, Import (adds new rules, skips duplicates) and Export to a .txt file. Lines the engine cannot use are reported with their line number.
 - Element picker: right click a page, Hide Element on Page…, or Hide an Element on This Page in the panel. Point and click, Broader and Narrower to choose a container, edit the selector, then Hide Once or Hide Always. Hide Always saves `site##selector` to My Filters.
 
+### Changed
+- Tab strip, Safari style: every tab shows its site's icon (or a lettered tile when the site has none) with a centered title. The close button sits at the left of the tab, on the current tab always and on others while hovered. The current tab keeps room for its title while others shrink to their icon. With many tabs the strip scrolls sideways (mouse wheel) with soft edges, and the current tab is always scrolled into view instead of being cut off. Tabs open by growing and close by folding away. While closing tabs with the mouse, the other tabs keep their width until the pointer leaves the strip, so the next close button lands under the pointer. Empty space in the strip moves the window. The New Tab button sits at the right end.
+
+### Fixed
+- YouTube: videos start at once instead of after a blocked ad. Ad fields are now removed from player data nested inside other responses (watch page data, `playerResponse` wrappers) and from `xhr.response`, and raw responses have their ad keys renamed before anything parses them, so the player never schedules an ad. When an ad still reaches the player, it is skipped as soon as the player marks it, and the video gets its sound and playback speed back afterwards (the shared video element used to stay muted or at 16x).
+
 ### Security
 - The picker only reacts to real user input; a page cannot click for the user. The browser accepts a picked rule only from a tab where the user started the picker, builds the rule for that tab's own site, and refuses selectors that could escape a CSS rule or form another kind of filter.
 - The picker's interface is built without HTML strings and styled with a constructable stylesheet, so it works on pages with strict CSP and Trusted Types.
