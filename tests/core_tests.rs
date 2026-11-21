@@ -468,3 +468,43 @@ fn test_theme_mode_and_browser_args() {
     assert_eq!(g.theme_mode, "system");
     assert!(!g.force_dark_pages);
 }
+
+#[test]
+fn test_download_takeover_probe() {
+    use std::io::{Read, Write};
+    // Tiny HTTP server: one canned response per path.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut s = stream;
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let has_cookie = req.to_ascii_lowercase().contains("cookie: session=abc");
+            let resp = match path.as_str() {
+                "/ok" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/noranges" => "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/html" => "HTTP/1.1 206 Partial Content\r\nContent-Type: text/html; charset=utf-8\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\n<".to_string(),
+                "/mismatch" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/123\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/needs-cookie" if has_cookie => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                _ => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_string(),
+            };
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let e = downloader::NativeDownloadEngine::new(0, false, 3);
+    let base = format!("http://127.0.0.1:{port}");
+    let probe = |p: &str, cookie: Option<&str>, total: Option<u64>| {
+        rt.block_on(e.probe_takeover(&format!("{base}{p}"), None, cookie.map(String::from), total))
+    };
+    assert_eq!(probe("/ok", None, Some(5_000_000)), Some(5_000_000));
+    assert_eq!(probe("/ok", None, None), Some(5_000_000)); // size unknown to the browser
+    assert_eq!(probe("/noranges", None, Some(5_000_000)), None); // no resume support: keep WebView2
+    assert_eq!(probe("/html", None, Some(5_000_000)), None); // sign-in page, not the file
+    assert_eq!(probe("/mismatch", None, Some(5_000_000)), None); // different file
+    assert_eq!(probe("/needs-cookie", None, Some(5_000_000)), None);
+    assert_eq!(probe("/needs-cookie", Some("session=abc"), Some(5_000_000)), Some(5_000_000));
+}

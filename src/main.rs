@@ -105,6 +105,12 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// A page started a download in WebView2; Shunno may take it over (see probe_takeover).
+    TakeoverCandidate { native_id: u64, tab_id: usize, url: String, file_name: String, total: Option<u64> },
+    /// Cookies collected for a takeover candidate; probe next.
+    TakeoverCookies { native_id: u64, url: String, referer: Option<String>, cookie: Option<String>, file_name: String, total: Option<u64> },
+    /// Probe answered: Some(total) means Shunno's engine can fetch it with the same result.
+    TakeoverDecision { native_id: u64, url: String, referer: Option<String>, cookie: Option<String>, file_name: String, ok: bool },
     /// A browser shortcut pressed while a page had focus (see page_shortcut_id).
     PageShortcut(&'static str),
     /// Windows switched between light and dark app mode.
@@ -679,6 +685,66 @@ fn merge_cookie_headers(primary: Option<String>, fallback: Option<String>) -> Op
     } else {
         Some(parts.join("; "))
     }
+}
+
+/// Collect the cookies WebView2 would send to `url` (HttpOnly included) and deliver them as one
+/// Cookie header through `done`, on the UI thread.
+#[cfg(windows)]
+fn collect_cookie_header(webview: &WebView, url: &str, done: Box<dyn FnOnce(Option<String>) + 'static>) {
+    use webview2_com::GetCookiesCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+    use windows::core::{Interface, PCWSTR};
+    use wry::WebViewExtWindows;
+    let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+    let fire = {
+        let done = done.clone();
+        move |v: Option<String>| {
+            if let Some(f) = done.borrow_mut().take() {
+                f(v);
+            }
+        }
+    };
+    unsafe {
+        let mgr = webview
+            .controller()
+            .CoreWebView2()
+            .ok()
+            .and_then(|c| c.cast::<ICoreWebView2_2>().ok())
+            .and_then(|c2| c2.CookieManager().ok());
+        let Some(mgr) = mgr else { return fire(None) };
+        let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+        let fire_cb = fire.clone();
+        let handler = GetCookiesCompletedHandler::create(Box::new(move |res, list| {
+            let mut pairs = Vec::new();
+            if res.is_ok() {
+                if let Some(list) = list {
+                    let mut n = 0u32;
+                    if list.Count(&mut n).is_ok() {
+                        for i in 0..n {
+                            if let Ok(c) = list.GetValueAtIndex(i) {
+                                let (mut np, mut vp) = (windows::core::PWSTR::null(), windows::core::PWSTR::null());
+                                if c.Name(&mut np).is_ok() && c.Value(&mut vp).is_ok() {
+                                    let (name, val) = (webview2_com::take_pwstr(np), webview2_com::take_pwstr(vp));
+                                    if !name.is_empty() {
+                                        pairs.push(format!("{name}={val}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            fire_cb(if pairs.is_empty() { None } else { Some(pairs.join("; ")) });
+            Ok(())
+        }));
+        if mgr.GetCookies(PCWSTR::from_raw(wide.as_ptr()), &handler).is_err() {
+            fire(None);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn collect_cookie_header(_webview: &WebView, _url: &str, done: Box<dyn FnOnce(Option<String>) + 'static>) {
+    done(None);
 }
 
 #[cfg(windows)]
@@ -1446,6 +1512,15 @@ fn attach_native_webview2_hooks(
                     ops.borrow_mut().insert(dl_id, op.clone());
                 });
 
+                if uri.starts_with("https://") || uri.starts_with("http://") {
+                    let _ = dl_proxy.send_event(AppEvent::TakeoverCandidate {
+                        native_id: dl_id,
+                        tab_id,
+                        url: uri.clone(),
+                        file_name: safe_name.clone(),
+                        total: u64::try_from(total_bytes).ok().filter(|&t| t > 0),
+                    });
+                }
                 let _ = dl_proxy.send_event(AppEvent::NativeDownloadStarted {
                     id: dl_id,
                     url: uri,
@@ -3406,6 +3481,52 @@ fn main() -> wry::Result<()> {
                 let _ = chrome_wv.evaluate_script(&format!("window.__shunnoShortcut && window.__shunnoShortcut('{id}')"));
             }
 
+            Event::UserEvent(AppEvent::TakeoverCandidate { native_id, tab_id, url, file_name, total }) => {
+                // IDM-style takeover: only normal tabs, only files worth accelerating.
+                const MIN_TAKEOVER_BYTES: u64 = 2 * 1024 * 1024;
+                if !global_settings.download_takeover || total.map(|t| t < MIN_TAKEOVER_BYTES).unwrap_or(false) {
+                    return;
+                }
+                let Some(tab) = tabs.iter().find(|t| t.id == tab_id && !t.incognito) else { return };
+                let referer = tab.webview.url().ok().filter(|u| u.starts_with("http"));
+                let px = proxy.clone();
+                let url_c = url.clone();
+                collect_cookie_header(
+                    &tab.webview,
+                    &url,
+                    Box::new(move |cookie| {
+                        let _ = px.send_event(AppEvent::TakeoverCookies { native_id, url: url_c, referer, cookie, file_name, total });
+                    }),
+                );
+                return;
+            }
+
+            Event::UserEvent(AppEvent::TakeoverCookies { native_id, url, referer, cookie, file_name, total }) => {
+                let eng = engine.clone();
+                let px = proxy.clone();
+                rt_handle.spawn(async move {
+                    let ok = eng.probe_takeover(&url, referer.clone(), cookie.clone(), total).await.is_some();
+                    let _ = px.send_event(AppEvent::TakeoverDecision { native_id, url, referer, cookie, file_name, ok });
+                });
+                return;
+            }
+
+            Event::UserEvent(AppEvent::TakeoverDecision { native_id, url, referer, cookie, file_name, ok }) => {
+                if !ok {
+                    return; // WebView2 keeps the download.
+                }
+                // Still running in WebView2? (A fast download may already be finished: keep it.)
+                let Some(op) = NATIVE_OPS.with(|ops| ops.borrow_mut().remove(&native_id)) else { return };
+                #[cfg(windows)]
+                unsafe {
+                    let _ = op.Cancel();
+                }
+                #[cfg(not(windows))]
+                let _ = op;
+                engine.delete(native_id);
+                let _ = engine.enqueue_named(&rt_handle, url, global_settings.default_threads, referer, cookie, "RENAME", None, Some(file_name));
+            }
+
             Event::UserEvent(AppEvent::SystemThemeChanged) => {
                 if global_settings.theme_mode == "system" {
                     let dark = system_prefers_dark();
@@ -4306,6 +4427,7 @@ fn main() -> wry::Result<()> {
                         "force_dark_pages" => {
                             global_settings.force_dark_pages = !global_settings.force_dark_pages;
                         }
+                        "download_takeover" => global_settings.download_takeover = !global_settings.download_takeover,
                         "drop_basket" => {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
                             let js = format!(

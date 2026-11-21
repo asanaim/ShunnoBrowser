@@ -698,6 +698,38 @@ impl NativeDownloadEngine {
         }
     }
 
+    /// Can Shunno's engine fetch this browser download itself? True only if a ranged GET with the
+    /// page's cookies returns 206 for the same file (same total size when the browser knows it) and
+    /// not an HTML page. Anything else (POST forms, one-time links, sign-in walls) stays with WebView2.
+    pub async fn probe_takeover(&self, url: &str, referer: Option<String>, cookie: Option<String>, expected_total: Option<u64>) -> Option<u64> {
+        let ua = self.current_user_agent();
+        let rb = with_headers(self.client.get(url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
+        let resp = rb.timeout(Duration::from_secs(12)).send().await.ok()?;
+        if resp.status() != StatusCode::PARTIAL_CONTENT {
+            return None;
+        }
+        if resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|t| t.to_ascii_lowercase().starts_with("text/html"))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let total = resp
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range)
+            .and_then(|(start, _, total)| if start == 0 { total } else { None })?;
+        match expected_total {
+            Some(e) if e != total => None,
+            _ if total == 0 => None,
+            _ => Some(total),
+        }
+    }
+
     pub async fn probe_stream_metadata(&self, url: String, referer: Option<String>, cookie: Option<String>) -> StreamProbeResult {
         let ua = self.current_user_agent();
         let mut size_bytes: Option<u64> = None;
@@ -879,6 +911,23 @@ impl NativeDownloadEngine {
         dup_mode: &str, // "CHECK", "RENAME", "OVERWRITE"
         delay_secs: Option<u64>,
     ) -> EnqueueOutcome {
+        self.enqueue_named(rt, url, threads, referer, cookie, dup_mode, delay_secs, None)
+    }
+
+    /// As `enqueue`, but plain HTTP downloads are saved under `name_hint` (the name the page or
+    /// server chose, e.g. from a browser download) instead of one derived from the URL.
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_named(
+        &self,
+        rt: &tokio::runtime::Handle,
+        url: String,
+        threads: usize,
+        referer: Option<String>,
+        cookie: Option<String>,
+        dup_mode: &str,
+        delay_secs: Option<u64>,
+        name_hint: Option<String>,
+    ) -> EnqueueOutcome {
         let raw = url.trim();
         let (forced_kind, trimmed_u) = split_route_prefix(raw);
         let trimmed_u = trimmed_u.trim();
@@ -904,6 +953,8 @@ impl NativeDownloadEngine {
             "Audio (resolving title).m4a".to_string()
         } else if kind == KIND_YTDLP_FLAC {
             "Audio (resolving title).flac".to_string()
+        } else if let Some(n) = name_hint.as_deref().map(sanitize_download_filename).filter(|n| kind == KIND_HTTP && !n.is_empty()) {
+            n
         } else {
             normalized_url
                 .split(['?', '#'])

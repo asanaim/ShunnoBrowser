@@ -1,3 +1,11 @@
+## v2.18.0
+
+### Downloads (IDM-style takeover)
+* **Downloads started by pages now use Shunno's multi-connection engine** (up to your connection setting, default 16) with pause/resume across restarts, instead of WebView2's single connection.
+* Safe by design: WebView2 starts the download as before; Shunno checks in the background that it can fetch the same file itself (your cookies for that site, the page as referrer, the browser's user agent, a resumable 206 response, same size, not an HTML page). Only then does it cancel the WebView2 copy and continue. Otherwise the browser download simply carries on.
+* Not taken over: private tabs, files under 2 MB, `blob:`/`data:` downloads, POST form downloads and one-time links (these fail the check automatically).
+* Menu switch: **Accelerate Downloads** (on by default).
+
 ## v2.17.4
 
 ### Window
