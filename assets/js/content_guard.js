@@ -235,61 +235,45 @@
     appendWhenReady(st);
   }
 
-  // 5. Reader Mode On/Off Toggle (Clean typography with instant restore)
-  window.__shunnoReaderActive = false;
-  window.__shunnoSavedBodyNodes = null;
-  window.__shunnoToggleReader = function() {
-    if (!document.body) return;
-    if (window.__shunnoReaderActive) {
-      if (window.__shunnoSavedBodyNodes) {
-        while (document.body.firstChild) {
-          document.body.removeChild(document.body.firstChild);
+  // 5. Reader availability (Safari-style Reader button). The Reader itself (Mozilla Readability +
+  //    UI) is injected by the browser only when opened, so normal pages do not carry it.
+  //    isProbablyReaderable: Mozilla Readability 0.6.0, Apache-2.0 (Copyright (c) 2010 Arc90 Inc).
+  (function readerAvailability() {
+    var module;
+    var REGEXPS={unlikelyCandidates:/-ad-|ai2html|banner|breadcrumbs|combx|comment|community|cover-wrap|disqus|extra|footer|gdpr|header|legends|menu|related|remark|replies|rss|shoutbox|sidebar|skyscraper|social|sponsor|supplemental|ad-break|agegate|pagination|pager|popup|yom-remote/i,okMaybeItsACandidate:/and|article|body|column|content|main|shadow/i};function isNodeVisible(e){return(!e.style||e.style.display!="none")&&!e.hasAttribute("hidden")&&(!e.hasAttribute("aria-hidden")||e.getAttribute("aria-hidden")!="true"||e.className&&e.className.includes&&e.className.includes("fallback-image"))}function isProbablyReaderable(e,t={}){typeof t=="function"&&(t={visibilityChecker:t});var u={minScore:20,minContentLength:140,visibilityChecker:isNodeVisible};t=Object.assign(u,t);var r=e.querySelectorAll("p, pre, article"),i=e.querySelectorAll("div > br");if(i.length){var n=new Set(r);[].forEach.call(i,function(a){n.add(a.parentNode)}),r=Array.from(n)}var l=0;return[].some.call(r,function(a){if(!t.visibilityChecker(a))return!1;var s=a.className+" "+a.id;if(REGEXPS.unlikelyCandidates.test(s)&&!REGEXPS.okMaybeItsACandidate.test(s)||a.matches("li p"))return!1;var c=a.textContent.trim().length;return c<t.minContentLength?!1:(l+=Math.sqrt(c-t.minContentLength),l>t.minScore)})}typeof module=="object"&&(module.exports=isProbablyReaderable);
+    // A fresh document never starts in Reader.
+    if (window.top === window) postSecure('READER_STATE:0');
+    let last = null;
+    const check = () => {
+      if (!document.body || window.top !== window) return;
+      let ok = false;
+      try { ok = isProbablyReaderable(document, { minContentLength: 140, minScore: 20 }); } catch (e) {}
+      if (ok !== last) { last = ok; postSecure('READER_AVAILABLE:' + (ok ? 1 : 0)); }
+    };
+    const schedule = () => { setTimeout(check, 600); setTimeout(check, 2500); };
+    if (document.readyState === 'complete') schedule(); else window.addEventListener('load', schedule, { once: true });
+    // Single-page sites change articles without a reload.
+    const wrap = (k) => { const o = history[k]; history[k] = function () { const r = o.apply(this, arguments); setTimeout(check, 1200); return r; }; };
+    try { wrap('pushState'); wrap('replaceState'); } catch (e) {}
+    window.addEventListener('popstate', () => setTimeout(check, 1200));
+    // The on-demand Reader reports through this fixed entry point (state and appearance only).
+    Object.defineProperty(window, '__shunnoReaderNotify', {
+      value: function (kind, data) {
+        if (kind === 'state') postSecure('READER_STATE:' + (data ? 1 : 0));
+        else if (kind === 'prefs' && data && typeof data === 'object') {
+          const p = {
+            size: Math.max(14, Math.min(30, Number(data.size) || 19)),
+            font: data.font === 'sans' ? 'sans' : 'serif',
+            theme: ['auto', 'light', 'sepia', 'gray', 'dark'].includes(data.theme) ? data.theme : 'auto',
+            width: ['narrow', 'normal', 'wide'].includes(data.width) ? data.width : 'normal',
+          };
+          postSecure('READER_PREFS:' + JSON.stringify(p));
         }
-        window.__shunnoSavedBodyNodes.forEach(node => document.body.appendChild(node));
-        window.__shunnoSavedBodyNodes = null;
-      }
-      const rStyle = document.getElementById('shunno-reader-style');
-      if (rStyle) rStyle.remove();
-      window.__shunnoReaderActive = false;
-      postSecure('READER_STATE:0');
-      return;
-    }
-
-    const articleEl = document.querySelector('article, main, [role="main"]') || document.body;
-    const rawText = (articleEl.innerText || '').trim();
-    const titleText = document.title || location.hostname;
-
-    window.__shunnoSavedBodyNodes = Array.from(document.body.childNodes);
-    while (document.body.firstChild) {
-      document.body.removeChild(document.body.firstChild);
-    }
-
-    const st = document.createElement('style');
-    st.id = 'shunno-reader-style';
-    st.textContent = `
-      body { background: #F5F5F7 !important; color: #1D1D1F !important; margin: 0 !important; padding: 0 !important; }
-      #shunno-reader-wrap { max-width: 720px; margin: 36px auto; padding: 28px 32px; background: #FFFFFF; border-radius: 18px; box-shadow: 0 8px 30px rgba(0,0,0,0.06); font: 18.5px/1.75 Georgia, "Segoe UI", serif; }
-      #shunno-reader-wrap h1 { font-family: system-ui, "Segoe UI", sans-serif; font-size: 26px; line-height: 1.3; margin-bottom: 18px; }
-      #shunno-reader-wrap p { margin-bottom: 16px; }
-    `;
-    (document.head || document.documentElement).appendChild(st);
-
-    const wrap = document.createElement('div');
-    wrap.id = 'shunno-reader-wrap';
-    const h1 = document.createElement('h1');
-    h1.textContent = titleText;
-    wrap.appendChild(h1);
-
-    rawText.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0).forEach(line => {
-      const p = document.createElement('p');
-      p.textContent = line;
-      wrap.appendChild(p);
+      },
+      writable: false,
+      configurable: false,
     });
-
-    document.body.appendChild(wrap);
-    window.__shunnoReaderActive = true;
-    postSecure('READER_STATE:1');
-  };
+  })();
 
   // 6. YouTube Pre-Roll & Song-Switch Ad Stripper + Stream Harvester
   const isYouTube = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(location.hostname);

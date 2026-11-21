@@ -137,6 +137,25 @@ struct SpacesView {
     active: u32,
 }
 
+/// Reader (Safari-style): Mozilla Readability + Shunno's reader UI, injected only when opened.
+const READABILITY_JS: &str = include_str!("../assets/js/readability.min.js");
+const READER_JS: &str = include_str!("../assets/js/reader.js");
+
+fn build_reader_script(prefs_json: &str) -> String {
+    let prefs = state::valid_reader_prefs(prefs_json).unwrap_or_else(|| "{}".to_string());
+    // One closure: Readability and the reader stay private to it; only window.__shunnoReader is set.
+    format!(
+        "(function(){{\"use strict\";var module;\n{}\n{}\n}})();",
+        READABILITY_JS,
+        READER_JS.replace("__SHUNNO_READER_PREFS__", &prefs)
+    )
+}
+
+thread_local! {
+    /// Tabs whose current page looks like an article (shows the Reader button).
+    static READER_AVAILABLE: std::cell::RefCell<std::collections::HashSet<usize>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -280,6 +299,7 @@ struct ChromeSnapshot {
     pw_csv_pending: bool,
     force_dark_active: bool,
     snap_native: bool,
+    active_reader_available: bool,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -1130,6 +1150,10 @@ fn attach_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent>, p
                     if vk == 0x7A && down {
                         let _ = args.SetHandled(true);
                         let _ = proxy.send_event(AppEvent::ToggleFullscreen);
+                    } else if page_shortcuts && vk == 0x78 && kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
+                        // F9: Reader (as in Edge).
+                        let _ = args.SetHandled(true);
+                        let _ = proxy.send_event(AppEvent::PageShortcut("reader"));
                     } else if page_shortcuts && kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
                         use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
                         let pressed = |k: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
@@ -2960,6 +2984,7 @@ fn main() -> wry::Result<()> {
             pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
             force_dark_active: FORCE_DARK_AT_START.load(Ordering::Relaxed),
             snap_native: SNAP_NATIVE.load(Ordering::Relaxed),
+            active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
                     url: k.webview.url().unwrap_or_default(),
@@ -4066,6 +4091,20 @@ fn main() -> wry::Result<()> {
                     }
                 } else if msg.starts_with("SITE_DATA_CLEARED:") {
                     site_data_cleared = true;
+                } else if let Some(flag) = msg.strip_prefix("READER_AVAILABLE:") {
+                    let changed = READER_AVAILABLE.with(|r| {
+                        let mut r = r.borrow_mut();
+                        if flag == "1" { r.insert(tab_id) } else { r.remove(&tab_id) }
+                    });
+                    if !changed || tabs.get(active_tab_idx).map(|t| t.id) != Some(tab_id) {
+                        return;
+                    }
+                } else if let Some(json) = msg.strip_prefix("READER_PREFS:") {
+                    if let Some(p) = state::valid_reader_prefs(json) {
+                        global_settings.reader_prefs = p;
+                        BrowserStorage::save_global_settings(&global_settings);
+                    }
+                    return;
                 } else if let Some(r_flag) = msg.strip_prefix("READER_STATE:") {
                     if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.reader_active = r_flag == "1";
@@ -4981,7 +5020,7 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "READER_MODE" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let _ = tab.webview.evaluate_script("if (window.__shunnoToggleReader) window.__shunnoToggleReader();");
+                        let _ = tab.webview.evaluate_script(&build_reader_script(&global_settings.reader_prefs));
                     }
                 } else if let Some(em_flag) = cmd.strip_prefix("ENGINE_MENU:") {
                     engine_menu_open = em_flag == "1";

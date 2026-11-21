@@ -556,3 +556,17 @@ fn test_spaces_logic() {
     assert_eq!(sanitize_space_name(""), "Space");
     assert_eq!(sanitize_space_name(&"x".repeat(40)).len(), 24);
 }
+
+#[test]
+fn test_reader_prefs_validation() {
+    use state::valid_reader_prefs;
+    assert!(valid_reader_prefs(r#"{"size":21,"font":"sans","theme":"sepia","width":"wide"}"#).is_some());
+    assert!(valid_reader_prefs("[1,2]").is_none());
+    assert!(valid_reader_prefs("not json").is_none());
+    assert!(valid_reader_prefs(&format!(r#"{{"x":"{}"}}"#, "a".repeat(400))).is_none());
+    // The reader script must keep its placeholder until the browser fills it.
+    let reader = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/reader.js")).unwrap();
+    assert_eq!(reader.matches("__SHUNNO_READER_PREFS__").count(), 1);
+    let rd = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/readability.min.js")).unwrap();
+    assert!(rd.contains("Apache License") && rd.contains("Readability"));
+}

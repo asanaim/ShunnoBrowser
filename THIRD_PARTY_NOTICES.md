@@ -20,3 +20,10 @@ Runtime components fetched on demand (not bundled):
 - FFmpeg essentials build from gyan.dev (GPL). Downloaded and run as a separate program.
 - yt-dlp from github.com/yt-dlp/yt-dlp (Unlicense). Downloaded and run as a separate program.
 - EasyList and EasyPrivacy filter lists (GPLv3 / CC BY-SA 3.0), downloaded weekly from easylist.to. Used as data, not bundled.
+
+## Mozilla Readability 0.6.0
+
+Used by Reader (`assets/js/readability.min.js`, and `isProbablyReaderable` in `assets/js/content_guard.js`), minified, otherwise unmodified.
+Source: https://github.com/mozilla/readability
+
+Copyright (c) 2010 Arc90 Inc. Licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).

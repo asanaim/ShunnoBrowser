@@ -1,3 +1,12 @@
+## v2.20.0
+
+### Reader (Safari Reader-style)
+* A **Reader button** appears in the address bar only when the page is an article (Mozilla's article check, re-run when single-page sites change article). Click it or press **F9**; **Esc** or F9 closes.
+* Articles are extracted with **Mozilla Readability** (the engine behind Firefox Reader View): title, site, byline, reading time, headings, images (including lazy-loaded ones), links, lists, quotes, tables and code. Bangla text uses Nirmala UI / Noto.
+* **Aa panel:** text size, Serif or Sans-serif, Narrow / Normal / Wide, and Auto / White / Sepia / Gray / Dark themes. Your choice is remembered.
+* The page itself is never changed: Reader is an overlay, and the article is rebuilt from an allow-list of safe elements, so page scripts, event handlers, `javascript:` links, iframes and forms cannot run inside it.
+* Readability (33 KB minified) is loaded only when you open Reader, not on every page.
+
 ## v2.19.1
 
 * **Open in Shunno keeps the live page.** Little Shunno now moves the page itself into the main window instead of reloading its link, so scroll position, half-filled forms, playing media and sign-ins carry over.
