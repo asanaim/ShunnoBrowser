@@ -102,6 +102,10 @@ fn tab_origin(tabs: &[BrowserTab], tab_id: usize) -> Option<(String, bool)> {
 }
 
 thread_local! {
+    /// Each tab's site icon (PNG data URL) for the tab strip, by tab id.
+    static FAVICONS: std::cell::RefCell<HashMap<usize, String>> = std::cell::RefCell::new(HashMap::new());
+}
+thread_local! {
     /// A question sheet (Add Bookmark, Rename, Delete?) is open in the focused window's toolbar.
     static SHEET_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -649,6 +653,8 @@ enum AppEvent {
     NativeStreamCaptured(usize, String, String, String),
     StreamSizeResolved(usize, StreamProbeResult),
     TabAudioChanged(usize, bool),
+    /// The page's icon changed: a PNG data URL, or "" when the page has none.
+    TabFavicon(usize, String),
     TabTitleChanged(usize, String),
     TabUrlChanged(usize, String),
     TabZoomChanged(usize, f64),
@@ -707,6 +713,7 @@ fn event_tab_id(e: &AppEvent) -> Option<usize> {
         | AppEvent::NativeStreamCaptured(t, _, _, _)
         | AppEvent::StreamSizeResolved(t, _)
         | AppEvent::TabAudioChanged(t, _)
+        | AppEvent::TabFavicon(t, _)
         | AppEvent::TabTitleChanged(t, _)
         | AppEvent::TabUrlChanged(t, _)
         | AppEvent::TabZoomChanged(t, _)
@@ -755,6 +762,8 @@ struct TabSummary {
     sleeping: bool,
     space: u32,
     group: Option<u32>,
+    /// PNG data URL of the site's icon; empty when there is none (the strip draws a letter tile).
+    favicon: String,
 }
 
 #[derive(Serialize)]
@@ -1914,6 +1923,25 @@ fn set_webview_muted(webview: &WebView, muted: bool) {
     let _ = webview.evaluate_script(&js);
 }
 
+/// Reads up to `cap` + 1 bytes from a COM stream (a longer stream comes back longer than `cap`).
+#[cfg(windows)]
+fn read_stream_capped(stream: &windows::Win32::System::Com::IStream, cap: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let mut n = 0u32;
+        let hr = unsafe { stream.Read(buf.as_mut_ptr() as *mut core::ffi::c_void, buf.len() as u32, Some(&mut n)) };
+        if hr.is_err() || n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n as usize]);
+        if out.len() > cap {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(windows)]
 fn attach_native_webview2_hooks(
     webview: &WebView,
@@ -2006,6 +2034,35 @@ fn attach_native_webview2_hooks(
                 Ok(())
             }));
             let _ = core8.add_IsDocumentPlayingAudioChanged(&audio_handler, &mut audio_token);
+        }
+
+        // 1b. Site icon for the tab strip (ICoreWebView2_15): fetched as PNG whenever it changes.
+        {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_15, COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG};
+            use webview2_com::{FaviconChangedEventHandler, GetFaviconCompletedHandler};
+            if let Ok(core15) = core.cast::<ICoreWebView2_15>() {
+                let mut fav_token = Default::default();
+                let fav_proxy = proxy.clone();
+                let fav_handler = FaviconChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(wv) = sender else { return Ok(()) };
+                    let Ok(wv15) = wv.cast::<ICoreWebView2_15>() else { return Ok(()) };
+                    let px = fav_proxy.clone();
+                    let done = GetFaviconCompletedHandler::create(Box::new(move |hr, stream| {
+                        let mut url = String::new();
+                        if let (true, Some(stream)) = (hr.is_ok(), stream) {
+                            let bytes = read_stream_capped(&stream, 64 * 1024);
+                            if !bytes.is_empty() && bytes.len() <= 64 * 1024 && bytes.starts_with(b"\x89PNG") {
+                                url = format!("data:image/png;base64,{}", extensions::base64(&bytes));
+                            }
+                        }
+                        let _ = px.send_event(AppEvent::TabFavicon(tab_id, url));
+                        Ok(())
+                    }));
+                    let _ = wv15.GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, &done);
+                    Ok(())
+                }));
+                let _ = core15.add_FaviconChanged(&fav_handler, &mut fav_token);
+            }
         }
 
         // 2. Native AdBlocker & Stream Sniffer (ICoreWebView2_2)
@@ -3978,6 +4035,7 @@ fn main() -> wry::Result<()> {
                     sleeping: t.sleeping,
                     space: tab_space(t.id),
                     group: tab_group(t.id),
+                    favicon: FAVICONS.with(|f| f.borrow().get(&t.id).cloned().unwrap_or_default()),
                 })
                 .collect(),
             menu_note: MENU_NOTE.with(|n| n.borrow().clone()),
@@ -4736,6 +4794,24 @@ fn main() -> wry::Result<()> {
                     is_fullscreen,
                     &engine,
                 );
+            }
+
+            Event::UserEvent(AppEvent::TabFavicon(tab_id, url)) => {
+                let changed = FAVICONS.with(|f| {
+                    let mut f = f.borrow_mut();
+                    if f.len() > 400 {
+                        // Long sessions: forget icons of tabs no longer in this window.
+                        f.retain(|id, _| tabs.iter().any(|t| t.id == *id));
+                    }
+                    if url.is_empty() {
+                        f.remove(&tab_id).is_some()
+                    } else {
+                        f.insert(tab_id, url.clone()).as_ref() != Some(&url)
+                    }
+                });
+                if changed {
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                }
             }
 
             Event::UserEvent(AppEvent::TabAudioChanged(tab_id, playing)) => {

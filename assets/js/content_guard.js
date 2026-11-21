@@ -350,19 +350,42 @@
     } catch (e) {}
   }
 
-  function stripAdFields(obj) {
-    if (!obj || typeof obj !== 'object') return obj;
+  // The player schedules ads from these fields. Removed before the player reads the response, it
+  // has no ad to load, wait for or skip, so the video starts at once (what Brave and uBlock do
+  // with their json-prune rules). Player responses also arrive nested: { playerResponse: ... },
+  // arrays of those (watch page data), and inside "response" / "data" wrappers.
+  const YT_AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
+  const YT_NESTS = ['playerResponse', 'response', 'data', 'contents', 'onResponseReceivedEndpoints'];
+  function stripAdFields(obj, depth) {
+    depth = depth || 0;
+    if (!obj || typeof obj !== 'object' || depth > 4) return obj;
     try {
+      if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length && i < 64; i++) stripAdFields(obj[i], depth + 1);
+        return obj;
+      }
       if ('streamingData' in obj) harvestYtStreams(obj);
-      if ('adPlacements' in obj) { obj.adPlacements = []; delete obj.adPlacements; }
-      if ('playerAds' in obj) { obj.playerAds = []; delete obj.playerAds; }
-      if ('adSlots' in obj) { obj.adSlots = []; delete obj.adSlots; }
-      if ('adBreakHeartbeatParams' in obj) delete obj.adBreakHeartbeatParams;
+      for (const k of YT_AD_KEYS) if (k in obj) delete obj[k];
       if (obj.auxiliaryUi && obj.auxiliaryUi.messageRenderers) delete obj.auxiliaryUi.messageRenderers;
       if (obj.playerConfig && obj.playerConfig.ssapConfig) delete obj.playerConfig.ssapConfig;
       if (obj.playerConfig && obj.playerConfig.adRequestConfig) delete obj.playerConfig.adRequestConfig;
+      for (const k of YT_NESTS) {
+        const v = obj[k];
+        if (v && typeof v === 'object') stripAdFields(v, depth + 1);
+      }
     } catch (e) {}
     return obj;
+  }
+  function mayHoldAds(obj) {
+    return !!obj && typeof obj === 'object' && (Array.isArray(obj) || YT_AD_KEYS.some(k => k in obj) || 'streamingData' in obj || 'playerResponse' in obj);
+  }
+  // Raw JSON text: rename the ad keys before anything parses it (uBlock's "no_ads" replacement).
+  // Cheaper than parse + stringify on multi-megabyte responses, and the result stays valid JSON.
+  const AD_KEY_RE = /"(adPlacements|playerAds|adSlots|adBreakHeartbeatParams)"(\s*:)/g;
+  function neuterAdText(txt) {
+    if (typeof txt !== 'string' || txt.length < 20) return txt;
+    if (txt.indexOf('"adPlacements"') < 0 && txt.indexOf('"playerAds"') < 0 && txt.indexOf('"adSlots"') < 0 && txt.indexOf('"adBreakHeartbeatParams"') < 0) return txt;
+    return txt.replace(AD_KEY_RE, '"no_ads_$1"$2');
   }
 
   if (isYouTube && (ADBLOCK_ON || SPONSORBLOCK_ON)) {
@@ -378,9 +401,7 @@
     const origParse = JSON.parse;
     JSON.parse = function(text, reviver) {
       const res = origParse.apply(this, arguments);
-      if (res && typeof res === 'object' && ('adPlacements' in res || 'playerAds' in res || 'adSlots' in res || 'streamingData' in res)) {
-        stripAdFields(res);
-      }
+      if (mayHoldAds(res)) stripAdFields(res);
       return res;
     };
 
@@ -391,16 +412,7 @@
 
     const origRespText = Response.prototype.text;
     Response.prototype.text = function() {
-      return origRespText.apply(this, arguments).then(txt => {
-        if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"'))) {
-          try {
-            const parsed = origParse(txt);
-            stripAdFields(parsed);
-            return JSON.stringify(parsed);
-          } catch (e) {}
-        }
-        return txt;
-      });
+      return origRespText.apply(this, arguments).then(neuterAdText);
     };
 
     const origXhrText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText');
@@ -409,14 +421,23 @@
         configurable: true,
         get() {
           const txt = origXhrText.get.call(this);
-          if (typeof txt === 'string' && (txt.includes('"adPlacements"') || txt.includes('"playerAds"') || txt.includes('"adSlots"') || txt.includes('"streamingData"'))) {
-            try {
-              const parsed = origParse(txt);
-              stripAdFields(parsed);
-              return JSON.stringify(parsed);
-            } catch (e) {}
+          if (typeof txt === 'string' && txt.includes('"streamingData"')) {
+            try { harvestYtStreams(origParse(txt)); } catch (e) {}
           }
-          return txt;
+          return neuterAdText(txt);
+        }
+      });
+    }
+    // xhr.response: text responses get the same renaming; JSON responses are pruned in place.
+    const origXhrResp = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'response');
+    if (origXhrResp && origXhrResp.get) {
+      Object.defineProperty(XMLHttpRequest.prototype, 'response', {
+        configurable: true,
+        get() {
+          const r = origXhrResp.get.call(this);
+          if (typeof r === 'string') return neuterAdText(r);
+          if (mayHoldAds(r)) stripAdFields(r);
+          return r;
         }
       });
     }
@@ -432,16 +453,26 @@
     });
   }
 
+  // Fallback for an ad that still reaches the player: skip it the moment the player marks it, and
+  // give the video back its sound and speed afterwards. YouTube plays ads and the video in the same
+  // <video> element, so leaving it muted or at 16x made the video start silent or race ahead.
+  let ytAdSaved = null;
+  let ytPlayerWatched = null;
   function skipYtAdImmediately() {
     if (!isYouTube || !SPONSORBLOCK_ON) return;
-    const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-overlay-close-button');
-    if (sk) sk.click();
     const player = document.getElementById('movie_player');
-    const adShowing = (player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting')))
-      || document.querySelector('.ad-showing, .ad-interrupting');
+    if (player && ytPlayerWatched !== player && window.MutationObserver) {
+      ytPlayerWatched = player;
+      new MutationObserver(skipYtAdImmediately).observe(player, { attributes: true, attributeFilter: ['class'] });
+    }
+    const v = (player && player.querySelector('video')) || document.querySelector('video');
+    const adShowing = player ? (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'))
+      : !!document.querySelector('.ad-showing, .ad-interrupting');
     if (adShowing) {
-      const v = document.querySelector('video');
+      const sk = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-overlay-close-button');
+      if (sk) sk.click();
       if (v) {
+        if (!ytAdSaved) ytAdSaved = { muted: v.muted, rate: v.playbackRate === 16 ? 1 : v.playbackRate };
         v.muted = true;
         if (isFinite(v.duration) && v.duration > 0 && v.currentTime < v.duration - 0.1) {
           v.currentTime = v.duration;
@@ -449,6 +480,13 @@
           v.playbackRate = 16.0;
         }
       }
+    } else if (ytAdSaved && v) {
+      const saved = ytAdSaved;
+      ytAdSaved = null;
+      v.muted = saved.muted;
+      if (v.playbackRate === 16) v.playbackRate = saved.rate;
+      // The video was meant to start after the ad; start it now rather than wait for the player.
+      if (v.paused && !v.ended) { try { const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
     }
   }
 
@@ -1246,6 +1284,7 @@
 
     document.addEventListener('loadedmetadata', skipYtAdImmediately, true);
     document.addEventListener('play', skipYtAdImmediately, true);
+    document.addEventListener('durationchange', skipYtAdImmediately, true);
   }
 
   // 9. Audio Activity Reporter

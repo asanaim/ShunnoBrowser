@@ -1087,3 +1087,22 @@ fn element_picker_is_wired_safely() {
     assert!(main.contains("if !pending_picks.remove(&tab_id)"), "PICK_FILTER only after the user started the picker");
     assert!(main.contains("blocker::picker_rule(&host, &sel)"), "rule host comes from the tab, not the page");
 }
+
+#[test]
+fn youtube_ads_are_pruned_before_the_player_reads_them() {
+    let guard = include_str!("../assets/js/content_guard.js");
+    assert!(guard.contains("const YT_NESTS = ['playerResponse'"), "nested player responses are pruned");
+    assert!(guard.contains("function neuterAdText("), "raw responses are renamed before parsing");
+    assert!(guard.contains("getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'response')"), "xhr.response is covered");
+    assert!(guard.contains("v.muted = saved.muted;"), "sound comes back after a skipped ad");
+}
+
+#[test]
+fn tab_strip_follows_safari() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("add_FaviconChanged") && main.contains("favicon: FAVICONS.with"), "site icons reach the strip");
+    assert!(ui.contains("function lockTabWidths()") && ui.contains("bar.addEventListener('mouseleave', unlockTabWidths)"));
+    assert!(ui.contains("overflow-x: auto; overflow-y: hidden;"), "many tabs scroll instead of being cut off");
+    assert!(ui.contains("function revealActiveTab("));
+}

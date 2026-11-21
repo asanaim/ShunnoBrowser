@@ -105,22 +105,39 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .brand-emblem:hover { transform: scale(1.06); }
 
+  /* Safari-style tab strip: tabs share the width evenly; the current tab keeps room for its title
+     while the others shrink to their icon; past that the strip scrolls sideways (wheel or
+     trackpad), with soft edges showing there is more. Empty space in the strip drags the window. */
   #tabs-container {
-    display: flex; gap: 5px; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden;
+    position: relative; display: flex; gap: 4px; align-items: center; flex: 1 1 auto; min-width: 0; height: 100%;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
   }
+  #tabs-container::-webkit-scrollbar { display: none; }
+  #tabs-container.fade-l { -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px); mask-image: linear-gradient(90deg, transparent, #000 28px); }
+  #tabs-container.fade-r { -webkit-mask-image: linear-gradient(270deg, transparent, #000 28px); mask-image: linear-gradient(270deg, transparent, #000 28px); }
+  #tabs-container.fade-l.fade-r { -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 
-  /* Static, flicker-free tabs (only newly added tab animates in; switching tabs never re-creates DOM nodes!) */
+  /* Tabs open by growing from nothing and close by folding away; neighbours slide into place. */
   @keyframes tabEnter {
-    from { opacity: 0; transform: scale(0.92); }
-    to   { opacity: 1; transform: scale(1); }
+    from { max-width: 0; min-width: 0; opacity: 0; padding-left: 0; padding-right: 0; }
   }
   .tab {
-    display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 10px;
-    background: rgba(128, 128, 128, 0.11); color: var(--text); font-size: 12px; cursor: pointer;
-    flex: 1 1 165px; min-width: 42px; max-width: 200px; overflow: hidden;
-    transition: background 0.22s var(--ease-fluid), box-shadow 0.22s var(--ease-fluid), color 0.18s ease;
+    position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;
+    height: 28px; box-sizing: border-box; padding: 0 26px; border-radius: 9px;
+    background: transparent; color: var(--text); font-size: 12px; cursor: default; user-select: none;
+    flex: 1 1 0; min-width: 36px; max-width: 240px; overflow: hidden;
+    transition: flex 0.24s var(--ease-fluid), min-width 0.24s var(--ease-fluid), max-width 0.24s var(--ease-fluid),
+      padding 0.24s var(--ease-fluid), opacity 0.18s ease, background 0.2s var(--ease-fluid), box-shadow 0.2s var(--ease-fluid), color 0.18s ease;
   }
-  .tab.is-new { animation: tabEnter 0.24s var(--ease-fluid); }
+  .tab.is-new { animation: tabEnter 0.26s var(--ease-fluid); }
+  .tab.closing { flex: 0 0 0 !important; min-width: 0 !important; max-width: 0 !important; padding: 0 !important;
+    margin-right: -4px; opacity: 0; pointer-events: none; }
+  /* Hairline between two plain tabs, as in Safari. */
+  .tab:not(.active):not(:hover) + .tab:not(.active):not(:hover)::before {
+    content: ""; position: absolute; left: -2.5px; top: 7px; bottom: 7px; width: 1px; background: var(--border);
+  }
+  .tab .tab-fav { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; object-fit: contain; }
+  .tab span.tab-fav { display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; color: #fff; }
   /* Tab groups: a capsule label in the group colour, member tabs tinted with a thin colour rule. */
   .tg-chip {
     display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 12px; flex-shrink: 0;
@@ -144,10 +161,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .ctx-row.danger:hover { background: var(--red); color: #fff; }
   .ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
   .ctx-label { font-size: 11px; color: var(--text-dim, #8E8E93); padding: 6px 10px 2px; font-weight: 600; }
-  .tab:hover { background: rgba(128, 128, 128, 0.20); }
+  .tab:hover { background: rgba(128, 128, 128, 0.14); }
   .tab.active {
     background: var(--surface-solid); color: var(--text); font-weight: 600;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+    flex-grow: 1.4; min-width: min(170px, 46%);
   }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
   /* Spaces: the active Space's colour marks the current tab and the Space button. */
@@ -257,23 +275,26 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: background 0.18s ease, color 0.18s ease;
   }
   .tab-audio:hover { background: var(--blue); color: #fff; }
-  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+  /* Close button at the left edge, as in Safari: on the current tab always, on others while hovered. */
   .tab-close {
-    font-size: 10px; color: var(--muted); padding: 2px 5px; border-radius: 5px; flex-shrink: 0;
-    transition: background 0.16s ease, color 0.16s ease;
+    position: absolute; left: 5px; top: 50%; transform: translateY(-50%);
+    width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 5px;
+    color: var(--muted); opacity: 0; pointer-events: none;
+    transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
   }
-  .tab-close:hover { background: rgba(255, 59, 48, 0.18); color: var(--red); }
-  /* Narrow tabs (many open): the close button sits where the icon is on the current tab, as in
-     Safari; on other narrow tabs a click selects the tab (middle-click still closes it). */
-  .tab[data-narrow] { position: relative; padding: 4px 6px; gap: 4px; justify-content: center; }
-  .tab[data-narrow] .tab-close { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    width: 20px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px;
-    background: var(--surface-solid); color: var(--text); opacity: 0; pointer-events: none;
-    transition: opacity var(--dur-fast) var(--ease-fluid); box-shadow: 0 0 0 1px var(--border); }
+  .tab-close svg { display: block; }
+  .tab:hover .tab-close, .tab.active .tab-close { opacity: 1; pointer-events: auto; }
+  .tab-close:hover { background: rgba(128, 128, 128, 0.22); color: var(--text); }
+  .tab-close:active { background: rgba(128, 128, 128, 0.34); }
+  /* Narrow tabs (many open) show only their icon. A click selects the tab (middle-click closes
+     it); on the current narrow tab the close button takes the icon's place. */
+  .tab[data-narrow] { padding: 0 4px; gap: 0; }
+  .tab[data-narrow] .tab-title, .tab[data-narrow] .tab-audio { display: none; }
+  .tab[data-narrow] .tab-close { left: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; background: var(--surface-solid); }
   .tab[data-narrow].active .tab-close { opacity: 1; pointer-events: auto; }
-  .tab[data-narrow].active .tab-logo { visibility: hidden; }
-  .tab[data-narrow] .tab-logo ~ .tab-title { display: none; }
-  .tab[data-narrow].active .tab-title { visibility: hidden; }
+  .tab[data-narrow].active .tab-close ~ .tab-fav, .tab[data-narrow].active > .tab-fav, .tab[data-narrow].active > .tab-logo { visibility: hidden; }
+  .space-pill:empty { display: none; }
 
   .tab-add {
     border: none; background: rgba(128, 128, 128, 0.14); color: var(--blue); font-weight: 700;
@@ -285,7 +306,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Drag spacer + Native Window Controls (replaces wasted top title bar!) */
   .win-drag-spacer {
-    flex: 1; height: 100%; min-width: 24px; cursor: default;
+    flex: 0 0 24px; height: 100%; min-width: 24px; cursor: default;
   }
   .win-controls {
     display: flex; align-items: center; gap: 4px; flex-shrink: 0;
@@ -730,13 +751,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   /* Pinned Compact Icon-Only Tabs */
   .tab.pinned {
-    flex: 0 0 38px !important;
-    min-width: 38px !important;
-    max-width: 38px !important;
+    flex: 0 0 36px !important;
+    min-width: 36px !important;
+    max-width: 36px !important;
     justify-content: center;
-    padding: 4px 6px;
+    padding: 0 !important;
   }
-  .tab.pinned .tab-title, .tab.pinned .tab-close { display: none; }
+  .tab.pinned .tab-title, .tab.pinned .tab-close, .tab.pinned .tab-audio { display: none; }
   .tab.sleeping { opacity: 0.62; }
   .tab.split-peer { box-shadow: inset 0 0 0 1.5px var(--blue); }
 
@@ -2039,14 +2060,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const inSpace = (t) => sp === null || t.space === undefined || t.space === sp;
     const currentIds = new Set(tabs.filter(inSpace).map(t => String(t.id)));
 
-    // Remove closed tabs
+    // Closed tabs fold away (unless already folding from a click on their close button).
     Array.from(tc.children).forEach(el => {
-      if (el.dataset.groupId) return; // group labels are handled after the tabs
+      if (el.dataset.groupId || el.classList.contains('closing')) return; // group labels are handled after the tabs
       if (!currentIds.has(el.dataset.tabId)) {
-        tc.removeChild(el);
         knownTabIds.delete(el.dataset.tabId);
+        foldAwayTab(el);
       }
     });
+    if (tabWidthsLocked && tabs.filter(inSpace).length > lockedTabCount) unlockTabWidths();
+    const prevActiveId = tc.dataset.activeId;
 
     tabs.forEach((t, idx) => {
       if (!inSpace(t)) return;
@@ -2056,7 +2079,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el = document.createElement('div');
         el.dataset.tabId = idStr;
         el.className = 'tab is-new';
-        setTimeout(() => el.classList.remove('is-new'), 260);
+        setTimeout(() => { el.classList.remove('is-new'); markNarrowTabs(); updateTabFades(); }, 280);
         tc.appendChild(el);
         knownTabIds.add(idStr);
       }
@@ -2110,40 +2133,142 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         }
       };
       el.onclick = () => send('SWITCH_TAB:' + idx);
-      el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); send('CLOSE_TAB:' + idx); } };
+      el.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); ev.stopPropagation(); closeTabFromStrip(el, idx); } };
       el.oncontextmenu = (ev) => { ev.preventDefault(); openTabMenu(idx, el); };
       el.title = t.title || 'New Tab';
 
       const displayTitle = (t.sleeping ? '💤 ' : '') + (t.title || 'New Tab');
       const hasAudio = !!(t.playing_audio || t.muted);
       const audioKey = hasAudio ? (t.muted ? 'M' : 'P') : 'N';
+      const fav = typeof t.favicon === 'string' && t.favicon.startsWith('data:image/') ? t.favicon : '';
+      const iconKey = (t.incognito ? 'I' : '') + (t.url === 'shunno://newtab' ? 'N' : '') + (fav ? fav.length + fav.slice(-16) : hostOf(t.url || ''));
 
-      if (el.dataset.renderedTitle !== displayTitle || el.dataset.audioKey !== audioKey || el.dataset.tabIdx !== String(idx)) {
+      if (el.dataset.renderedTitle !== displayTitle || el.dataset.audioKey !== audioKey || el.dataset.tabIdx !== String(idx) || el.dataset.iconKey !== iconKey) {
         el.dataset.renderedTitle = displayTitle;
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
+        el.dataset.iconKey = iconKey;
         const isNewTab = t.url === 'shunno://newtab';
-        const anonSvg = `<span class="tab-logo" style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
-        const tabLogoHtml = t.incognito
-          ? anonSvg
-          : ((!hasAudio && (isNewTab || t.pinned))
-              ? `<span class="tab-logo" style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`
-              : '');
+        const anonSvg = `<span class="tab-logo tab-fav" style="display:inline-flex;align-items:center;justify-content:center;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
+        const shunnoLogo = `<span class="tab-logo tab-fav" style="display:inline-flex;align-items:center;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`;
+        // The site's own icon when the page has one; otherwise a lettered tile in a colour of the site.
+        const tabLogoHtml = t.incognito ? anonSvg
+          : isNewTab ? shunnoLogo
+          : fav ? `<img class="tab-fav" alt="" src="${escapeHtml(fav)}">`
+          : siteIcon(t.url, t.title, 'tab-fav');
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
           : '';
-        el.innerHTML = `${tabLogoHtml}${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')" title="Close Tab">✕</span>`;
+        el.innerHTML = `<span class="tab-close" title="Close Tab" role="button" aria-label="Close Tab"><svg width="9" height="9" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></span>${tabLogoHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span>${audioHtml}`;
       }
+      const closeBtn = el.querySelector('.tab-close');
+      if (closeBtn) closeBtn.onclick = (ev) => { ev.stopPropagation(); closeTabFromStrip(el, idx); };
     });
     syncTabGroups(tabs, inSpace);
     markNarrowTabs();
+    const act = tabs[activeIdx];
+    if (act && tc.dataset.activeId !== String(act.id)) {
+      tc.dataset.activeId = String(act.id);
+      revealActiveTab(prevActiveId !== undefined);
+      // Again once tabs that are opening have reached their width.
+      setTimeout(() => revealActiveTab(true), 300);
+    }
+    updateTabFades();
   }
+
+  // Safari: closing tabs with the mouse keeps the other tabs' widths while the pointer stays in the
+  // strip, so the next tab's close button slides under the pointer. Widths relax when it leaves.
+  let tabWidthsLocked = false, lockedTabCount = 0;
+  function lockTabWidths() {
+    const tc = document.getElementById('tabs-container');
+    const els = Array.from(tc.querySelectorAll('.tab:not(.closing)'));
+    lockedTabCount = els.length - 1;
+    if (tabWidthsLocked) return;
+    tabWidthsLocked = true;
+    els.forEach(el => {
+      const w = el.getBoundingClientRect().width;
+      el.style.flex = `0 0 ${w}px`;
+      el.style.minWidth = el.style.maxWidth = `${w}px`;
+    });
+  }
+  function unlockTabWidths() {
+    if (!tabWidthsLocked) return;
+    tabWidthsLocked = false;
+    document.querySelectorAll('#tabs-container .tab').forEach(el => {
+      if (el.classList.contains('closing')) return;
+      el.style.flex = el.style.minWidth = el.style.maxWidth = '';
+    });
+    requestAnimationFrame(() => { markNarrowTabs(); updateTabFades(); });
+  }
+  function foldAwayTab(el) {
+    if (el.classList.contains('closing')) return;
+    const w = el.getBoundingClientRect().width;
+    el.style.flex = `0 0 ${w}px`;
+    el.style.minWidth = el.style.maxWidth = `${w}px`;
+    void el.offsetWidth;
+    el.style.flex = el.style.minWidth = el.style.maxWidth = '';
+    el.classList.add('closing');
+    el.dataset.tabId = '';
+    el.removeAttribute('data-tab-id');
+    setTimeout(() => { el.remove(); markNarrowTabs(); updateTabFades(); }, 260);
+  }
+  function closeTabFromStrip(el, idx) {
+    if (el.classList.contains('closing')) return;
+    lockTabWidths();
+    knownTabIds.delete(el.dataset.tabId);
+    foldAwayTab(el);
+    send('CLOSE_TAB:' + idx);
+  }
+  function revealActiveTab(smooth) {
+    const tc = document.getElementById('tabs-container');
+    const a = tc.querySelector('.tab.active');
+    if (!a || tc.scrollWidth <= tc.clientWidth) return;
+    const pad = 28;
+    const l = a.offsetLeft, r = l + a.offsetWidth;
+    let to = null;
+    if (l - pad < tc.scrollLeft) to = l - pad;
+    else if (r + pad > tc.scrollLeft + tc.clientWidth) to = r + pad - tc.clientWidth;
+    if (to !== null) tc.scrollTo({ left: Math.max(0, to), behavior: smooth ? 'smooth' : 'auto' });
+  }
+  function updateTabFades() {
+    const tc = document.getElementById('tabs-container');
+    if (!tc) return;
+    const over = tc.scrollWidth > tc.clientWidth + 1;
+    tc.classList.toggle('fade-l', over && tc.scrollLeft > 1);
+    tc.classList.toggle('fade-r', over && tc.scrollLeft < tc.scrollWidth - tc.clientWidth - 1);
+  }
+  (function tabStripInput() {
+    const start = () => {
+      const tc = document.getElementById('tabs-container');
+      const bar = document.getElementById('tab-bar');
+      if (!tc || !bar) return;
+      // Vertical wheel scrolls the strip sideways when it overflows.
+      tc.addEventListener('wheel', (e) => {
+        if (tc.scrollWidth <= tc.clientWidth) return;
+        const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        tc.scrollLeft += d;
+        e.preventDefault();
+      }, { passive: false });
+      tc.addEventListener('scroll', updateTabFades, { passive: true });
+      // Widths settle after the open/close animations: decide narrow tabs then.
+      let settle = null;
+      const settled = () => { if (settle) return; settle = requestAnimationFrame(() => { settle = null; markNarrowTabs(); updateTabFades(); }); };
+      tc.addEventListener('animationend', settled);
+      tc.addEventListener('transitionend', (e) => { if (e.propertyName === 'flex-basis' || e.propertyName === 'max-width' || e.propertyName === 'min-width' || e.propertyName === 'flex-grow') settled(); });
+      bar.addEventListener('mouseleave', unlockTabWidths);
+      // Empty space in the strip behaves like the title bar.
+      tc.addEventListener('mousedown', (e) => { if (e.target === tc && e.button === 0) send('WIN_DRAG'); });
+      tc.addEventListener('dblclick', (e) => { if (e.target === tc) send('WIN_MAXIMIZE'); });
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  })();
 
   // Safari, many tabs: a narrow tab keeps its close button, shown in place of the icon on the
   // current tab and on hover, instead of being pushed out of view.
   function markNarrowTabs() {
-    document.querySelectorAll('#tabs-container .tab').forEach(el => {
-      const narrow = el.getBoundingClientRect().width < 90;
+    document.querySelectorAll('#tabs-container .tab:not(.closing)').forEach(el => {
+      if (tabWidthsLocked || el.classList.contains('is-new')) return;
+      const narrow = el.getBoundingClientRect().width < 78;
       if (narrow !== (el.dataset.narrow === '1')) {
         if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
       }
@@ -2152,7 +2277,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   (function watchTabWidths() {
     const start = () => {
       const tc = document.getElementById('tabs-container');
-      if (tc && window.ResizeObserver) new ResizeObserver(() => markNarrowTabs()).observe(tc);
+      if (tc && window.ResizeObserver) new ResizeObserver(() => { markNarrowTabs(); updateTabFades(); revealActiveTab(false); }).observe(tc);
       window.addEventListener('resize', markNarrowTabs);
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
@@ -2195,7 +2320,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     });
     // Drop labels of groups that are gone, then put nodes in order without touching ones already in place.
     Array.from(tc.querySelectorAll('.tg-chip')).forEach(c => { if (!want.includes(c)) c.remove(); });
-    want.forEach((node, k) => { if (tc.children[k] !== node) tc.insertBefore(node, tc.children[k] || null); });
+    // Folding tabs stay where they are until they are gone; place the others around them.
+    const live = () => Array.from(tc.children).filter(n => !n.classList.contains('closing'));
+    want.forEach((node, k) => { const cur = live(); if (cur[k] !== node) tc.insertBefore(node, cur[k] || null); });
     // A group just made from the tab menu: ask for its name.
     if (st.name_group != null && groups.has(st.name_group)) {
       const gid = st.name_group;
