@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.22.0";
+pub const APP_VERSION: &str = "v2.22.1";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -422,6 +422,25 @@ pub fn new_profile_id(name: &str, taken: &[Profile]) -> String {
     id
 }
 
+/// Where links opened from other apps go: "last" (the profile used most recently) or a profile id.
+pub const LINKS_LAST: &str = "last";
+
+/// Pick the profile for a launch. An explicit `--profile=` wins. Otherwise a launch carrying a
+/// link follows the links setting; a plain launch opens the default profile.
+pub fn choose_launch_profile(arg_profile: Option<&str>, has_url: bool, links_pref: &str, last_used: Option<&str>, known: &[Profile]) -> String {
+    let exists = |id: &str| known.iter().any(|p| p.id == id);
+    if let Some(a) = arg_profile.filter(|a| valid_profile_id(a)) {
+        return a.to_string();
+    }
+    if has_url {
+        let want = if links_pref == LINKS_LAST { last_used.unwrap_or(DEFAULT_PROFILE) } else { links_pref };
+        if valid_profile_id(want) && exists(want) {
+            return want.to_string();
+        }
+    }
+    DEFAULT_PROFILE.to_string()
+}
+
 pub struct BrowserStorage;
 
 impl BrowserStorage {
@@ -444,6 +463,30 @@ impl BrowserStorage {
         let path = Self::shared_data_dir().join("profiles.json");
         let list = fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         sanitize_profiles(list)
+    }
+
+    /// The links setting (shared by all profiles).
+    pub fn load_links_profile() -> String {
+        fs::read_to_string(Self::shared_data_dir().join("links_profile.txt"))
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| t == LINKS_LAST || valid_profile_id(t))
+            .unwrap_or_else(|| LINKS_LAST.to_string())
+    }
+    pub fn save_links_profile(v: &str) {
+        if v == LINKS_LAST || valid_profile_id(v) {
+            let _ = fs::write(Self::shared_data_dir().join("links_profile.txt"), v);
+        }
+    }
+    /// The profile whose window was focused most recently.
+    pub fn load_last_profile() -> Option<String> {
+        fs::read_to_string(Self::shared_data_dir().join("last_profile.txt")).ok().map(|t| t.trim().to_string()).filter(|t| valid_profile_id(t))
+    }
+    pub fn save_last_profile(id: &str) {
+        let p = Self::shared_data_dir().join("last_profile.txt");
+        if fs::read_to_string(&p).ok().as_deref().map(str::trim) != Some(id) {
+            let _ = fs::write(p, id);
+        }
     }
 
     pub fn save_profiles(list: &[Profile]) {

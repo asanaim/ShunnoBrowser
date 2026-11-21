@@ -145,6 +145,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: transform .16s var(--ease-fluid); }
   .profile-btn.on { display: inline-flex; }
   .profile-btn:hover { transform: scale(1.06); }
+  .prof-links { display: none; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 10px;
+    border-radius: 10px; background: rgba(118,118,128,.08); font-size: 12px; }
+  .prof-links.on { display: flex; }
+  .prof-links select { border: 1px solid var(--border); border-radius: 7px; background: var(--surface, #fff); color: var(--text);
+    font: inherit; font-weight: 600; padding: 3px 6px; max-width: 160px; }
   .prof-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; }
   .prof-row:hover { background: rgba(118,118,128,.10); }
   .prof-av { width: 28px; height: 28px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
@@ -1037,6 +1042,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <button class="text-btn" onclick="profileForm(null)">New Profile</button>
         </div>
         <div id="profiles-list"></div>
+        <div class="prof-links" id="prof-links">
+          <span>Open links from other apps in</span>
+          <select id="prof-links-sel" onchange="send('PROFILE_LINKS:' + this.value)"></select>
+        </div>
         <div class="card" id="profile-form" style="display:none;margin-top:8px;">
           <div class="card-title" id="profile-form-title" style="margin-bottom:8px;">New Profile</div>
           <input class="text-box" id="profile-name" maxlength="40" style="width:100%;margin-bottom:8px;" placeholder="Name (e.g. Work, School)"
@@ -1052,7 +1061,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Each profile opens in its own window with separate cookies, sign-ins, history, bookmarks, passwords, permissions and settings.
-          Spaces, by contrast, share one profile.
+          Spaces, by contrast, share one profile. Ctrl+Alt+N opens Little Shunno in the profile you used last.
         </div>
       </div>
 
@@ -1936,6 +1945,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>`;
     }).join('');
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
+    // Link routing matters only with two or more profiles.
+    document.getElementById('prof-links').classList.toggle('on', list.length > 1);
+    const sel = document.getElementById('prof-links-sel');
+    const opts = '<option value="last">Last used window</option>' + list.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    if (sel.dataset.h !== opts) { sel.dataset.h = opts; sel.innerHTML = opts; }
+    const want = list.some(p => p.id === state.links_profile) ? state.links_profile : 'last';
+    if (document.activeElement !== sel) sel.value = want;
   }
   function profileForm(id) {
     const list = (lastState && lastState.profiles) || [];

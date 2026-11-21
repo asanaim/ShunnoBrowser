@@ -633,3 +633,21 @@ fn profiles_ids_dirs_and_sanitizing() {
     assert_eq!(new_profile_id("কাজ", &list), "profile");
     assert_eq!(new_profile_id("Default", &list), "profile");
 }
+
+#[test]
+fn launch_profile_routing() {
+    use state::*;
+    let p = |id: &str| Profile { id: id.into(), name: id.into(), color: PROFILE_COLORS[0].into() };
+    let known = vec![p("default"), p("work"), p("school")];
+    // Explicit --profile wins.
+    assert_eq!(choose_launch_profile(Some("school"), true, "work", Some("work"), &known), "school");
+    // A link follows the setting: a fixed profile, or the last used one.
+    assert_eq!(choose_launch_profile(None, true, "work", Some("school"), &known), "work");
+    assert_eq!(choose_launch_profile(None, true, LINKS_LAST, Some("school"), &known), "school");
+    // Unknown or deleted targets fall back to the default profile.
+    assert_eq!(choose_launch_profile(None, true, "gone", None, &known), DEFAULT_PROFILE);
+    assert_eq!(choose_launch_profile(None, true, LINKS_LAST, Some("gone"), &known), DEFAULT_PROFILE);
+    assert_eq!(choose_launch_profile(None, true, LINKS_LAST, None, &known), DEFAULT_PROFILE);
+    // A plain launch (Start menu, no link) opens the default profile.
+    assert_eq!(choose_launch_profile(None, false, "work", Some("school"), &known), DEFAULT_PROFILE);
+}
