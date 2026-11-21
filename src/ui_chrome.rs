@@ -123,6 +123,26 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
   }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
+  /* Spaces: the active Space's colour marks the current tab and the Space button. */
+  .tab.active:not(.incognito) { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12), inset 0 -2px 0 var(--space-accent, transparent); }
+  .space-pill {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; max-width: 150px; padding: 0 10px 0 8px; margin: 0 4px 0 2px;
+    border: none; border-radius: 9px; cursor: pointer; flex-shrink: 0;
+    background: color-mix(in srgb, var(--space-accent, #0A84FF) 14%, transparent); color: var(--text);
+    font-size: 12px; font-weight: 600; transition: background 0.18s var(--ease-fluid);
+  }
+  .space-pill:hover { background: color-mix(in srgb, var(--space-accent, #0A84FF) 24%, transparent); }
+  .space-pill .ic { font-size: 13px; line-height: 1; }
+  .space-pill .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .space-row { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 9px; cursor: pointer; position: relative; }
+  .space-row:hover { background: rgba(118,118,128,0.10); }
+  .space-row.on { background: color-mix(in srgb, var(--row-accent) 16%, transparent); }
+  .space-row .sw { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; background: color-mix(in srgb, var(--row-accent) 22%, transparent); }
+  .space-row .nm { flex: 1; font-size: 12.5px; font-weight: 500; }
+  .space-row .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+  .swatch.on { border-color: var(--text); }
   .tab.drag-over-left { box-shadow: -3px 0 0 0 var(--blue); }
   .tab.drag-over-right { box-shadow: 3px 0 0 0 var(--blue); }
   .folder-pills { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -651,6 +671,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><defs><linearGradient id="shunnoTile" x1="0" y1="1.5" x2="0" y2="26.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#48B2FF"/><stop offset="100%" stop-color="#0062EB"/></linearGradient></defs><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg>
       </div>
+      <button class="space-pill" id="space-pill" onclick="toggleDrawer('spaces', this)" title="Spaces"></button>
       <div id="tabs-container"></div>
       <button class="tab-add" onclick="openNewTab()" title="New Tab (Ctrl+T)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -800,6 +821,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-blue" id="menu-speed-btn" onclick="cycleSpeed()" title="Video &amp; Audio Playback Speed">⏩ 1.0×</button>
             <button class="pill-btn pill-soft" onclick="closeDrawer(); send('PRINT_TO_PDF');" title="Save current page as PDF">📄 PDF</button>
             <button class="pill-btn pill-green" onclick="send('SAVE_OFFLINE_HTML'); closeDrawer();">💾 Save</button>
+            <button class="pill-btn pill-soft" onclick="closeDrawer(); send('LITTLE_OPEN');" title="Little Shunno: a small quick window (Ctrl+Alt+N from anywhere)">🪟 Little</button>
+            <button class="pill-btn pill-soft" onclick="send('SET_DEFAULT_BROWSER')" title="Make Shunno the browser for links from other apps">⭐ Set as Default</button>
           </div>
 
           <div style="display:flex;align-items:center;gap:10px;margin:2px 0 6px;">
@@ -811,6 +834,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             </div>
           </div>
           <div class="grid-toggles" id="global-toggles-grid"></div>
+          <div class="meta" id="menu-note" style="display:none;margin-top:4px;"></div>
           <div class="meta" id="force-dark-note" style="display:none;margin-top:2px;">Darken All Sites applies after you restart Shunno.</div>
           <div class="toggle-tile" style="border-top:1px solid var(--border);border-bottom:none;margin-top:0;" title="Unpinned tabs you have not looked at for this long close by themselves (Arc-style). Reopen with Ctrl+Shift+T or from History. Pinned, playing and private tabs are kept.">
             <span>🗄️ Close unused tabs after</span>
@@ -928,6 +952,31 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <!-- Panel E: Downloads Downloads -->
+      <div id="panel-spaces" style="display:none">
+        <div class="sheet-head">
+          <h3>Spaces</h3>
+          <button class="text-btn" onclick="spaceForm(null)">New Space</button>
+        </div>
+        <div id="spaces-list"></div>
+        <div class="card" id="space-form" style="display:none;margin-top:8px;">
+          <div class="card-title" id="space-form-title" style="margin-bottom:8px;">New Space</div>
+          <div style="display:flex;gap:6px;margin-bottom:8px;">
+            <input class="text-box" id="space-icon" maxlength="2" style="width:44px;text-align:center;" placeholder="✦" />
+            <input class="text-box" id="space-name" maxlength="24" style="flex:1;" placeholder="Name (e.g. Work, Study)" />
+          </div>
+          <div class="swatches" id="space-swatches"></div>
+          <div style="display:flex;gap:6px;justify-content:space-between;margin-top:10px;">
+            <button class="text-btn" id="space-delete" style="color:var(--red);" onclick="spaceDelete()">Delete Space</button>
+            <div style="display:flex;gap:6px;">
+              <button class="text-btn" onclick="document.getElementById('space-form').style.display='none'">Cancel</button>
+              <button class="pill-btn pill-blue" onclick="spaceSave()">Save</button>
+            </div>
+          </div>
+        </div>
+        <div class="meta" id="space-move" style="margin-top:10px;"></div>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">Each Space keeps its own tabs. New tabs open in the current Space. Spaces share cookies and logins.</div>
+      </div>
+
       <div id="panel-passwords" style="display:none">
         <div class="sheet-head">
           <h3>Passwords</h3>
@@ -1223,7 +1272,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -1353,7 +1402,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // Flicker-free incremental tab reconciliation (never blinks or re-animates existing tabs!)
   function syncTabsStatic(tabs, activeIdx) {
     const tc = document.getElementById('tabs-container');
-    const currentIds = new Set(tabs.map(t => String(t.id)));
+    // Spaces: show only the active Space's tabs (indices stay those of the full list).
+    const sp = window.__shunnoLastState && window.__shunnoLastState.spaces ? window.__shunnoLastState.spaces.active : null;
+    const inSpace = (t) => sp === null || t.space === undefined || t.space === sp;
+    const currentIds = new Set(tabs.filter(inSpace).map(t => String(t.id)));
 
     // Remove closed tabs
     Array.from(tc.children).forEach(el => {
@@ -1364,6 +1416,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     });
 
     tabs.forEach((t, idx) => {
+      if (!inSpace(t)) return;
       const idStr = String(t.id);
       let el = tc.querySelector(`.tab[data-tab-id="${idStr}"]`);
       if (!el) {
@@ -1496,9 +1549,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Clear Current Site Cookies & Storage', run: () => send('CLEAR_SITE_DATA') },
       { kind: 'Action', title: 'Open Downloads Manager (Ctrl+J)', run: () => toggleDrawer('downloads') },
       { kind: 'Action', title: 'New Private Tab', run: () => send('NEW_INCOGNITO') },
+      { kind: 'Action', title: 'Little Shunno Window (Ctrl+Alt+N)', run: () => send('LITTLE_OPEN') },
+      { kind: 'Action', title: 'New Space', run: () => { toggleDrawer('spaces', document.getElementById('space-pill')); setTimeout(() => spaceForm(null), 80); } },
       { kind: 'Action', title: 'Toggle Fullscreen (F11)', run: () => send('TOGGLE_FULLSCREEN') },
     ];
     actions.forEach(a => items.push(a));
+    if (st && st.spaces) {
+      st.spaces.list.forEach(spc => {
+        if (spc.id !== st.spaces.active) items.push({ kind: 'Space', title: 'Switch to Space: ' + spc.icon + ' ' + spc.name, run: () => send('SPACE_SWITCH:' + spc.id) });
+      });
+      st.spaces.list.forEach(spc => {
+        if (spc.id !== st.spaces.active) items.push({ kind: 'Space', title: 'Move Tab to Space: ' + spc.icon + ' ' + spc.name, run: () => send('TAB_TO_SPACE:' + st.active_tab + '|' + spc.id) });
+      });
+    }
 
     if (st) {
       (st.tabs || []).forEach((t, idx) => {
@@ -1722,6 +1785,64 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     window.__focusHomeSearch();
     send('NEW_TAB');
   }
+  // ---------------------------------------------------------------- Spaces
+  const SPACE_COLORS = ['#0A84FF', '#30B0C7', '#34C759', '#FF9F0A', '#FF375F', '#BF5AF2', '#5E5CE6', '#8E8E93'];
+  let spaceEditing = null, spaceColor = SPACE_COLORS[0];
+  function renderSpaces(state) {
+    const sv = state.spaces;
+    if (!sv) return;
+    const cur = sv.list.find(x => x.id === sv.active) || sv.list[0];
+    document.documentElement.style.setProperty('--space-accent', cur.color);
+    const pill = document.getElementById('space-pill');
+    const pillHtml = `<span class="ic">${escapeHtml(cur.icon)}</span><span class="nm">${escapeHtml(cur.name)}</span>`;
+    if (pill.innerHTML !== pillHtml) pill.innerHTML = pillHtml;
+    const counts = {};
+    (state.tabs || []).forEach(t => { counts[t.space] = (counts[t.space] || 0) + 1; });
+    const list = document.getElementById('spaces-list');
+    const html = sv.list.map(x => `
+      <div class="space-row ${x.id === sv.active ? 'on' : ''}" style="--row-accent:${x.color}" onclick="send('SPACE_SWITCH:${x.id}')">
+        <div class="sw">${escapeHtml(x.icon)}</div>
+        <div class="nm">${escapeHtml(x.name)}</div>
+        <div class="ct">${counts[x.id] || 0}</div>
+        <button class="icon-btn" title="Edit" onclick="event.stopPropagation(); spaceForm(${x.id})"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
+      </div>`).join('');
+    if (list.dataset.h !== html) { list.dataset.h = html; list.innerHTML = html; }
+    const others = sv.list.filter(x => x.id !== sv.active);
+    const mv = document.getElementById('space-move');
+    const mvHtml = others.length ? 'Move this tab to: ' + others.map(x => `<a href="#" style="color:${x.color};font-weight:600;" onclick="event.preventDefault(); send('TAB_TO_SPACE:${state.active_tab}|${x.id}')">${escapeHtml(x.icon + ' ' + x.name)}</a>`).join(' · ') : '';
+    if (mv.dataset.h !== mvHtml) { mv.dataset.h = mvHtml; mv.innerHTML = mvHtml; }
+  }
+  function spaceForm(id) {
+    const sv = lastState && lastState.spaces;
+    const x = id !== null && sv ? sv.list.find(s => s.id === id) : null;
+    spaceEditing = x ? x.id : null;
+    spaceColor = x ? x.color : SPACE_COLORS[(sv ? sv.list.length : 0) % SPACE_COLORS.length];
+    document.getElementById('space-form-title').textContent = x ? 'Edit Space' : 'New Space';
+    document.getElementById('space-name').value = x ? x.name : '';
+    document.getElementById('space-icon').value = x ? x.icon : '';
+    document.getElementById('space-delete').style.display = x && sv.list.length > 1 ? '' : 'none';
+    renderSwatches();
+    document.getElementById('space-form').style.display = '';
+    document.getElementById('space-name').focus();
+  }
+  function renderSwatches() {
+    document.getElementById('space-swatches').innerHTML = SPACE_COLORS.map(c =>
+      `<button class="swatch ${c === spaceColor ? 'on' : ''}" style="background:${c}" onclick="spaceColor='${c}'; renderSwatches()" title="${c}"></button>`).join('');
+  }
+  function spaceSave() {
+    const payload = JSON.stringify({ name: document.getElementById('space-name').value, icon: document.getElementById('space-icon').value, color: spaceColor });
+    send(spaceEditing === null ? 'SPACE_NEW:' + payload : 'SPACE_EDIT:' + spaceEditing + '|' + payload);
+    document.getElementById('space-form').style.display = 'none';
+  }
+  function spaceDelete() {
+    if (spaceEditing === null) return;
+    const x = lastState.spaces.list.find(s => s.id === spaceEditing);
+    if (x && confirm(`Delete the Space "${x.name}"? Its tabs close (you can reopen them with Ctrl+Shift+T).`)) {
+      send('SPACE_DELETE:' + spaceEditing);
+      document.getElementById('space-form').style.display = 'none';
+    }
+  }
+
   // One place for browser shortcuts: the toolbar's keydown and pages (via the native hook) both land here.
   function runShortcut(id) {
     switch (id) {
@@ -2038,6 +2159,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const globalItems = [
       ['force_dark_pages', '🌑 Darken All Sites', state.global.force_dark_pages],
       ['download_takeover', '⚡ Accelerate Downloads', state.global.download_takeover],
+      ['little_for_links', '🪟 Links in Little Window', state.global.little_for_links],
       ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
@@ -2052,6 +2174,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     ];
     const mode = state.global.theme_mode || 'system';
     document.querySelectorAll('#theme-seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    const mn = document.getElementById('menu-note');
+    mn.textContent = state.menu_note || '';
+    mn.style.display = state.menu_note ? '' : 'none';
     document.getElementById('force-dark-note').style.display = (!!state.global.force_dark_pages !== !!state.force_dark_active) ? '' : 'none';
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
@@ -2111,6 +2236,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     `).join('');
 
     renderImport(state);
+    renderSpaces(state);
     renderPeek(state);
     renderPwOffer(state);
     renderPasswords(state);

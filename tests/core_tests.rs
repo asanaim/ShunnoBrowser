@@ -18,6 +18,8 @@ mod updater;
 mod importer;
 #[path = "../src/passwords.rs"]
 mod passwords;
+#[path = "../src/little.rs"]
+mod little;
 
 use sanitizer::{extract_host, sanitize_url};
 use state::GlobalSettings;
@@ -484,12 +486,12 @@ fn test_download_takeover_probe() {
             let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
             let has_cookie = req.to_ascii_lowercase().contains("cookie: session=abc");
             let resp = match path.as_str() {
-                "/ok" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\nx".to_string(),
-                "/noranges" => "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 1\r\n\r\nx".to_string(),
-                "/html" => "HTTP/1.1 206 Partial Content\r\nContent-Type: text/html; charset=utf-8\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\n<".to_string(),
-                "/mismatch" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/123\r\nContent-Length: 1\r\n\r\nx".to_string(),
-                "/needs-cookie" if has_cookie => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes 0-0/5000000\r\nContent-Length: 1\r\n\r\nx".to_string(),
-                _ => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_string(),
+                "/ok" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/5000000\r\nConnection: close\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/noranges" => "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nConnection: close\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/html" => "HTTP/1.1 206 Partial Content\r\nContent-Type: text/html; charset=utf-8\r\nContent-Range: bytes 0-0/5000000\r\nConnection: close\r\nContent-Length: 1\r\n\r\n<".to_string(),
+                "/mismatch" => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/zip\r\nContent-Range: bytes 0-0/123\r\nConnection: close\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                "/needs-cookie" if has_cookie => "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes 0-0/5000000\r\nConnection: close\r\nContent-Length: 1\r\n\r\nx".to_string(),
+                _ => "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
             };
             let _ = s.write_all(resp.as_bytes());
         }
@@ -507,4 +509,50 @@ fn test_download_takeover_probe() {
     assert_eq!(probe("/mismatch", None, Some(5_000_000)), None); // different file
     assert_eq!(probe("/needs-cookie", None, Some(5_000_000)), None);
     assert_eq!(probe("/needs-cookie", Some("session=abc"), Some(5_000_000)), Some(5_000_000));
+}
+
+#[test]
+fn test_little_command_line_urls() {
+    use little::{url_from_arg, url_from_args};
+    assert_eq!(url_from_arg("https://example.com/a?b=1").as_deref(), Some("https://example.com/a?b=1"));
+    assert_eq!(url_from_arg("\"http://Example.com\"").as_deref(), Some("http://example.com/"));
+    assert_eq!(url_from_arg("--flag"), None);
+    assert_eq!(url_from_arg("javascript:alert(1)"), None);
+    assert_eq!(url_from_arg("C:\\Users\\x\\notes.txt"), None); // only web documents
+    assert_eq!(url_from_arg("relative.html"), None);
+    assert_eq!(url_from_arg("file:///C:/a.html").as_deref(), Some("file:///C:/a.html"));
+    let args = vec!["ShunnoBrowser.exe".to_string(), "--x".to_string(), "https://a.org".to_string()];
+    assert_eq!(url_from_args(args).as_deref(), Some("https://a.org/"));
+    assert_eq!(url_from_args(vec!["ShunnoBrowser.exe".to_string()]), None);
+}
+
+#[test]
+fn test_spaces_logic() {
+    use state::{pick_tab_for_space, sanitize_space_name, step_in_space, Space, SpacesFile};
+    // (tab id, space) in strip order
+    let tabs = [(10, 1), (11, 2), (12, 1), (13, 2), (14, 1)];
+    assert_eq!(pick_tab_for_space(&tabs, 2, None), Some(1));
+    assert_eq!(pick_tab_for_space(&tabs, 2, Some(13)), Some(3)); // remembered tab
+    assert_eq!(pick_tab_for_space(&tabs, 2, Some(12)), Some(1)); // remembered tab moved away
+    assert_eq!(pick_tab_for_space(&tabs, 3, None), None); // empty Space
+    assert_eq!(step_in_space(&tabs, 0, true), 2);
+    assert_eq!(step_in_space(&tabs, 4, true), 0); // wraps within Space 1
+    assert_eq!(step_in_space(&tabs, 0, false), 4);
+    assert_eq!(step_in_space(&tabs, 3, true), 1);
+    assert_eq!(step_in_space(&[(1, 1), (2, 2)], 0, true), 0); // alone in its Space
+    // Loading: empty or broken files become one valid Space; active always exists.
+    let f = SpacesFile { spaces: vec![], active: 9 }.normalized();
+    assert_eq!(f.spaces.len(), 1);
+    assert_eq!(f.active, f.spaces[0].id);
+    let f = SpacesFile {
+        spaces: vec![Space { id: 4, name: "  \u{0007}Work ".into(), color: "red".into(), icon: "💼✨🔥".into() }],
+        active: 7,
+    }
+    .normalized();
+    assert_eq!((f.spaces[0].name.as_str(), f.spaces[0].color.as_str(), f.active), ("Work", "#0A84FF", 4));
+    assert_eq!(f.spaces[0].icon.chars().count(), 2);
+    assert_eq!(f.resolve(0), 4); // old sessions without Spaces land in the first Space
+    assert_eq!(f.next_id(), 5);
+    assert_eq!(sanitize_space_name(""), "Space");
+    assert_eq!(sanitize_space_name(&"x".repeat(40)).len(), 24);
 }

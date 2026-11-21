@@ -5,6 +5,7 @@ mod downloader;
 mod https_guard;
 mod importer;
 mod passwords;
+mod little;
 mod updater;
 mod sanitizer;
 mod state;
@@ -98,6 +99,44 @@ fn tab_origin(tabs: &[BrowserTab], tab_id: usize) -> Option<(String, bool)> {
     Some((passwords::origin_of(&url)?, private))
 }
 
+thread_local! {
+    /// One-line note shown at the top of the Menu (e.g. after "Set as Default Browser").
+    static MENU_NOTE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+// ---------------------------------------------------------------- Spaces (Arc)
+thread_local! {
+    static SPACES: std::cell::RefCell<state::SpacesFile> = std::cell::RefCell::new(state::SpacesFile::default());
+    /// Tab id → Space id. A tab not listed yet joins the active Space the first time it is seen.
+    static TAB_SPACE: std::cell::RefCell<HashMap<usize, u32>> = std::cell::RefCell::new(HashMap::new());
+    /// Space id → last active tab id there.
+    static SPACE_LAST_TAB: std::cell::RefCell<HashMap<u32, usize>> = std::cell::RefCell::new(HashMap::new());
+}
+fn active_space() -> u32 {
+    SPACES.with(|s| s.borrow().active)
+}
+fn tab_space(tab_id: usize) -> u32 {
+    let a = active_space();
+    TAB_SPACE.with(|m| *m.borrow_mut().entry(tab_id).or_insert(a))
+}
+fn set_tab_space(tab_id: usize, space: u32) {
+    TAB_SPACE.with(|m| {
+        m.borrow_mut().insert(tab_id, space);
+    });
+}
+fn tab_space_pairs(tabs: &[BrowserTab]) -> Vec<(usize, u32)> {
+    tabs.iter().map(|t| (t.id, tab_space(t.id))).collect()
+}
+fn save_spaces() {
+    SPACES.with(|s| BrowserStorage::save_spaces(&s.borrow()));
+}
+
+#[derive(Serialize)]
+struct SpacesView {
+    list: Vec<state::Space>,
+    active: u32,
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -105,6 +144,12 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// Another launch of Shunno handed over a link ("" = just bring the window forward).
+    ExternalOpen(String),
+    /// Open (or focus) Little Shunno, optionally at a URL.
+    LittleOpen(Option<String>),
+    /// Message from Little Shunno's toolbar.
+    LittleIpc(String),
     /// A page started a download in WebView2; Shunno may take it over (see probe_takeover).
     TakeoverCandidate { native_id: u64, tab_id: usize, url: String, file_name: String, total: Option<u64> },
     /// Cookies collected for a takeover candidate; probe next.
@@ -210,6 +255,7 @@ struct TabSummary {
     playing_audio: bool,
     muted: bool,
     sleeping: bool,
+    space: u32,
 }
 
 #[derive(Serialize)]
@@ -225,6 +271,8 @@ struct ChromeSnapshot {
     is_fullscreen: bool,
     is_maximized: bool,
     import_sources: Vec<importer::ImportSource>,
+    spaces: SpacesView,
+    menu_note: String,
     peek: Option<PeekView>,
     pw_offer: Option<passwords::Offer>,
     passwords: Vec<passwords::CredentialView>,
@@ -2223,6 +2271,20 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             match msg {
                 // Paint the grip strips in the theme colour (the window class has no background brush).
                 0x0014 /* WM_ERASEBKGND */ => return LRESULT(1),
+                0x004A /* WM_COPYDATA */ => {
+                    if let Some(url) = little::read_copydata(lparam.0) {
+                        if let Some(p) = THEME_PROXY.get().and_then(|m| m.lock().ok()) {
+                            let _ = p.send_event(AppEvent::ExternalOpen(url));
+                        }
+                        return LRESULT(1);
+                    }
+                }
+                0x0312 /* WM_HOTKEY */ if wparam.0 as i32 == little::HOTKEY_ID => {
+                    if let Some(p) = THEME_PROXY.get().and_then(|m| m.lock().ok()) {
+                        let _ = p.send_event(AppEvent::LittleOpen(None));
+                    }
+                    return LRESULT(0);
+                }
                 0x001A /* WM_SETTINGCHANGE */ => {
                     if lparam.0 != 0 {
                         let s = windows::core::PCWSTR(lparam.0 as *const u16).to_string().unwrap_or_default();
@@ -2570,6 +2632,12 @@ fn bring_webview_to_top(_wv: &WebView) {}
 fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
 
+    // One Shunno at a time: a second launch (e.g. a link clicked in another app) hands its link over.
+    let start_url = little::url_from_args(std::env::args());
+    if little::hand_off_to_running_instance(start_url.as_deref()) {
+        return Ok(());
+    }
+
     // Store WebView2 user profile cleanly inside %LOCALAPPDATA%\ShunnoBrowser\WebView2
     // so ShunnoBrowser.exe stays 100% standalone with zero folder beside the executable.
     let wv2_data_dir = BrowserStorage::app_data_dir().join("WebView2");
@@ -2631,6 +2699,12 @@ fn main() -> wry::Result<()> {
         .build()?;
 
     install_native_win32_window_features(&window, &chrome_wv);
+    #[cfg(windows)]
+    {
+        use tao::platform::windows::WindowExtWindows;
+        little::publish_main_window(window.hwnd() as isize);
+        little::register_hotkey(window.hwnd() as isize);
+    }
     set_frame_theme(&window, global_settings.full_dark_mode);
     let _ = THEME_PROXY.set(std::sync::Mutex::new(proxy.clone()));
     FORCE_DARK_AT_START.store(global_settings.force_dark_pages, Ordering::Relaxed);
@@ -2675,17 +2749,20 @@ fn main() -> wry::Result<()> {
     // Tabs for which the user asked "Save page"; OFFLINE_HTML from any other tab is ignored.
     let mut pending_offline_saves: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
+    SPACES.with(|s| *s.borrow_mut() = BrowserStorage::load_spaces());
     let saved_session = BrowserStorage::load_session();
-    let initial_urls: Vec<String> = if saved_session.is_empty() {
-        vec!["shunno://newtab".to_string()]
+    let initial: Vec<(String, u32)> = if saved_session.is_empty() {
+        vec![("shunno://newtab".to_string(), active_space())]
     } else {
-        saved_session.into_iter().map(|t| t.url).collect()
+        let resolve = |id: u32| SPACES.with(|s| s.borrow().resolve(id));
+        saved_session.into_iter().map(|t| (t.url, resolve(t.space))).collect()
     };
 
-    for u in initial_urls {
+    for (u, restored_space) in initial {
         let host = extract_host(&u);
         let pol = site_policies.get(&host).cloned().unwrap_or_default();
         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+        set_tab_space(tid, restored_space);
         if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
             let init_title = if u == "shunno://newtab" {
                 "New Tab".to_string()
@@ -2709,6 +2786,41 @@ fn main() -> wry::Result<()> {
                 zoom: 1.0,
                 webview: wv,
             });
+        }
+    }
+
+    if let Some(u) = start_url.clone() {
+        let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, u));
+    }
+    // Little Shunno (one at a time).
+    struct Little {
+        window: Window,
+        bar: WebView,
+        content: WebView,
+        id: usize,
+    }
+    let mut little: Option<Little> = None;
+    const LITTLE_BAR_H: f64 = 44.0;
+    fn layout_little(l: &Little) {
+        let size = l.window.inner_size().to_logical::<f64>(l.window.scale_factor());
+        let _ = l.bar.set_bounds(Rect { position: LogicalPosition::new(0.0, 0.0).into(), size: LogicalSize::new(size.width, LITTLE_BAR_H).into() });
+        let _ = l.content.set_bounds(Rect {
+            position: LogicalPosition::new(0.0, LITTLE_BAR_H).into(),
+            size: LogicalSize::new(size.width, (size.height - LITTLE_BAR_H).max(50.0)).into(),
+        });
+        let _ = l.content.set_visible(true);
+    }
+
+    // Start on a tab of the active Space (or move to the Space of the first tab).
+    {
+        let pairs = tab_space_pairs(&tabs);
+        match state::pick_tab_for_space(&pairs, active_space(), None) {
+            Some(i) => active_tab_idx = i,
+            None => {
+                if let Some(&(_, sp)) = pairs.first() {
+                    SPACES.with(|s| s.borrow_mut().active = sp);
+                }
+            }
         }
     }
 
@@ -2869,8 +2981,23 @@ fn main() -> wry::Result<()> {
                     playing_audio: t.playing_audio,
                     muted: t.muted,
                     sleeping: t.sleeping,
+                    space: tab_space(t.id),
                 })
                 .collect(),
+            menu_note: MENU_NOTE.with(|n| n.borrow().clone()),
+            spaces: {
+                // Remember the tab on screen as this Space's last tab.
+                if let Some(t) = tabs.get(active_idx) {
+                    let sp = tab_space(t.id);
+                    SPACE_LAST_TAB.with(|m| {
+                        m.borrow_mut().insert(sp, t.id);
+                    });
+                }
+                SPACES.with(|s| {
+                    let s = s.borrow();
+                    SpacesView { list: s.spaces.clone(), active: s.active }
+                })
+            },
             active_tab: active_idx,
             split_tab,
             active_url,
@@ -2903,8 +3030,24 @@ fn main() -> wry::Result<()> {
 
     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, elwt, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // Little Shunno's own window events never reach the main window's handlers.
+        if let Event::WindowEvent { window_id, event: ref wev, .. } = event {
+            if little.as_ref().map(|l| l.window.id()) == Some(window_id) {
+                match wev {
+                    WindowEvent::CloseRequested => little = None,
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        if let Some(l) = little.as_ref() {
+                            layout_little(l);
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+        }
 
         match event {
             Event::WindowEvent {
@@ -2965,6 +3108,7 @@ fn main() -> wry::Result<()> {
                     .map(|t| SavedTab {
                         title: t.title.clone(),
                         url: t.url.clone(),
+                        space: tab_space(t.id),
                     })
                     .collect();
                 BrowserStorage::save_session(&to_save);
@@ -2999,7 +3143,7 @@ fn main() -> wry::Result<()> {
                     for idx in doomed {
                         let removed = tabs.remove(idx);
                         if removed.url != "shunno://newtab" {
-                            closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
+                            closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url });
                         }
                     }
                     active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(0);
@@ -3128,6 +3272,15 @@ fn main() -> wry::Result<()> {
                     is_fullscreen,
                     &engine,
                 );
+            }
+
+            Event::UserEvent(AppEvent::TabTitleChanged(tab_id, new_title)) if little.as_ref().map(|l| l.id) == Some(tab_id) => {
+                if let Some(l) = little.as_ref() {
+                    let t = new_title.trim();
+                    l.window.set_title(&if t.is_empty() { "Little Shunno".to_string() } else { format!("{t} \u{2014} Little Shunno") });
+                    let u = l.content.url().unwrap_or_default();
+                    let _ = l.bar.evaluate_script(&format!("window.__setUrl({})", serde_json::Value::String(u)));
+                }
             }
 
             Event::UserEvent(AppEvent::TabTitleChanged(tab_id, new_title)) => {
@@ -3525,6 +3678,108 @@ fn main() -> wry::Result<()> {
                 let _ = op;
                 engine.delete(native_id);
                 let _ = engine.enqueue_named(&rt_handle, url, global_settings.default_threads, referer, cookie, "RENAME", None, Some(file_name));
+            }
+
+            Event::UserEvent(AppEvent::ExternalOpen(url)) => {
+                if url.is_empty() {
+                    window.set_minimized(false);
+                    window.set_focus();
+                } else if global_settings.little_for_links {
+                    let _ = proxy.send_event(AppEvent::LittleOpen(Some(url)));
+                } else {
+                    window.set_minimized(false);
+                    window.set_focus();
+                    let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, url));
+                }
+                return;
+            }
+
+            Event::UserEvent(AppEvent::LittleOpen(url)) => {
+                if let Some(l) = little.as_ref() {
+                    if let Some(u) = url.as_deref() {
+                        let _ = l.content.load_url(u);
+                        let _ = l.bar.evaluate_script(&format!("window.__setUrl({})", serde_json::Value::String(u.to_string())));
+                    } else {
+                        let _ = l.bar.focus();
+                        let _ = l.bar.evaluate_script("window.__focus()");
+                    }
+                    l.window.set_minimized(false);
+                    l.window.set_focus();
+                    return;
+                }
+                let lw = match WindowBuilder::new()
+                    .with_title("Little Shunno")
+                    .with_window_icon(load_embedded_window_icon())
+                    .with_inner_size(LogicalSize::new(980.0, 700.0))
+                    .with_min_inner_size(LogicalSize::new(480.0, 320.0))
+                    .build(elwt)
+                {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+                let lproxy = proxy.clone();
+                #[allow(unused_mut)]
+                let mut bar_builder = WebViewBuilder::new_as_child(&lw);
+                #[cfg(windows)]
+                {
+                    use wry::WebViewBuilderExtWindows;
+                    bar_builder = bar_builder
+                        .with_additional_browser_args(state::browser_args(FORCE_DARK_AT_START.load(Ordering::Relaxed)))
+                        .with_theme(page_theme(global_settings.full_dark_mode));
+                }
+                let bar = match bar_builder
+                    .with_web_context(&mut web_context)
+                    .with_bounds(Rect { position: LogicalPosition::new(0.0, 0.0).into(), size: LogicalSize::new(980.0, LITTLE_BAR_H).into() })
+                    .with_html(little::BAR_HTML)
+                    .with_ipc_handler(move |req| {
+                        let _ = lproxy.send_event(AppEvent::LittleIpc(req.body().clone()));
+                    })
+                    .build()
+                {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
+                let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                let start = url.clone().unwrap_or_else(|| "about:blank".to_string());
+                let pol = site_policies.get(&extract_host(&start)).cloned().unwrap_or_default();
+                let Ok(content) = create_tab_webview(&lw, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone(), false) else { return };
+                let _ = bar.evaluate_script(&format!("window.__setDark({}); window.__setUrl({});", global_settings.full_dark_mode, serde_json::Value::String(start.clone())));
+                let l = Little { window: lw, bar, content, id: tid };
+                layout_little(&l);
+                if url.is_none() {
+                    let _ = l.bar.focus();
+                    let _ = l.bar.evaluate_script("window.__focus()");
+                }
+                l.window.set_focus();
+                little = Some(l);
+                return;
+            }
+
+            Event::UserEvent(AppEvent::LittleIpc(msg)) => {
+                let Some(l) = little.as_ref() else { return };
+                if let Some(text) = msg.strip_prefix("NAV:") {
+                    if !text.trim().is_empty() {
+                        let target = sanitize_url(text, &global_settings);
+                        let _ = l.content.load_url(&target);
+                        let _ = l.content.focus();
+                    }
+                } else if msg == "BACK" {
+                    let _ = l.content.evaluate_script("history.back()");
+                } else if msg == "CLOSE" {
+                    little = None;
+                } else if msg == "OPEN" {
+                    // Move the page into the main window as a tab, then close Little Shunno.
+                    let u = l.content.url().unwrap_or_default();
+                    little = None;
+                    window.set_minimized(false);
+                    window.set_focus();
+                    if u.starts_with("http") {
+                        let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, u));
+                    } else {
+                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                    }
+                }
+                return;
             }
 
             Event::UserEvent(AppEvent::SystemThemeChanged) => {
@@ -4107,6 +4362,7 @@ fn main() -> wry::Result<()> {
                         .map(|t| SavedTab {
                             title: t.title.clone(),
                             url: t.url.clone(),
+                            space: tab_space(t.id),
                         })
                         .collect();
                     BrowserStorage::save_session(&to_save);
@@ -4243,12 +4499,12 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "NEXT_TAB" {
                     if !tabs.is_empty() {
-                        active_tab_idx = (active_tab_idx + 1) % tabs.len();
+                        active_tab_idx = state::step_in_space(&tab_space_pairs(&tabs), active_tab_idx, true);
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                     }
                 } else if cmd == "PREV_TAB" {
                     if !tabs.is_empty() {
-                        active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
+                        active_tab_idx = state::step_in_space(&tab_space_pairs(&tabs), active_tab_idx, false);
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                     }
                 } else if cmd == "REFRESH_UI" {
@@ -4274,6 +4530,13 @@ fn main() -> wry::Result<()> {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if idx < tabs.len() {
                             active_tab_idx = idx;
+                            // A tab picked from another Space (e.g. in the palette) brings its Space along.
+                            let sp = tab_space(tabs[idx].id);
+                            if sp != active_space() {
+                                SPACES.with(|s| s.borrow_mut().active = sp);
+                                save_spaces();
+                                split_tab_idx = None;
+                            }
                             drawer_open = false;
                             engine_menu_open = false;
                             palette_open = false;
@@ -4296,20 +4559,9 @@ fn main() -> wry::Result<()> {
                         }
                     }
                 } else if cmd == "CLOSE_ACTIVE_TAB" {
-                    if tabs.len() <= 1 {
-                        BrowserStorage::save_session(&[]);
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    } else if active_tab_idx < tabs.len() {
-                        let removed = tabs.remove(active_tab_idx);
-                        if !removed.incognito && removed.url != "shunno://newtab" {
-                            closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
-                        }
-                        if active_tab_idx >= tabs.len() {
-                            active_tab_idx = tabs.len() - 1;
-                        }
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                    }
+                    // One code path for closing (split view and Spaces handled there).
+                    let _ = proxy.send_event(AppEvent::ChromeIpc(format!("CLOSE_TAB:{active_tab_idx}")));
+                    return;
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
                         if tabs.len() <= 1 {
@@ -4319,7 +4571,7 @@ fn main() -> wry::Result<()> {
                         } else if idx < tabs.len() {
                             let removed = tabs.remove(idx);
                             if !removed.incognito && removed.url != "shunno://newtab" {
-                                closed_tabs.push(SavedTab { title: removed.title, url: removed.url });
+                                closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url });
                             }
                             // Keep the same tab active when a tab to its left closes.
                             if idx < active_tab_idx {
@@ -4333,6 +4585,16 @@ fn main() -> wry::Result<()> {
                             if active_tab_idx >= tabs.len() {
                                 active_tab_idx = tabs.len() - 1;
                             }
+                            // Stay in the current Space: another tab of it, or a fresh New Tab there.
+                            if tab_space(tabs[active_tab_idx].id) != active_space() {
+                                let pairs = tab_space_pairs(&tabs);
+                                match state::pick_tab_for_space(&pairs, active_space(), None) {
+                                    Some(i) => active_tab_idx = i,
+                                    None => {
+                                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                                    }
+                                }
+                            }
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
@@ -4341,6 +4603,14 @@ fn main() -> wry::Result<()> {
                         let host = extract_host(&saved.url);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                        // Back into the Space it was closed from (and show that Space).
+                        let sp = SPACES.with(|x| x.borrow().resolve(saved.space));
+                        set_tab_space(tid, sp);
+                        if sp != active_space() {
+                            SPACES.with(|x| x.borrow_mut().active = sp);
+                            save_spaces();
+                            split_tab_idx = None;
+                        }
                         if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &saved.url, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
                             tabs.push(BrowserTab {
                                 id: tid,
@@ -4428,6 +4698,7 @@ fn main() -> wry::Result<()> {
                             global_settings.force_dark_pages = !global_settings.force_dark_pages;
                         }
                         "download_takeover" => global_settings.download_takeover = !global_settings.download_takeover,
+                        "little_for_links" => global_settings.little_for_links = !global_settings.little_for_links,
                         "drop_basket" => {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
                             let js = format!(
@@ -4491,7 +4762,7 @@ fn main() -> wry::Result<()> {
                         let to_save: Vec<SavedTab> = tabs
                             .iter()
                             .filter(|t| !t.incognito)
-                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone() })
+                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone(), space: tab_space(t.id) })
                             .collect();
                         BrowserStorage::save_session(&to_save);
                         engine.save_queue();
@@ -4732,6 +5003,142 @@ fn main() -> wry::Result<()> {
                         }
                     }
                     return;
+                } else if cmd == "SET_DEFAULT_BROWSER" {
+                    let note = match little::register_as_browser() {
+                        Ok(()) => "Windows Settings opened: choose Shunno Browser for HTTP and HTTPS.".to_string(),
+                        Err(e) => format!("Could not register Shunno: {e}"),
+                    };
+                    MENU_NOTE.with(|n| *n.borrow_mut() = note);
+                } else if cmd == "LITTLE_OPEN" {
+                    let _ = proxy.send_event(AppEvent::LittleOpen(None));
+                } else if let Some(arg) = cmd.strip_prefix("SPACE_SWITCH:") {
+                    if let Ok(id) = arg.parse::<u32>() {
+                        if SPACES.with(|s| s.borrow().spaces.iter().any(|x| x.id == id)) && id != active_space() {
+                            SPACES.with(|s| s.borrow_mut().active = id);
+                            save_spaces();
+                            split_tab_idx = None;
+                            let remembered = SPACE_LAST_TAB.with(|m| m.borrow().get(&id).copied());
+                            match state::pick_tab_for_space(&tab_space_pairs(&tabs), id, remembered) {
+                                Some(i) => {
+                                    active_tab_idx = i;
+                                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                                }
+                                None => {
+                                    let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(json) = cmd.strip_prefix("SPACE_NEW:") {
+                    // SPACE_NEW:{"name":..,"color":..,"icon":..} → create it, switch to it, open a New Tab there.
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                        let created = SPACES.with(|s| {
+                            let mut s = s.borrow_mut();
+                            if s.spaces.len() >= 12 {
+                                return false;
+                            }
+                            let id = s.next_id();
+                            let color = v.get("color").and_then(|x| x.as_str()).filter(|c| state::is_hex_color(c)).unwrap_or("#30B0C7");
+                            s.spaces.push(state::Space {
+                                id,
+                                name: state::sanitize_space_name(v.get("name").and_then(|x| x.as_str()).unwrap_or("")),
+                                color: color.to_string(),
+                                icon: v.get("icon").and_then(|x| x.as_str()).filter(|i| !i.trim().is_empty()).unwrap_or("✦").chars().take(2).collect(),
+                            });
+                            s.active = id;
+                            true
+                        });
+                        if created {
+                            save_spaces();
+                            split_tab_idx = None;
+                            let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("SPACE_EDIT:") {
+                    // SPACE_EDIT:<id>|{"name":..,"color":..,"icon":..}
+                    if let Some((id, json)) = arg.split_once('|') {
+                        if let (Ok(id), Ok(v)) = (id.parse::<u32>(), serde_json::from_str::<serde_json::Value>(json)) {
+                            SPACES.with(|s| {
+                                if let Some(sp) = s.borrow_mut().spaces.iter_mut().find(|x| x.id == id) {
+                                    if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
+                                        sp.name = state::sanitize_space_name(n);
+                                    }
+                                    if let Some(c) = v.get("color").and_then(|x| x.as_str()).filter(|c| state::is_hex_color(c)) {
+                                        sp.color = c.to_string();
+                                    }
+                                    if let Some(i) = v.get("icon").and_then(|x| x.as_str()).filter(|i| !i.trim().is_empty()) {
+                                        sp.icon = i.chars().take(2).collect();
+                                    }
+                                }
+                            });
+                            save_spaces();
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("SPACE_DELETE:") {
+                    // Close the Space's tabs (reopenable) and remove it; never the last Space.
+                    if let Ok(id) = arg.parse::<u32>() {
+                        let ok = SPACES.with(|s| {
+                            let mut s = s.borrow_mut();
+                            if s.spaces.len() <= 1 || !s.spaces.iter().any(|x| x.id == id) {
+                                return false;
+                            }
+                            s.spaces.retain(|x| x.id != id);
+                            if s.active == id {
+                                s.active = s.spaces[0].id;
+                            }
+                            true
+                        });
+                        if ok {
+                            save_spaces();
+                            let target = active_space();
+                            let mut i = 0;
+                            while i < tabs.len() {
+                                if tab_space(tabs[i].id) == id && tabs.len() > 1 {
+                                    let removed = tabs.remove(i);
+                                    if !removed.incognito && removed.url != "shunno://newtab" {
+                                        closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url });
+                                    }
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            // The very last tab of a deleted Space (if it was the only tab) joins the active one.
+                            for t in &tabs {
+                                if tab_space(t.id) == id {
+                                    set_tab_space(t.id, target);
+                                }
+                            }
+                            split_tab_idx = None;
+                            let remembered = SPACE_LAST_TAB.with(|m| m.borrow().get(&target).copied());
+                            match state::pick_tab_for_space(&tab_space_pairs(&tabs), target, remembered) {
+                                Some(i) => active_tab_idx = i,
+                                None => {
+                                    active_tab_idx = 0;
+                                    let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                                }
+                            }
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("TAB_TO_SPACE:") {
+                    // TAB_TO_SPACE:<tab index>|<space id>
+                    if let Some((i, sp)) = arg.split_once('|') {
+                        if let (Ok(i), Ok(sp)) = (i.parse::<usize>(), sp.parse::<u32>()) {
+                            if i < tabs.len() && SPACES.with(|s| s.borrow().spaces.iter().any(|x| x.id == sp)) {
+                                set_tab_space(tabs[i].id, sp);
+                                if i == active_tab_idx && sp != active_space() {
+                                    split_tab_idx = None;
+                                    match state::pick_tab_for_space(&tab_space_pairs(&tabs), active_space(), None) {
+                                        Some(j) => active_tab_idx = j,
+                                        None => {
+                                            let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                                        }
+                                    }
+                                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                                }
+                            }
+                        }
+                    }
                 } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
                     if matches!(mode, "system" | "light" | "dark") {
                         global_settings.theme_mode = mode.to_string();
