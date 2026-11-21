@@ -2942,6 +2942,68 @@ struct MaxButton {
     hover: bool,
     pressed: bool,
     active: bool,
+    /// Theme cross-fade: colours (bg, fg, hover) fade from `fade_from` to bg/fg/hover_bg over
+    /// `fade_ms` from `fade_start` (ms on the system tick), on the curve of the page's fade.
+    fade_from: (u32, u32, u32),
+    fade_start: u64,
+    fade_ms: u32,
+}
+/// Timer that steps the maximize button's theme fade (one per window, on the window itself).
+const MAXBTN_FADE_TIMER: usize = 0x5B17;
+
+fn tick_ms() -> u64 {
+    #[cfg(windows)]
+    unsafe {
+        windows::Win32::System::SystemInformation::GetTickCount64()
+    }
+    #[cfg(not(windows))]
+    0
+}
+
+/// cubic-bezier(0.32, 0.72, 0, 1): the toolbar's `--ease-fluid` and the theme cross-fade curve.
+fn ease_fluid(x: f64) -> f64 {
+    let bz = |t: f64, a: f64, b: f64| 3.0 * a * t * (1.0 - t) * (1.0 - t) + 3.0 * b * t * t * (1.0 - t) + t * t * t;
+    let x = x.clamp(0.0, 1.0);
+    let (mut lo, mut hi, mut t) = (0.0f64, 1.0f64, x);
+    for _ in 0..30 {
+        t = (lo + hi) / 2.0;
+        if bz(t, 0.32, 0.0) < x {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    bz(t, 0.72, 1.0)
+}
+
+/// Blend two COLORREFs: k = 0 gives `a`, 1 gives `b`.
+fn mix_colorref(a: u32, b: u32, k: f64) -> u32 {
+    let ch = |c: u32, s: u32| ((c >> s) & 0xFF) as f64;
+    let m = |s: u32| ((ch(a, s) + (ch(b, s) - ch(a, s)) * k).round().clamp(0.0, 255.0) as u32) << s;
+    m(0) | m(8) | m(16)
+}
+
+impl MaxButton {
+    /// Fade progress 0..1 (1 when no fade is running).
+    fn fade_progress(&self, now: u64) -> f64 {
+        if self.fade_ms == 0 {
+            return 1.0;
+        }
+        ((now.saturating_sub(self.fade_start)) as f64 / self.fade_ms as f64).min(1.0)
+    }
+    /// The colours to paint now: (bg, fg, hover).
+    fn colors_at(&self, now: u64) -> (u32, u32, u32) {
+        let p = self.fade_progress(now);
+        if p >= 1.0 {
+            return (self.bg, self.fg, self.hover_bg);
+        }
+        let k = ease_fluid(p);
+        (
+            mix_colorref(self.fade_from.0, self.bg, k),
+            mix_colorref(self.fade_from.1, self.fg, k),
+            mix_colorref(self.fade_from.2, self.hover_bg, k),
+        )
+    }
 }
 /// Each subclassed window's previous window procedure (HWND, procedure).
 static ORIG_WNDPROCS: std::sync::Mutex<Vec<(isize, isize)>> = std::sync::Mutex::new(Vec::new());
@@ -3021,7 +3083,9 @@ fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32:
     };
     use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
     let Some(mut r) = max_button_client_rect(main) else { return };
-    let b = with_max_button(main.0, |b| *b);
+    let b0 = with_max_button(main.0, |b| *b);
+    let (cbg, cfg, chov) = b0.colors_at(tick_ms());
+    let b = MaxButton { bg: cbg, fg: cfg, hover_bg: chov, ..b0 };
     unsafe {
         let bg = CreateSolidBrush(COLORREF(b.bg));
         FillRect(hdc, &r, bg);
@@ -3268,13 +3332,49 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 0x000F /* WM_PAINT */ => {
                     use windows::Win32::Graphics::Gdi::{BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT};
                     use windows::Win32::Foundation::COLORREF;
+                    use windows::Win32::Graphics::Gdi::{BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, SelectObject, SetViewportOrgEx, SRCCOPY};
                     let mut ps = PAINTSTRUCT::default();
                     let hdc = BeginPaint(hwnd, &mut ps);
+                    // Drawn off screen and copied in one step: the button never shows a half-painted
+                    // state (frame colour, then background, then glyph), which flickered on repaints.
+                    let rc = ps.rcPaint;
+                    let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+                    let mem = CreateCompatibleDC(hdc);
+                    let bmp = if w > 0 && h > 0 { CreateCompatibleBitmap(hdc, w, h) } else { Default::default() };
+                    let buffered = !mem.is_invalid() && !bmp.is_invalid();
+                    let target = if buffered { mem } else { hdc };
+                    let old_bmp = if buffered { SelectObject(mem, bmp) } else { Default::default() };
+                    if buffered {
+                        let _ = SetViewportOrgEx(mem, -rc.left, -rc.top, None);
+                    }
                     let brush = CreateSolidBrush(COLORREF(FRAME_COLOR.load(Ordering::Relaxed)));
-                    FillRect(hdc, &ps.rcPaint, brush);
+                    FillRect(target, &rc, brush);
                     let _ = DeleteObject(brush);
-                    paint_max_button(hwnd, hdc);
+                    paint_max_button(hwnd, target);
+                    if buffered {
+                        let _ = SetViewportOrgEx(mem, 0, 0, None);
+                        let _ = BitBlt(hdc, rc.left, rc.top, w, h, mem, 0, 0, SRCCOPY);
+                        SelectObject(mem, old_bmp);
+                        let _ = DeleteObject(bmp);
+                    }
+                    if !mem.is_invalid() {
+                        let _ = DeleteDC(mem);
+                    }
                     let _ = EndPaint(hwnd, &ps);
+                    return LRESULT(0);
+                }
+                0x0113 /* WM_TIMER */ if wparam.0 == MAXBTN_FADE_TIMER => {
+                    let done = with_max_button(hwnd.0, |b| {
+                        let done = b.fade_progress(tick_ms()) >= 1.0;
+                        if done {
+                            b.fade_ms = 0;
+                        }
+                        done
+                    });
+                    invalidate_max_button(hwnd);
+                    if done {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, MAXBTN_FADE_TIMER);
+                    }
                     return LRESULT(0);
                 }
                 // Native maximize button (Windows 11): hover tracking and clicks. Mouse-move still goes
@@ -3525,32 +3625,38 @@ fn layout_webviews(
     // Full-width webpage (zero splitting): Menu & Downloads float over the live webpage at 10% transparency.
     let web_w = inner_w;
 
-    for (idx, tab) in tabs.iter().enumerate() {
-        if let Some(s_idx) = valid_split {
-            let half_w = ((web_w - 2.0) / 2.0).max(100.0);
-            if idx == active_idx && tab.url != "shunno://newtab" {
-                let _ = tab.webview.set_bounds(Rect {
-                    position: LogicalPosition::new(grip, top_bar_h).into(),
-                    size: LogicalSize::new(half_w, content_h).into(),
-                });
-                let _ = tab.webview.set_visible(true);
-                continue;
-            } else if idx == s_idx && tab.url != "shunno://newtab" {
-                let _ = tab.webview.set_bounds(Rect {
-                    position: LogicalPosition::new(grip + half_w + 2.0, top_bar_h).into(),
-                    size: LogicalSize::new(half_w, content_h).into(),
-                });
-                let _ = tab.webview.set_visible(true);
-                continue;
-            }
+    // Show the tab(s) coming on screen before hiding the one leaving: hiding first left a frame with
+    // no page at all (the bare window flashed) whenever the next tab came later in the list.
+    let mut placements: Vec<(usize, f64, f64)> = Vec::new(); // (tab index, x, width) of visible tabs
+    if let Some(s_idx) = valid_split {
+        let half_w = ((web_w - 2.0) / 2.0).max(100.0);
+        if tabs.get(active_idx).is_some_and(|t| t.url != "shunno://newtab") {
+            placements.push((active_idx, grip, half_w));
         }
-
+        if tabs.get(s_idx).is_some_and(|t| t.url != "shunno://newtab") {
+            placements.push((s_idx, grip + half_w + 2.0, half_w));
+        }
+    }
+    if placements.is_empty() && tabs.get(active_idx).is_some_and(|t| t.url != "shunno://newtab") {
+        placements.push((active_idx, grip, web_w));
+    }
+    for &(idx, x, pw) in &placements {
+        let tab = &tabs[idx];
+        let _ = tab.webview.set_bounds(Rect {
+            position: LogicalPosition::new(x, top_bar_h).into(),
+            size: LogicalSize::new(pw, content_h).into(),
+        });
+        let _ = tab.webview.set_visible(true);
+    }
+    for (idx, tab) in tabs.iter().enumerate() {
+        if placements.iter().any(|p| p.0 == idx) {
+            continue;
+        }
         let _ = tab.webview.set_bounds(Rect {
             position: LogicalPosition::new(grip, top_bar_h).into(),
             size: LogicalSize::new(web_w, content_h).into(),
         });
-        let show_web = idx == active_idx && tab.url != "shunno://newtab";
-        let _ = tab.webview.set_visible(show_web);
+        let _ = tab.webview.set_visible(false);
     }
     if !chrome_grows {
         apply_chrome();
@@ -6711,10 +6817,13 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
                 } else if let Some(arg) = cmd.strip_prefix("MAXBTN:") {
-                    // MAXBTN:x|y|w|h|#bg|#fg|#hover|radius|glyph  (physical px in the toolbar web view)
+                    // MAXBTN:x|y|w|h|#bg|#fg|#hover|radius|glyph[|fade ms]  (physical px in the toolbar web view)
+                    // With fade ms, the new colours are reached by a native fade timed like the page's
+                    // theme cross-fade, instead of jumping (the button is not part of the page).
                     if SNAP_NATIVE.load(Ordering::Relaxed) {
                         let f: Vec<&str> = arg.split('|').collect();
-                        if f.len() == 9 {
+                        if f.len() == 9 || f.len() == 10 {
+                            let fade_ms = f.get(9).and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0).min(2000);
                             let n = |i: usize| f[i].trim().parse::<f64>().map(|v| v.round() as i32).unwrap_or(0);
                             #[cfg(windows)]
                             let moved = with_max_button({ use tao::platform::windows::WindowExtWindows; window.hwnd() as isize }, |b| {
@@ -6722,9 +6831,18 @@ fn main() -> wry::Result<()> {
                                 let active = n(2) > 0 && n(3) > 0;
                                 let moved = b.rect != rect || b.active != active;
                                 b.rect = rect;
+                                let now = tick_ms();
+                                let shown = b.colors_at(now);
                                 b.bg = colorref(f[4]).unwrap_or(0x00FFFFFF);
                                 b.fg = colorref(f[5]).unwrap_or(0);
                                 b.hover_bg = colorref(f[6]).unwrap_or(b.bg);
+                                if fade_ms > 0 && shown != (b.bg, b.fg, b.hover_bg) {
+                                    b.fade_from = shown;
+                                    b.fade_start = now;
+                                    b.fade_ms = fade_ms;
+                                } else if fade_ms == 0 {
+                                    b.fade_ms = 0;
+                                }
                                 b.radius = n(7);
                                 b.glyph_px = n(8).max(8);
                                 b.active = active;
@@ -6733,6 +6851,16 @@ fn main() -> wry::Result<()> {
                             #[cfg(windows)]
                             {
                                 use tao::platform::windows::WindowExtWindows;
+                                if fade_ms > 0 {
+                                    unsafe {
+                                        let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                                            windows::Win32::Foundation::HWND(window.hwnd() as isize),
+                                            MAXBTN_FADE_TIMER,
+                                            15,
+                                            None,
+                                        );
+                                    }
+                                }
                                 if moved {
                                     apply_max_button_hole(window.hwnd() as isize);
                                 } else {

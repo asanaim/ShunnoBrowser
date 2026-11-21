@@ -1,3 +1,10 @@
+## v2.31.1
+
+### Fixed
+- Maximize button on a light/dark switch: the window now fades the button itself, on the same curve and duration as the page cross-fade, from one message (the page used to send one message per frame, which arrived unevenly). The button is drawn off screen and copied in one step, so the glyph no longer flickers while it repaints.
+- Switching tabs: the tab coming on screen is shown before the one leaving is hidden. Switching to a tab further right used to leave a frame with no page, which flashed. In the tab strip, switching changes no sizes and animates only colour.
+- Downloads button: always in the toolbar again (since v2.28 it only appeared once there were downloads).
+
 ## v2.31.0
 
 ### Added
