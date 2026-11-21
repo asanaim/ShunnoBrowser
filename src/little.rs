@@ -184,16 +184,40 @@ pub const BAR_HTML: &str = r##"<!DOCTYPE html>
   .open { background:var(--blue); color:#fff; }
   .ghost { background:transparent; color:var(--muted); padding:0 10px; font-size:20px; font-weight:400; line-height:1; }
   .ghost:hover { background:var(--border); color:var(--text); }
+  /* Permission request: a pill that slides in beside the address, like Safari's site prompt. */
+  .perm { display:none; align-items:center; gap:6px; height:30px; padding:0 4px 0 10px; border-radius:15px;
+    background:rgba(10,132,255,.14); font-size:12px; white-space:nowrap; max-width:60%; animation:pin .22s cubic-bezier(.2,.8,.2,1) both; }
+  .perm.on { display:flex; }
+  .perm .t { overflow:hidden; text-overflow:ellipsis; }
+  .perm button { height:22px; border-radius:11px; padding:0 10px; font-size:12px; }
+  .perm .deny { background:rgba(118,118,128,.18); color:var(--text); }
+  .perm .allow { background:var(--blue); color:#fff; }
+  @keyframes pin { from { opacity:0; transform:translateY(-4px) scale(.97); } to { opacity:1; transform:none; } }
 </style></head><body>
 <div class="bar">
   <button class="ghost" title="Back" onclick="send('BACK')">&#8249;</button>
   <input id="u" placeholder="Search or enter address" spellcheck="false"
     onkeydown="if(event.key==='Enter'){send('NAV:'+this.value);this.blur();} if(event.key==='Escape'){send('CLOSE');}">
+  <div class="perm" id="perm"></div>
   <button class="open" title="Move this page into the main Shunno window" onclick="send('OPEN')">Open in Shunno</button>
 </div>
 <script>
   function send(m){ window.ipc.postMessage(m); }
   window.__setUrl = function(u){ const i=document.getElementById('u'); if (document.activeElement!==i) i.value = (u==='about:blank') ? '' : u; };
   window.__setDark = function(d){ document.body.classList.toggle('dark', !!d); };
+  window.__perm = function(o){
+    const el = document.getElementById('perm');
+    if (!o) { el.className = 'perm'; el.dataset.k = ''; el.textContent = ''; return; }
+    if (el.dataset.k === String(o.id)) return;
+    el.dataset.k = String(o.id);
+    el.textContent = '';
+    const t = document.createElement('span'); t.className = 't';
+    const b = document.createElement('b'); b.textContent = o.host;
+    t.append(o.icon + ' ', b, ' wants to ' + o.label);
+    t.title = o.origin;
+    const mk = (cls, text, d) => { const x = document.createElement('button'); x.className = cls; x.textContent = text; x.onclick = () => send('PERM:' + o.id + '|' + d); return x; };
+    el.append(t, mk('deny', 'Block', 'block'), mk('allow', 'Allow', 'allow'));
+    el.className = 'perm on';
+  };
   window.__focus = function(){ const i=document.getElementById('u'); i.focus(); i.select(); };
 </script></body></html>"##;

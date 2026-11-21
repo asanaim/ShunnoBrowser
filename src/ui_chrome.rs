@@ -1022,7 +1022,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div id="perm-list"></div>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Sites ask in the toolbar the first time. Your answer is kept per site. Private tabs ask every time and remember nothing.
-          Undecided requests from Peek and Little windows are blocked.
+          Peek asks here too; Little Shunno asks in its own bar.
         </div>
       </div>
 

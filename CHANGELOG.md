@@ -1,3 +1,10 @@
+## v2.21.1
+
+### Site Permissions
+* **Peek** asks in the main toolbar (its request is shown ahead of the tab behind it). **Little Shunno** asks with the same pill in its own bar, and a request still waiting when you choose *Open in Shunno* moves to the main toolbar with the page.
+* A pending request is refused automatically when its tab, Peek or Little window closes, or when the tab navigates to another site.
+* The Site Permissions panel note now says where each window asks.
+
 ## v2.21.0
 
 ### Site Permissions (Safari-style)
