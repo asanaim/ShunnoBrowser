@@ -342,7 +342,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   .floating-sheet {
     position: fixed; top: 84px; left: 12px;
-    width: 360px; max-width: calc(100vw - 24px); max-height: calc(100vh - 100px);
+    width: 400px; max-width: calc(100vw - 24px); max-height: calc(100vh - 100px);
     display: flex; flex-direction: column;
     background: rgba(255, 255, 255, 0.92);
     backdrop-filter: blur(22px) saturate(170%);
@@ -354,22 +354,25 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .floating-sheet.closing { animation: popoverOut var(--dur-fast) var(--ease-in) both; pointer-events: none; }
   body.dark .floating-sheet { background: rgba(30, 30, 34, 0.92); }
-  .floating-sheet[data-panel="downloads"] { width: 400px; }
+  /* All popovers share one width (Menu, Downloads, Library). */
   /* Settings rows: one column, hairline separators, iOS switches. */
-  .sheet-scroll .grid-toggles { grid-template-columns: 1fr; gap: 0; }
-  .sheet-scroll .toggle-tile { background: transparent; border-radius: 0; padding: 6px 2px; font-weight: 500; font-size: 12.5px; }
-  .sheet-scroll .toggle-tile + .toggle-tile { border-top: 1px solid var(--border); }
+  .sheet-scroll .grid-toggles { grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 0; }
+  .sheet-scroll .toggle-tile {
+    background: transparent; border-radius: 0; padding: 5px 0; gap: 6px;
+    font-weight: 500; font-size: 11.5px; border-bottom: 1px solid var(--border);
+  }
+  .sheet-scroll .toggle-tile:nth-last-child(-n+2):nth-child(odd),
+  .sheet-scroll .toggle-tile:last-child { border-bottom: none; }
   .switch {
-    position: relative; width: 34px; height: 20px; flex-shrink: 0; border: none; border-radius: 10px; padding: 0; cursor: pointer;
+    position: relative; width: 30px; height: 18px; flex-shrink: 0; border: none; border-radius: 9px; padding: 0; cursor: pointer;
     background: rgba(120, 120, 128, 0.32); transition: background 0.22s var(--ease-fluid);
   }
   .switch > i {
-    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.22s var(--ease-fluid);
   }
   .switch.on { background: var(--blue); }
-  .switch.on > i { transform: translateX(14px); }
-  .floating-sheet[data-panel="bookmarks"] { width: 420px; }
+  .switch.on > i { transform: translateX(12px); }
   .sheet-scroll .card {
     background: rgba(118, 118, 128, 0.07); border: none; border-radius: 12px; padding: 11px 12px; margin-bottom: 8px;
   }
@@ -789,6 +792,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
 
           <div class="grid-toggles" id="global-toggles-grid"></div>
+          <div class="toggle-tile" style="border-top:1px solid var(--border);border-bottom:none;margin-top:0;" title="Unpinned tabs you have not looked at for this long close by themselves (Arc-style). Reopen with Ctrl+Shift+T or from History. Pinned, playing and private tabs are kept.">
+            <span>🗄️ Close unused tabs after</span>
+            <select class="select-box" id="auto-archive-select" style="padding:3px 6px;font-size:11.5px;" onchange="send('SET_AUTO_ARCHIVE:' + this.value)">
+              <option value="0">Never</option>
+              <option value="12">12 hours</option>
+              <option value="24">1 day</option>
+              <option value="168">7 days</option>
+            </select>
+          </div>
         </div>
 
         <div class="card">
@@ -1554,6 +1566,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         ytBtn.className = 'pill-btn pill-soft';
       }
     }
+    const archEl = document.getElementById('auto-archive-select');
+    if (archEl && document.activeElement !== archEl) archEl.value = String(state.global.auto_archive_hours || 0);
     const maxConcEl = document.getElementById('max-conc-select');
     if (maxConcEl) maxConcEl.value = String(state.global.max_concurrent_downloads || 3);
     const onCompEl = document.getElementById('on-complete-select');
@@ -1704,7 +1718,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['https_only', '🔒 HTTPS Only', state.global.https_only],
       ['auto_update', '⬆️ Auto Update', state.global.auto_update],
       ['save_passwords', '🔑 Save Passwords', state.global.save_passwords],
-      ['strict_tracking', '🛡️ Strict Tracking Block', state.global.strict_tracking]
+      ['strict_tracking', '🛡️ Strict Tracking', state.global.strict_tracking]
     ];
     document.getElementById('global-toggles-grid').innerHTML = globalItems.map(([key, label, val]) => `
       <div class="toggle-tile">
@@ -1724,7 +1738,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['js_enabled', '⚙️ JavaScript', state.site.js_enabled],
       ['images_enabled', '🖼️ Images', state.site.images_enabled],
       ['mobile_ua', '📱 Mobile Site', state.site.mobile_ua],
-      ['auto_reject_cookies', '🍪 Reject Cookie Banners', state.site.auto_reject_cookies],
+      ['auto_reject_cookies', '🍪 Reject Cookies', state.site.auto_reject_cookies],
       ['fp_protect', '🫥 Fingerprint Shield', state.site.fp_protect]
     ];
     document.getElementById('site-toggles-grid').innerHTML = siteItems.map(([key, label, val]) => `

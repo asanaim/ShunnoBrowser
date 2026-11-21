@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.14.2";
+pub const APP_VERSION: &str = "v2.15.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -130,6 +130,9 @@ pub struct GlobalSettings {
     /// Edge tracking prevention: Strict when true, Balanced when false.
     #[serde(default)]
     pub strict_tracking: bool,
+    /// Close tabs unused for this many hours (Arc-style auto-archive). 0 = never.
+    #[serde(default)]
+    pub auto_archive_hours: u32,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -161,6 +164,7 @@ impl Default for GlobalSettings {
             https_only: true,
             auto_update: true,
             strict_tracking: false,
+            auto_archive_hours: 0,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
@@ -432,4 +436,33 @@ impl BrowserStorage {
             let _ = fs::write(path, json);
         }
     }
+}
+
+/// Inputs for one tab when deciding auto-archive.
+pub struct ArchiveProbe {
+    pub last_active_secs: u64,
+    pub pinned: bool,
+    pub playing_audio: bool,
+    pub visible: bool,
+    pub incognito: bool,
+}
+
+/// Indices of tabs to auto-archive, highest first (safe to remove in order).
+/// Pinned, visible, audible and private tabs are never archived; at least one tab always stays.
+pub fn tabs_to_archive(now: u64, hours: u32, tabs: &[ArchiveProbe]) -> Vec<usize> {
+    if hours == 0 {
+        return Vec::new();
+    }
+    let limit = hours as u64 * 3600;
+    let mut out: Vec<usize> = tabs
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.pinned && !t.playing_audio && !t.visible && !t.incognito && now.saturating_sub(t.last_active_secs) >= limit)
+        .map(|(i, _)| i)
+        .collect();
+    if out.len() >= tabs.len() {
+        out.clear();
+    }
+    out.reverse();
+    out
 }
