@@ -1,3 +1,12 @@
+## v2.32.0
+
+### Changed
+- Tabs, Chrome layout: icon and title on the left (the title fades out at its end), close button on the right, on the current tab always and on others while hovered. All tabs share the width equally, and the New Tab and Private Tab buttons sit right after the last tab.
+- Motion everywhere, on the curve of the tab animations: list rows (Downloads, Library, Passwords, Permissions, Extensions, Spaces, filter lists, Favorites, found media) glide to their new place when the list changes, new rows grow in, and download progress bars move smoothly. Moving between panels in an open popover resizes it smoothly and slides the new panel in. The New Tab page settles in (search, then Favorites). Notices fade in, and rows, tiles and buttons give slightly when pressed. Reduced motion turns it all off.
+
+### Fixed
+- Switching tabs no longer flashes. The tab you came from stays on screen under the new one. A page that was hidden is first shown underneath and brought to the front 70 ms later, after it has drawn (a web view that has just been shown draws an empty frame first). Switching back to the previous tab is instant.
+
 ## v2.31.1
 
 ### Fixed

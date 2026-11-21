@@ -1107,3 +1107,20 @@ fn tab_strip_follows_safari() {
     assert!(ui.contains("overflow-x: auto; overflow-y: hidden;"), "many tabs scroll instead of being cut off");
     assert!(ui.contains("function revealActiveTab("));
 }
+
+#[test]
+fn tab_switch_keeps_the_previous_page_until_the_next_has_drawn() {
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("static TAB_WARM_PREV") && main.contains("AppEvent::RaiseTab(aid)"));
+    assert!(main.contains("place_tab_below(&tabs[active_idx].webview, &top.webview)"));
+}
+
+#[test]
+fn lists_animate_by_stable_keys() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("function motionPlay(box)") && ui.contains("const MOTION_LISTS"));
+    for k in ["data-k=\"dl${d.id}\"", "data-k=\"pw${c.id}\"", "data-k=\"sp${x.id}\""] {
+        assert!(ui.contains(k), "{k}");
+    }
+    assert!(ui.contains("flex: 0 1 220px"), "tabs share width; New Tab button follows the last tab");
+}
