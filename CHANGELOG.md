@@ -1,3 +1,39 @@
+## v2.27.0
+
+Fixes from testing v2.26.0.
+
+### Downloads
+* **Finished downloads open.** Click a file's name or icon in Downloads, or the new Open button, to
+  open it with its default app (Windows still shows its warning for files from the Internet).
+  "Show in folder" stays beside it.
+* **A resumed download checks that the file has not changed** on the server: the size and the
+  server's ETag or Last-Modified are recorded, and every range request carries If-Range. A changed
+  file starts over instead of being stitched together from two versions.
+* **No gaps after a power cut:** downloaded data is flushed to disk before the progress that
+  claims it is saved.
+* **Closing Shunno ends FFmpeg and yt-dlp.** They now start suspended and join the kill-on-close
+  job before running, so the processes they start belong to it too; on quit Shunno also ends them
+  directly.
+* **Duplicate warning only for the same link.** Another file that merely has the same name is
+  saved as `name (1).ext` without asking. The warning's choices are now Skip, Keep Both
+  (`name (1).ext`) and Replace.
+
+### Extensions
+* **Install from the Chrome Web Store and Edge Add-ons** (Brave uses the Chrome Web Store). Open an
+  extension's page and press **Add to Shunno** in the address bar; Shunno fetches the package the
+  store serves to Chromium browsers and installs it. The Extensions panel links to both stores.
+* Larger extension icons in the toolbar and the Extensions panel.
+
+### Windows and dialogs
+* **Add Bookmark and every other question no longer open under the page.** prompt/confirm dialogs
+  were drawn inside the toolbar strip; they are now a sheet laid over the window (Add Bookmark with a
+  folder list, rename, move, delete confirmations, "Use a new link").
+* **F11 is smooth:** the window glides between its frame and full screen in about a quarter
+  second with the page laid out every frame, instead of jumping and flashing. Turned off when
+  Windows animation effects are off.
+* **A changed site setting reaches every open tab**, from its next page load (the page script is
+  now replaceable in tabs that are already open, in every window).
+
 ## v2.26.0
 
 Full code audit, file by file, plus the findings of an external review. The version continues from

@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.26.0";
+pub const APP_VERSION: &str = "v2.27.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -59,6 +59,19 @@ pub fn set_policy_mirror(map: &HashMap<String, SitePolicy>) {
     if let Ok(mut m) = POLICY_MIRROR.lock() {
         *m = Some(map.clone());
     }
+    bump_guard_generation();
+}
+
+/// Changes whenever something baked into the page script changes (site policies, settings), so
+/// the event loop can re-install the script in tabs that are already open.
+static GUARD_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn bump_guard_generation() {
+    GUARD_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn guard_generation() -> u64 {
+    GUARD_GEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// The policy for a page host (exact host, lower case, as `extract_host` gives it).
@@ -750,6 +763,7 @@ impl BrowserStorage {
         Self::set_custom_downloads_dir(settings.custom_downloads_dir.clone());
         let path = Self::app_data_dir().join("global_settings.json");
         save_json(&path, settings);
+        bump_guard_generation();
     }
 
     pub fn load_site_policies() -> HashMap<String, SitePolicy> {

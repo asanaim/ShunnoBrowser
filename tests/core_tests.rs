@@ -952,3 +952,26 @@ fn links_from_other_programs_are_limited() {
     assert_eq!(little::url_from_arg("https://example.com/a b"), Some("https://example.com/a%20b".to_string()));
     assert!(little::url_from_arg("file:///C:/x.html").is_some());
 }
+
+#[test]
+fn web_store_pages_give_the_extension_id() {
+    use extensions::{store_crx_url, store_extension, Store};
+    let id = "ddkjiahejlhfcafbddmgiahcphecmpfh";
+    assert_eq!(store_extension(&format!("https://chromewebstore.google.com/detail/ublock-origin-lite/{id}")), Some((Store::Chrome, id.to_string())));
+    assert_eq!(store_extension(&format!("https://chromewebstore.google.com/detail/{id}?hl=en")), Some((Store::Chrome, id.to_string())));
+    assert_eq!(store_extension(&format!("https://chrome.google.com/webstore/detail/x/{id}")), Some((Store::Chrome, id.to_string())));
+    assert_eq!(store_extension(&format!("https://microsoftedge.microsoft.com/addons/detail/x/{id}")), Some((Store::Edge, id.to_string())));
+    // Not a detail page, not https, not a store, not an id (q is outside a to p).
+    assert_eq!(store_extension("https://chromewebstore.google.com/category/extensions"), None);
+    assert_eq!(store_extension(&format!("http://chromewebstore.google.com/detail/x/{id}")), None);
+    assert_eq!(store_extension(&format!("https://evil.example/detail/x/{id}")), None);
+    assert_eq!(store_extension("https://chromewebstore.google.com/detail/x/qdkjiahejlhfcafbddmgiahcphecmpfh"), None);
+    let u = store_crx_url(Store::Chrome, id, "131.0.6778.86");
+    assert!(u.starts_with("https://clients2.google.com/service/update2/crx?") && u.contains("prodversion=131.0.6778.86") && u.contains(&format!("id%3D{id}%26uc")));
+    assert!(store_crx_url(Store::Edge, id, "1").starts_with("https://edge.microsoft.com/extensionwebstorebase/v1/crx?"));
+    assert_eq!(
+        extensions::chrome_version_from_ua("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36 Edg/131.0.2903.70"),
+        Some("131.0.6778.86".to_string())
+    );
+    assert_eq!(extensions::chrome_version_from_ua("Mozilla/5.0"), None);
+}

@@ -1,4 +1,4 @@
-# Shunno Browser (শূন্য ব্রাউজার) — v2.26.0
+# Shunno Browser (শূন্য ব্রাউজার) — v2.27.0
 
 **Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with native Windows TLS / SChannel).
 
