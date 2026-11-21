@@ -105,9 +105,11 @@ pub fn sanitize_download_filename(raw: &str) -> String {
     let mut cleaned: String = base
         .chars()
         .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'..='\x1f' => '_',
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'..='\x1f' | '\u{7f}' => '_',
             _ => c,
         })
+        // Bidirectional controls let "photo\u{202E}gpj.exe" display as "photoexe.jpg": drop them.
+        .filter(|c| !matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
         .collect();
 
     while cleaned.contains("..") {
@@ -133,10 +135,12 @@ pub fn sanitize_download_filename(raw: &str) -> String {
         .split('.')
         .next()
         .unwrap_or("")
+        .trim_end()
         .to_ascii_uppercase();
     let is_reserved = matches!(
         stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "COM0" | "LPT0"
+            | "COM\u{b9}" | "COM\u{b2}" | "COM\u{b3}" | "LPT\u{b9}" | "LPT\u{b2}" | "LPT\u{b3}"
             | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
             | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
     );
@@ -207,12 +211,14 @@ fn infer_extension_from_mime(mime: &str) -> Option<&'static str> {
 
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
+    let hex = |b: u8| (b as char).to_digit(16);
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        // Byte-wise: slicing the &str here could split a multi-byte character and panic.
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                out.push(v);
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }
@@ -445,8 +451,49 @@ impl JobCtx {
     }
 }
 
+/// Redirect policy for every download request: at most 20 hops, and a request that started at a
+/// public address may not be redirected to a local one (router, localhost, intranet).
+pub fn guarded_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 20 {
+            return attempt.error("too many redirects");
+        }
+        let started_public = attempt.previous().first().map(|u| crate::sanitizer::is_public_http_url(u.as_str())).unwrap_or(true);
+        if started_public && !crate::sanitizer::is_public_http_url(attempt.url().as_str()) {
+            attempt.error("redirect to a local address refused")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+/// DNS for requests a page caused on its own (size probes): a public host name must resolve to
+/// public addresses only, so a name pointing at 127.0.0.1 or the LAN cannot reach local services.
+pub struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let found = tokio::task::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0u16).to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })??;
+            let public: Vec<std::net::SocketAddr> = found.into_iter().filter(|a| crate::sanitizer::is_public_ip(a.ip())).collect();
+            if public.is_empty() {
+                return Err("host resolves only to local addresses".into());
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 pub struct NativeDownloadEngine {
     client: Client,
+    /// For automatic probes of addresses a page supplied: public-only DNS and redirects.
+    probe_client: Client,
     pub tasks: Arc<Mutex<Vec<DownloadTask>>>,
     active_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     pub speed_limit_bps: Arc<AtomicU64>,
@@ -462,10 +509,17 @@ impl NativeDownloadEngine {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(25))
             .read_timeout(Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::limited(20))
+            .redirect(guarded_redirects())
             .pool_max_idle_per_host(64)
             .build()
             .unwrap_or_else(|_| Client::new());
+        let probe_client = Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(Duration::from_secs(30))
+            .redirect(guarded_redirects())
+            .dns_resolver(Arc::new(PublicOnlyResolver))
+            .build()
+            .unwrap_or_else(|_| client.clone());
 
         let mut loaded = Self::load_queue();
         // "Auto-clean finished": finished items stay visible for the session and are dropped at the next start.
@@ -474,6 +528,7 @@ impl NativeDownloadEngine {
         }
         Self {
             client,
+            probe_client,
             tasks: Arc::new(Mutex::new(loaded)),
             active_flags: Arc::new(Mutex::new(HashMap::new())),
             speed_limit_bps: Arc::new(AtomicU64::new(initial_speed_limit_bps)),
@@ -743,7 +798,10 @@ impl NativeDownloadEngine {
         let mut size_bytes: Option<u64> = None;
         let mut resolved_name: Option<String> = None;
 
-        let head = with_headers(self.client.head(&url), &ua, &referer, &cookie);
+        // A public address supplied by a page is probed with public-only DNS; a page may still probe
+        // its own local host (e.g. a router's page probing its own files) through the normal client.
+        let c = if crate::sanitizer::is_public_http_url(&url) { &self.probe_client } else { &self.client };
+        let head = with_headers(c.head(&url), &ua, &referer, &cookie);
         if let Ok(resp) = head.timeout(Duration::from_secs(20)).send().await {
             if resp.status().is_success() {
                 size_bytes = resp
@@ -759,7 +817,7 @@ impl NativeDownloadEngine {
         }
 
         if size_bytes.is_none() {
-            let rb = with_headers(self.client.get(&url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
+            let rb = with_headers(c.get(&url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
             if let Ok(resp) = rb.timeout(Duration::from_secs(20)).send().await {
                 if resp.status() == StatusCode::PARTIAL_CONTENT {
                     size_bytes = resp
@@ -797,9 +855,9 @@ impl NativeDownloadEngine {
     }
 
     fn load_queue() -> Vec<DownloadTask> {
-        let path = Self::queue_file_path();
-        if let Ok(raw) = fs::read_to_string(path) {
-            if let Ok(mut items) = serde_json::from_str::<Vec<DownloadTask>>(&raw) {
+        // A damaged queue file is moved aside (not silently replaced by an empty list on the next save).
+        if let Some(mut items) = crate::state::load_json::<Vec<DownloadTask>>(&Self::queue_file_path()) {
+            {
                 for it in &mut items {
                     if it.status == "DOWNLOADING" || it.status == "MUXING" {
                         // Browser-native transfers cannot survive a restart; engine jobs resume from .offset files.
@@ -862,10 +920,14 @@ impl NativeDownloadEngine {
     pub fn resume_or_restart(&self, rt: &tokio::runtime::Handle, id: u64, new_url: Option<String>) {
         let task_opt = if let Ok(mut list) = self.tasks.lock() {
             if let Some(t) = list.iter_mut().find(|i| i.id == id) {
-                if t.status == "DOWNLOADING" || t.status == "MUXING" {
+                // Never restart a finished item: the native branch below deletes saved_path.
+                if t.status == "DOWNLOADING" || t.status == "MUXING" || t.status == "COMPLETED" {
                     None
                 } else {
-                    if let Some(u) = new_url {
+                    if let Some(u) = new_url.filter(|u| {
+                        let (_, bare) = split_route_prefix(u.trim());
+                        bare.starts_with("http://") || bare.starts_with("https://")
+                    }) {
                         let u = u.trim().to_string();
                         if u != t.url {
                             t.url = u;
@@ -1202,10 +1264,10 @@ impl NativeDownloadEngine {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) {
-    let tmp = path.with_extension("json.tmp");
-    if fs::write(&tmp, bytes).is_ok() && fs::rename(&tmp, path).is_err() {
+    // Worker threads and the UI thread save the queue concurrently: each write uses its own temp file.
+    if crate::state::write_atomic(path, bytes).is_err() {
+        // Rename can fail while another process holds the file open; a direct write beats losing the update.
         let _ = fs::write(path, bytes);
-        let _ = fs::remove_file(&tmp);
     }
 }
 
@@ -1738,18 +1800,13 @@ async fn finalize_completed(ctx: &JobCtx, task_id: u64, part_path: &Path, name_o
     let (dest, sha, size) = tokio::task::spawn_blocking(move || -> Result<(PathBuf, Option<String>, u64), String> {
         let target_dir = BrowserStorage::downloads_root_dir().join(&category);
         fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-        let mut dest = target_dir.join(&final_name);
-        if dest.exists() {
-            let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
-            let ext = dest.extension().and_then(|s| s.to_str()).unwrap_or("bin").to_string();
-            let mut n = 1;
-            while dest.exists() {
-                dest = target_dir.join(format!("{} ({}).{}", stem, n, ext));
-                n += 1;
-            }
-        }
+        let dest = reserve_unique_path(&target_dir, &final_name).map_err(|e| e.to_string())?;
+        // `dest` is our own empty placeholder now, so replacing it can never destroy another file.
         if fs::rename(&part, &dest).is_err() {
-            fs::copy(&part, &dest).map_err(|e| e.to_string())?;
+            if let Err(e) = fs::copy(&part, &dest) {
+                let _ = fs::remove_file(&dest);
+                return Err(e.to_string());
+            }
             let _ = fs::remove_file(&part);
         }
         let sha = sha256_file(&dest);
@@ -1763,7 +1820,52 @@ async fn finalize_completed(ctx: &JobCtx, task_id: u64, part_path: &Path, name_o
     Ok(())
 }
 
+/// Claims `<dir>/<name>`, or `<stem> (n).<ext>` if taken, by creating it empty with create_new, so two
+/// downloads finishing at once (or a file the user just made) can never be overwritten by the rename.
+pub fn reserve_unique_path(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    let p = Path::new(name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+    let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    for n in 0..10_000u32 {
+        let candidate = if n == 0 { dir.join(name) } else { dir.join(format!("{stem} ({n}){ext}")) };
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free file name"))
+}
+
+/// Windows "Mark of the Web": tag a downloaded file as coming from the Internet (NTFS alternate data
+/// stream `Zone.Identifier`, as every browser does), so SmartScreen and Office's Protected View
+/// check it before it runs or opens. Best effort: FAT/exFAT drives have no streams.
+pub fn zone_identifier(host_url: &str, referrer: Option<&str>) -> String {
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let mut text = String::from("[ZoneTransfer]\r\nZoneId=3\r\n");
+    if let Some(r) = referrer.filter(|r| r.starts_with("http")) {
+        text.push_str(&format!("ReferrerUrl={}\r\n", clean(r)));
+    }
+    if host_url.starts_with("http") {
+        text.push_str(&format!("HostUrl={}\r\n", clean(host_url)));
+    }
+    text
+}
+
+pub fn mark_of_the_web(path: &Path, host_url: &str, referrer: Option<&str>) {
+    if cfg!(windows) {
+        let mut ads = path.as_os_str().to_os_string();
+        ads.push(":Zone.Identifier");
+        let _ = fs::write(PathBuf::from(ads), zone_identifier(host_url, referrer));
+    }
+}
+
 fn mark_completed(ctx: &JobCtx, task_id: u64, dest: &Path, sha: Option<String>, size: u64) {
+    let origin = ctx.tasks.lock().ok().and_then(|l| l.iter().find(|i| i.id == task_id).map(|t| (t.url.clone(), t.referer.clone())));
+    if let Some((url, referer)) = origin {
+        let (_, bare) = split_route_prefix(&url);
+        mark_of_the_web(dest, bare, referer.as_deref());
+    }
     if let Ok(mut list) = ctx.tasks.lock() {
         if let Some(t) = list.iter_mut().find(|i| i.id == task_id) {
             t.file_name = dest.file_name().and_then(|s| s.to_str()).unwrap_or("download.bin").to_string();
@@ -1853,15 +1955,18 @@ async fn ensure_ffmpeg(client: &Client, status: &Arc<Mutex<String>>) -> Result<P
         tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
             let out_exe = BrowserStorage::ffmpeg_bin_dir().join("ffmpeg.exe");
-            let tmp = out_exe.with_extension("exe.tmp");
+            let tmp = crate::state::unique_tmp(&out_exe);
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
                 let name = entry.name().replace('\\', "/");
                 if name.ends_with("/bin/ffmpeg.exe") || name.eq_ignore_ascii_case("ffmpeg.exe") {
-                    let mut out_f = File::create(&tmp).map_err(|e| e.to_string())?;
-                    std::io::copy(&mut entry, &mut out_f).map_err(|e| e.to_string())?;
-                    drop(out_f);
-                    fs::rename(&tmp, &out_exe).map_err(|e| e.to_string())?;
+                    let written = File::create(&tmp)
+                        .and_then(|mut out_f| std::io::copy(&mut entry, &mut out_f).map(|_| ()))
+                        .and_then(|_| fs::rename(&tmp, &out_exe));
+                    if let Err(e) = written {
+                        let _ = fs::remove_file(&tmp);
+                        return Err(e.to_string());
+                    }
                     return Ok(out_exe);
                 }
             }
@@ -1914,9 +2019,12 @@ async fn ensure_ytdlp(client: &Client, status: &Arc<Mutex<String>>) -> Result<Pa
             return Err("SHA-256 mismatch, download rejected".to_string());
         }
         let out_exe = BrowserStorage::ffmpeg_bin_dir().join("yt-dlp.exe");
-        let tmp = out_exe.with_extension("exe.tmp");
+        let tmp = crate::state::unique_tmp(&out_exe);
         fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &out_exe).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::rename(&tmp, &out_exe) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
         Ok(out_exe)
     }
     .await;
@@ -1946,11 +2054,49 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
+/// Put a tool's process in a job that Windows kills when Shunno exits (or crashes), so FFmpeg or
+/// yt-dlp never keeps writing a part file that the next start resumes.
+#[cfg(windows)]
+fn end_with_browser(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    static JOB: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        match CreateJobObjectW(None, windows::core::PCWSTR::null()) {
+            Ok(h) => {
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let set = SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                // The handle stays open for the life of the process: closing it is what ends the job.
+                if set.is_ok() { h.0 } else { 0 }
+            }
+            Err(_) => 0,
+        }
+    });
+    if job != 0 {
+        unsafe {
+            let _ = AssignProcessToJobObject(HANDLE(job), HANDLE(child.as_raw_handle() as isize));
+        }
+    }
+}
+#[cfg(not(windows))]
+fn end_with_browser(_child: &std::process::Child) {}
+
 /// Runs a tool without a console window, feeding each stdout line to `on_line`.
 /// Clearing `running` kills the process tree.
 fn run_tool_blocking<F: FnMut(&str)>(mut cmd: Command, running: Arc<AtomicBool>, mut on_line: F) -> Result<ToolOutcome, String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("Could not start tool: {}", e))?;
+    end_with_browser(&child);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let child = Arc::new(Mutex::new(child));
@@ -2091,6 +2237,8 @@ async fn run_hls(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
         let mut cmd = hidden_command(&ffmpeg);
         cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-nostdin"]);
         cmd.args(["-user_agent", &ctx.ua]);
+        // A playlist may list file: or other local-protocol segment URLs; network protocols only.
+        cmd.args(["-protocol_whitelist", "http,https,tls,tcp,crypto,data"]);
         let headers = ffmpeg_header_blob(task);
         if !headers.is_empty() {
             cmd.args(["-headers", &headers]);
@@ -2140,6 +2288,12 @@ async fn run_hls(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
     }
     if pl.segments.is_empty() {
         return Err("No media segments in M3U8 playlist".to_string());
+    }
+    // A public playlist may not point the engine at the user's own network (router, intranet).
+    if crate::sanitizer::is_public_http_url(&task.url)
+        && pl.init_segment.iter().chain(pl.segments.iter()).any(|u| !crate::sanitizer::is_public_http_url(u.as_str()))
+    {
+        return Err("Playlist points at a local address; refused".to_string());
     }
 
     let fmp4 = pl.init_segment.is_some();
@@ -2388,12 +2542,11 @@ async fn run_ytdlp(ctx: &JobCtx, task: &DownloadTask) -> Result<(), String> {
         });
         (outcome, final_path)
     })
-    .await
-    .map_err(|e| e.to_string())?;
-    let (outcome, final_path) = outcome_and_path;
-    let outcome = outcome?;
-
+    .await;
+    // The session cookies must not stay on disk, whatever happened.
     let _ = fs::remove_file(&cookie_file);
+    let (outcome, final_path) = outcome_and_path.map_err(|e| e.to_string())?;
+    let outcome = outcome?;
     if !ctx.is_running() {
         return Err("Paused".to_string());
     }

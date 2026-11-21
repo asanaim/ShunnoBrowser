@@ -5,3 +5,6 @@
 *.js text eol=lf
 *.md text eol=lf
 *.ico binary
+*.png binary
+*.sqlite binary
+*.sqlite-wal binary

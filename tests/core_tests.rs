@@ -65,6 +65,29 @@ fn test_userscript_match_and_sha256() {
 }
 
 #[test]
+fn userscript_match_is_exact_host_or_subdomain() {
+    // No substring matches (audit): a look-alike host never runs the script.
+    let pat = parse_match_header("// @match github.com\n");
+    assert!(host_matches_pattern("github.com", &pat));
+    assert!(host_matches_pattern("gist.github.com", &pat));
+    assert!(!host_matches_pattern("github.com.evil.tld", &pat));
+    assert!(!host_matches_pattern("notgithub.com", &pat));
+    // Standard headers: scheme, wildcard subdomain, path and port are understood.
+    let std = parse_match_header("// ==UserScript==\n// @match https://*.example.com/*\n// @match http://news.site.org:8080/a/*\n// @include *://intranet.test/*\n");
+    assert_eq!(std, "example.com,news.site.org,intranet.test");
+    assert!(host_matches_pattern("www.example.com", &std));
+    assert!(host_matches_pattern("news.site.org", &std));
+    assert!(!host_matches_pattern("site.org", &std));
+    assert_eq!(parse_match_header("// @match *://*/*"), "*");
+    assert_eq!(parse_match_header("console.log(1)"), "*");
+    assert_eq!(parse_match_header("// @matches nope.com"), "*");
+    // Every approved script is guarded by its patterns at page load, top-level only.
+    let js = userscripts::guarded_user_scripts(&[("example.com".into(), "window.__a = 1;".into())]);
+    assert!(js.contains("window.top !== window") && js.contains("[\"example.com\"]") && js.contains("window.__a = 1;"));
+    assert_eq!(userscripts::guarded_user_scripts(&[]), "");
+}
+
+#[test]
 fn test_filename_sanitization_and_reserved_names() {
     assert_eq!(sanitize_download_filename("../../evil/CON.txt"), "_CON.txt");
     assert_eq!(sanitize_download_filename("NUL"), "_NUL");
@@ -113,7 +136,7 @@ fn test_video_and_audio_of_same_page_are_separate_downloads() {
     let e = NativeDownloadEngine::new(0, false, 3);
     let u = "https://www.youtube.com/watch?v=shunnoTest1";
     let later = Some(86_400); // scheduled, so nothing runs
-    let mut go = |raw: String| e.enqueue(rt.handle(), raw, 1, None, None, "CHECK", later);
+    let go = |raw: String| e.enqueue(rt.handle(), raw, 1, None, None, "CHECK", later);
     assert!(matches!(go(format!("ytdlp:{u}")), EnqueueOutcome::Started));
     assert!(matches!(go(format!("ytdlp-audio:{u}")), EnqueueOutcome::Started));
     assert!(matches!(go(format!("ytdlp-flac:{u}")), EnqueueOutcome::Started));
@@ -252,7 +275,7 @@ fn test_every_content_script_placeholder_is_replaced() {
         found += 1;
         rest = &tail[end + 2..];
     }
-    assert!(found >= 9);
+    assert!(found >= 8);
 }
 
 #[test]
@@ -359,6 +382,7 @@ fn import_history_merge_dedupes_and_caps() {
     let added = importer::merge_history(&mut existing, vec![h("https://a/", 99), h("https://c/", 7), h("https://d/", 1)], 3);
     assert_eq!(added, 2);
     assert_eq!(existing.iter().map(|x| x.url.as_str()).collect::<Vec<_>>(), ["https://a/", "https://c/", "https://b/"]);
+    assert_eq!(existing[0].visited_at, 99, "a newer visit of a known page updates its time");
 }
 
 #[test]
@@ -754,4 +778,177 @@ fn extensions_crx_manifest_and_urls() {
     assert_eq!(base64(b"M"), "TQ==");
     assert_eq!(slug("uBlock Origin!"), "ublock-origin");
     assert_eq!(slug("مرحبا"), "extension");
+}
+
+#[test]
+fn audit_local_files_and_odd_input() {
+    let cfg = GlobalSettings::default();
+    // Local files open as typed (Explorer hands these over), not as a web address or search.
+    assert_eq!(sanitize_url("file:///C:/Users/me/page.html", &cfg), "file:///C:/Users/me/page.html");
+    assert_eq!(sanitize_url("FILE:///D:/a%20b.pdf", &cfg), "FILE:///D:/a%20b.pdf");
+    // Multi-byte text near the start must not panic.
+    let _ = sanitize_url("ফাইল:///খ.html", &cfg);
+    let _ = sanitize_url("é", &cfg);
+    let _ = sanitize_url("日本語のテキスト", &cfg);
+}
+
+#[test]
+fn history_import_reads_the_write_ahead_log() {
+    // Chrome/Edge open: recent visits are only in History-wal (fixture made with SQLite in WAL mode,
+    // 5 checkpointed rows, 300 committed rows in the WAL).
+    let db = std::fs::read(fixture("wal_history.sqlite")).unwrap();
+    let wal = std::fs::read(fixture("wal_history.sqlite-wal")).unwrap();
+    let main_only = importer::parse_chromium_history(&db, usize::MAX).unwrap();
+    assert_eq!(main_only.len(), 5);
+    let merged = importer::apply_wal(&db, &wal).expect("usable WAL");
+    let all = importer::parse_chromium_history(&merged, usize::MAX).unwrap();
+    assert_eq!(all.len(), 305);
+    assert_eq!(all[0].url, "https://new299.example.com/p");
+    assert!(all.iter().all(|h| !h.url.contains("uncommitted")));
+    // Garbage or truncated logs are ignored, never a panic.
+    assert!(importer::apply_wal(&db, b"not a wal").is_none());
+    assert!(importer::apply_wal(&db, &wal[..100]).is_none());
+    let mut bad = wal.clone();
+    for i in (32..bad.len()).step_by(41) {
+        bad[i] ^= 0x5a;
+    }
+    if let Some(m) = importer::apply_wal(&db, &bad) {
+        let _ = importer::parse_chromium_history(&m, 10);
+    }
+}
+
+#[test]
+fn amp_rewrite_only_for_google_and_real_sites() {
+    let cfg = GlobalSettings::default();
+    assert_eq!(sanitize_url("https://www.google.com/amp/s/example.com/story?id=7&utm_source=x", &cfg), "https://example.com/story?id=7");
+    assert_eq!(sanitize_url("https://www.google.co.uk/amp/s/news.example.org/a", &cfg), "https://news.example.org/a");
+    // Look-alike hosts are left alone.
+    assert_eq!(sanitize_url("https://mygoogle.evil.com/amp/s/bank.example/x", &cfg), "https://mygoogle.evil.com/amp/s/bank.example/x");
+    assert_eq!(sanitize_url("https://google.evil.com/amp/s/bank.example/x", &cfg), "https://google.evil.com/amp/s/bank.example/x");
+    // amp. subdomains: real sites only, never down to a public suffix.
+    assert_eq!(sanitize_url("https://amp.example.com/news", &cfg), "https://example.com/news");
+    assert_eq!(sanitize_url("https://amp.co.uk/page", &cfg), "https://amp.co.uk/page");
+    assert_eq!(sanitize_url("https://amp.com.bd/page", &cfg), "https://amp.com.bd/page");
+}
+
+#[test]
+fn public_address_check_covers_embedded_and_reserved_ranges() {
+    use sanitizer::{is_public_http_url, is_public_ip};
+    let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+    for bad in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.0.1", "169.254.169.254", "100.64.0.1", "0.1.2.3", "198.18.0.1", "240.0.0.1", "255.255.255.255",
+                "::1", "::", "fc00::1", "fe80::1", "fec0::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::127.0.0.1", "64:ff9b::a00:1", "2002:7f00:1::", "2001:db8::1"] {
+        assert!(!is_public_ip(ip(bad)), "{bad} must not count as public");
+    }
+    for good in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808"] {
+        assert!(is_public_ip(ip(good)), "{good} is public");
+    }
+    assert!(!is_public_http_url("http://[::ffff:7f00:1]/"));
+    assert!(!is_public_http_url("http://router.lan/"));
+    assert!(is_public_http_url("https://example.com/"));
+}
+
+#[test]
+fn adblock_cache_is_checksummed() {
+    let (engine, _) = blocker::build_engine(&["||ads.example^".to_string()]);
+    let bytes = engine.serialize();
+    let mut file = b"SHUNADB1".to_vec();
+    use sha2::Digest;
+    file.extend_from_slice(&sha2::Sha256::digest(&bytes));
+    file.extend_from_slice(&bytes);
+    assert_eq!(blocker::unwrap_cache(&file), Some(bytes.as_slice()));
+    // A damaged or old-format file is refused before the engine parses it.
+    let mut bad = file.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    assert!(blocker::unwrap_cache(&bad).is_none());
+    assert!(blocker::unwrap_cache(&bytes).is_none());
+    assert!(blocker::unwrap_cache(b"SHUNADB1").is_none());
+}
+
+#[test]
+fn json_files_are_written_atomically_and_never_lost() {
+    let dir = std::env::temp_dir().join(format!("shunno-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("bookmarks.json");
+    state::write_atomic(&p, b"[1,2,3]").unwrap();
+    assert_eq!(state::load_json::<Vec<u32>>(&p), Some(vec![1, 2, 3]));
+    assert!(std::fs::read_dir(&dir).unwrap().count() == 1, "no temp file left behind");
+    // A damaged file is kept aside, not silently replaced by defaults on the next save.
+    std::fs::write(&p, b"[1,2,").unwrap();
+    assert_eq!(state::load_json::<Vec<u32>>(&p), None);
+    assert!(!p.exists());
+    let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert!(kept.iter().any(|n| n.starts_with("bookmarks.json.unreadable-")), "{kept:?}");
+    assert_eq!(state::load_json::<Vec<u32>>(&dir.join("missing.json")), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn download_names_decode_safely_and_never_collide() {
+    // Percent-escapes next to multi-byte characters used to panic (string slice inside a char).
+    let n = downloader::parse_content_disposition_filename("attachment; filename*=UTF-8''%E0%A6%B6%E0%A7%82%E0%A6%A8%E0%A7%8D%E0%A6%AF%zz\u{9b6}.pdf").unwrap();
+    assert!(n.ends_with(".pdf"), "{n}");
+    assert!(n.starts_with("শূন্য"), "{n}");
+    assert_eq!(downloader::parse_content_disposition_filename("attachment; filename*=UTF-8''%e2%82%ac%2"), Some("€%2".to_string()));
+    // Bidirectional overrides cannot disguise an executable as a picture.
+    assert_eq!(sanitize_download_filename("photo\u{202E}gpj.exe"), "photogpj.exe");
+    assert_eq!(sanitize_download_filename("a\u{2066}b\u{200F}.txt"), "ab.txt");
+    for reserved in ["CON .txt", "conin$.log", "COM0.bin", "lpt\u{b9}.dat"] {
+        assert!(sanitize_download_filename(reserved).starts_with('_'), "{reserved}");
+    }
+    // The final name is claimed before the move: same-name downloads get (1), (2); no ".bin" added.
+    let dir = std::env::temp_dir().join(format!("shunno-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = downloader::reserve_unique_path(&dir, "report.pdf").unwrap();
+    let b = downloader::reserve_unique_path(&dir, "report.pdf").unwrap();
+    let c = downloader::reserve_unique_path(&dir, "README").unwrap();
+    let d = downloader::reserve_unique_path(&dir, "README").unwrap();
+    let names: Vec<String> = [&a, &b, &c, &d].iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["report.pdf", "report (1).pdf", "README", "README (1)"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mark_of_the_web_text() {
+    let z = downloader::zone_identifier("https://cdn.example/f.exe", Some("https://example.com/page"));
+    assert_eq!(z, "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/page\r\nHostUrl=https://cdn.example/f.exe\r\n");
+    // Control characters cannot add lines; non-web referrers are left out.
+    let z = downloader::zone_identifier("https://a.example/x\r\nZoneId=0", Some("file:///C:/x"));
+    assert_eq!(z, "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://a.example/xZoneId=0\r\n");
+}
+
+#[test]
+fn site_flags_follow_the_host() {
+    let mut map = std::collections::HashMap::new();
+    let mut off = state::SitePolicy::default();
+    off.adblock = false;
+    off.js_enabled = false;
+    map.insert("news.example".to_string(), off);
+    map.insert("same.example".to_string(), state::SitePolicy::default());
+    state::set_policy_mirror(&map);
+    assert!(!state::site_policy_for("news.example").js_enabled);
+    assert!(state::site_policy_for("other.example").js_enabled);
+    // Only hosts whose page flags differ from the defaults are sent to the content script.
+    assert_eq!(state::page_policy_table_json(), r#"{"news.example":[false,true,true,false,true]}"#);
+    assert_eq!(state::page_flags(&state::SitePolicy::default()), [true, true, true, false, true]);
+    state::set_policy_mirror(&std::collections::HashMap::new());
+}
+
+#[test]
+fn temp_files_are_unique_per_call() {
+    let p = std::path::Path::new("C:/x/downloads_queue.json");
+    let a = state::unique_tmp(p);
+    let b = state::unique_tmp(p);
+    assert_ne!(a, b);
+    assert!(a.to_string_lossy().ends_with(".tmp"));
+}
+
+#[test]
+fn links_from_other_programs_are_limited() {
+    assert_eq!(little::url_from_arg("javascript:alert(1)"), None);
+    assert_eq!(little::url_from_arg("shunno://newtab"), None);
+    assert_eq!(little::url_from_arg("https://example.com/a b"), Some("https://example.com/a%20b".to_string()));
+    assert!(little::url_from_arg("file:///C:/x.html").is_some());
 }

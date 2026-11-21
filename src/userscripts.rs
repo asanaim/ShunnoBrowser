@@ -28,30 +28,57 @@ pub fn user_scripts_dir() -> PathBuf {
     dir
 }
 
+/// Host patterns from the script's `// @match` / `// @include` lines, comma-separated
+/// ("*" when there are none). Scheme, path and port are dropped: `https://*.example.com/*`
+/// becomes `example.com` (the site and its subdomains).
 pub fn parse_match_header(code: &str) -> String {
-    if let Some(match_line) = code
-        .lines()
-        .find(|l| l.trim_start().starts_with("// @match"))
-    {
-        match_line
-            .trim_start()
-            .trim_start_matches("// @match")
-            .trim()
-            .trim_matches('*')
-            .trim_matches('/')
-            .to_ascii_lowercase()
-    } else {
+    let mut pats: Vec<String> = Vec::new();
+    for line in code.lines() {
+        let l = line.trim_start();
+        let Some(rest) = l.strip_prefix("// @match").or_else(|| l.strip_prefix("// @include")) else { continue };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            continue; // e.g. "// @matches"
+        }
+        let p = normalize_pattern(rest);
+        if !p.is_empty() && !pats.contains(&p) {
+            pats.push(p);
+        }
+    }
+    if pats.is_empty() || pats.iter().any(|p| p == "*") {
         "*".to_string()
+    } else {
+        pats.join(",")
     }
 }
 
-pub fn host_matches_pattern(host: &str, pattern: &str) -> bool {
-    let p = pattern.trim().trim_matches('*').trim_matches('/').to_ascii_lowercase();
-    if p.is_empty() || p == "*" {
-        return true;
+fn normalize_pattern(raw: &str) -> String {
+    let mut p = raw.trim().to_ascii_lowercase();
+    if let Some(i) = p.find("://") {
+        p = p[i + 3..].to_string();
     }
-    let h = host.to_ascii_lowercase();
-    h == p || h.ends_with(&format!(".{}", p)) || h.contains(&p)
+    if let Some(i) = p.find('/') {
+        p.truncate(i);
+    }
+    if let Some(i) = p.rfind(':') {
+        if p[i + 1..].chars().all(|c| c.is_ascii_digit() || c == '*') {
+            p.truncate(i);
+        }
+    }
+    let p = p.trim_start_matches("*.").trim_matches('.');
+    if p.is_empty() || p == "*" {
+        "*".to_string()
+    } else {
+        p.to_string()
+    }
+}
+
+/// Does `host` match a pattern list from `parse_match_header`? A pattern matches its exact host
+/// and its subdomains, never a look-alike (`example.com` does not match `notexample.com` or
+/// `example.com.evil.tld`).
+#[allow(dead_code)] // the JS guard in guarded_user_scripts applies the same rule; kept for tests
+pub fn host_matches_pattern(host: &str, pattern: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    pattern.split(',').map(normalize_pattern).any(|p| p == "*" || (!h.is_empty() && (h == p || h.ends_with(&format!(".{p}")))))
 }
 
 pub fn compute_sha256(content: &[u8]) -> String {
@@ -89,12 +116,15 @@ pub fn list_user_scripts(approved_hashes: &[String]) -> Vec<UserScriptInfo> {
     list
 }
 
-pub fn load_approved_user_scripts(host: &str, approved_hashes: &[String]) -> String {
+/// All approved scripts, each guarded by its @match patterns, checked against the page's own host
+/// when it loads (the script is installed once per tab, and the tab can go to any site later).
+/// Top-level pages only, so a script never runs inside another site's embedded frame.
+pub fn load_approved_user_scripts(approved_hashes: &[String]) -> String {
     if approved_hashes.is_empty() {
         return String::new();
     }
     let dir = user_scripts_dir();
-    let mut combined = String::new();
+    let mut parts: Vec<(String, String)> = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -104,16 +134,29 @@ pub fn load_approved_user_scripts(host: &str, approved_hashes: &[String]) -> Str
                     if !approved_hashes.iter().any(|h| h == &sha) {
                         continue;
                     }
-                    let code = String::from_utf8_lossy(&bytes);
+                    let code = String::from_utf8_lossy(&bytes).into_owned();
                     let pat = parse_match_header(&code);
-                    if host_matches_pattern(host, &pat) {
-                        combined.push_str("\ntry {\n");
-                        combined.push_str(&code);
-                        combined.push_str("\n} catch(e) { console.error('Shunno UserScript:', e); }\n");
-                    }
+                    parts.push((pat, code));
                 }
             }
         }
     }
-    combined
+    guarded_user_scripts(&parts)
+}
+
+/// JavaScript that runs each (patterns, code) pair only on a matching top-level host.
+pub fn guarded_user_scripts(parts: &[(String, String)]) -> String {
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n(function(){\n  if (window.top !== window) return;\n  const h = String(location.hostname || '').toLowerCase().replace(/\\.$/, '');\n  const m = (list) => list.some(p => p === '*' || (h && (h === p || h.endsWith('.' + p))));\n",
+    );
+    for (pat, code) in parts {
+        let list: Vec<String> = pat.split(',').map(normalize_pattern).collect();
+        let list_json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+        out.push_str(&format!("  if (m({list_json})) {{ try {{ (function(){{\n{code}\n}})(); }} catch (e) {{ console.error('Shunno UserScript:', e); }} }}\n"));
+    }
+    out.push_str("})();\n");
+    out
 }

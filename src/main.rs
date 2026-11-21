@@ -160,7 +160,12 @@ fn live_groups(tabs: &[BrowserTab]) -> Vec<state::TabGroup> {
         let mut g = g.borrow_mut();
         let before = g.len();
         let others = OTHER_TAB_IDS.with(|o| o.borrow().clone());
-        g.retain(|x| tabs.iter().map(|t| t.id).chain(others.iter().copied()).any(|id| tab_group(id) == Some(x.id)));
+        let alive = |x: &state::TabGroup| tabs.iter().map(|t| t.id).chain(others.iter().copied()).any(|id| tab_group(id) == Some(x.id));
+        if RESTORES_PENDING.with(|r| r.get()) > 0 {
+            // Windows still being rebuilt hold tabs of these groups: show, but do not forget, them.
+            return g.iter().filter(|x| alive(x)).cloned().collect();
+        }
+        g.retain(alive);
         if g.len() != before {
             BrowserStorage::save_tab_groups(&g);
         }
@@ -462,7 +467,13 @@ fn ext_install(wv: &WebView, proxy: EventLoopProxy<AppEvent>, dir: std::path::Pa
                 let id = webview2_com::take_pwstr(id);
                 let mut reg = extensions::load_registry();
                 let name = meta.name.clone();
-                reg.insert(id, meta);
+                let new_path = meta.path.clone();
+                // Re-adding an installed extension: the previous copy is no longer used.
+                if let Some(old) = reg.insert(id, meta) {
+                    if old.path != new_path {
+                        extensions::delete_copy(&old.path);
+                    }
+                }
                 extensions::save_registry(&reg);
                 let _ = p2.send_event(AppEvent::ExtensionNotice(format!("Added {name}.")));
             }
@@ -582,7 +593,8 @@ enum AppEvent {
     /// Session restore: open another window with these tabs (url, space, group).
     RestoreWindow(Vec<(String, u32, Option<u32>)>),
     ContentIpc(usize, String),
-    DownloadIntercepted(String),
+    /// "Download ... with Shunno" from a page's context menu: (tab id, url).
+    DownloadIntercepted(usize, String),
     NativeDownloadStarted {
         id: u64,
         url: String,
@@ -690,7 +702,8 @@ fn event_tab_id(e: &AppEvent) -> Option<usize> {
         | AppEvent::TabTitleChanged(t, _)
         | AppEvent::TabUrlChanged(t, _)
         | AppEvent::TabZoomChanged(t, _)
-        | AppEvent::SearchSelection(t, _) => Some(*t),
+        | AppEvent::SearchSelection(t, _)
+        | AppEvent::DownloadIntercepted(t, _) => Some(*t),
         AppEvent::NavigationDone(t, _, _) => Some(*t),
         AppEvent::TakeoverCandidate { tab_id, .. } => Some(*tab_id),
         #[cfg(windows)]
@@ -710,6 +723,8 @@ thread_local! {
     /// Tab ids living in the other windows (so groups and permission requests there stay alive).
     static OTHER_TAB_IDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     static WINDOW_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    /// Saved windows not yet rebuilt at startup.
+    static RESTORES_PENDING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Clone, Serialize)]
@@ -790,6 +805,27 @@ struct ChromeSnapshot {
     downloads: Vec<DownloadTask>,
 }
 
+/// Save history so that the newest snapshot always wins: background saves can finish out of order,
+/// and an older one landing after "Clear history" would restore what the user deleted.
+fn save_history_ordered(rt: Option<&tokio::runtime::Handle>, snapshot: Vec<HistoryEntry>) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let gen = NEXT.fetch_add(1, Ordering::SeqCst);
+    let write = move || {
+        let mut last = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+        if gen > *last {
+            BrowserStorage::save_history(&snapshot);
+            *last = gen;
+        }
+    };
+    match rt {
+        Some(rt) => {
+            rt.spawn_blocking(write);
+        }
+        None => write(),
+    }
+}
+
 fn generate_ipc_token() -> String {
     let mut rng = rand::thread_rng();
     let a: u64 = rng.gen();
@@ -821,12 +857,29 @@ fn page_may_target(page_url: Option<&str>, target: &str) -> bool {
     !target_host.is_empty() && page_url.map(|p| extract_host(p) == target_host).unwrap_or(false)
 }
 
+thread_local! {
+    /// Each tab's current main-frame navigation target (fragment removed), from NavigationStarting.
+    static MAIN_NAV: std::cell::RefCell<HashMap<usize, String>> = std::cell::RefCell::new(HashMap::new());
+    /// Each tab's network policy for the site it is on: (ad blocking, images blocked). Set when the
+    /// tab is made and again at every top-level navigation, so it follows the tab across sites.
+    static TAB_NET_POLICY: std::cell::RefCell<HashMap<usize, (bool, bool)>> = std::cell::RefCell::new(HashMap::new());
+}
+/// The engine's own desktop User-Agent (read from the toolbar web view at start), restored when a
+/// tab leaves a site set to "mobile site".
+static DESKTOP_UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 // Live WebView2 download operations, keyed by Shunno task id. WebView2 raises all of its
 // events on the UI thread, which is also the event loop thread, so a thread_local is sufficient.
 #[cfg(windows)]
 thread_local! {
     static NATIVE_OPS: std::cell::RefCell<HashMap<u64, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>> =
         std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Destinations (lower case) promised to WebView2 downloads still running.
+    static NATIVE_DESTS: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 #[cfg(windows)]
@@ -862,17 +915,16 @@ fn build_content_init_script(
     ipc_token: &str,
     user_js: &str,
 ) -> String {
+    let _ = policy; // site flags now come from the per-host table, looked up in the page
+    let default_flags = serde_json::to_string(&state::page_flags(&SitePolicy::default())).unwrap_or_else(|_| "[true,true,true,false,true]".into());
     let mut script = CONTENT_GUARD_JS
         .replace("__SHUNNO_IPC_TOKEN__", ipc_token)
-        .replace("__SHUNNO_ADBLOCK__", if policy.adblock { "true" } else { "false" })
-        .replace("__SHUNNO_SPONSORBLOCK__", if policy.sponsorblock { "true" } else { "false" })
-        .replace("__SHUNNO_REJECT_COOKIES__", if policy.auto_reject_cookies { "true" } else { "false" })
+        .replace("__SHUNNO_POLICY_TABLE__", &state::page_policy_table_json())
+        .replace("__SHUNNO_POLICY_DEFAULT__", &default_flags)
         .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
         .replace("__SHUNNO_PEEK__", if global.peek_links { "true" } else { "false" })
-        .replace("__SHUNNO_IMAGES_DISABLED__", if !policy.images_enabled { "true" } else { "false" })
-        .replace("__SHUNNO_FP__", if policy.fp_protect { "true" } else { "false" })
         .replace("__SHUNNO_FP_SESSION__", fp_session_key());
 
     if !user_js.is_empty() {
@@ -921,7 +973,10 @@ fn load_embedded_window_icon() -> Option<Icon> {
                 ICO_BYTES[off + 15],
             ]) as usize;
 
-            if w == target_size && h == target_size && img_offset + 40 + (w * h * 4) as usize <= ICO_BYTES.len() && bytes_in_res >= 40 {
+            if w == target_size && h == target_size && img_offset + 40 + (w * h * 4) as usize <= ICO_BYTES.len() && bytes_in_res >= 40
+                // Uncompressed 32-bit DIB only (a PNG-compressed entry would decode as noise).
+                && u16::from_le_bytes([ICO_BYTES[img_offset + 14], ICO_BYTES[img_offset + 15]]) == 32
+            {
                 let pixel_start = img_offset + 40;
                 let row_bytes = (w * 4) as usize;
                 let mut rgba = vec![0u8; (w * h * 4) as usize];
@@ -1025,9 +1080,16 @@ fn snap_window_to_fraction(window: &Window, x_f: i32, y_f: i32, w_f: i32, h_f: i
 #[cfg(not(windows))]
 fn snap_window_to_fraction(_window: &Window, _x_f: i32, _y_f: i32, _w_f: i32, _h_f: i32) {}
 
+/// Windows in full screen, with the placement to restore (also tells WM_NCCALCSIZE not to inset).
+#[cfg(windows)]
+static FULLSCREEN_WP: std::sync::Mutex<Vec<(isize, windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(windows)]
+fn is_fullscreen_hwnd(h: isize) -> bool {
+    FULLSCREEN_WP.lock().map(|g| g.iter().any(|(x, _)| *x == h)).unwrap_or(false)
+}
+
 #[cfg(windows)]
 fn apply_native_fullscreen(window: &Window, enable: bool) {
-    use std::sync::{Mutex, OnceLock};
     use tao::platform::windows::WindowExtWindows;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -1036,8 +1098,6 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
         SWP_NOOWNERZORDER, WINDOWPLACEMENT,
     };
 
-    static SAVED_WP: OnceLock<Mutex<Option<WINDOWPLACEMENT>>> = OnceLock::new();
-    let wp_lock = SAVED_WP.get_or_init(|| Mutex::new(None));
     let hwnd = HWND(window.hwnd() as isize);
 
     unsafe {
@@ -1047,9 +1107,10 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 ..Default::default()
             };
             if GetWindowPlacement(hwnd, &mut wp).is_ok() {
-                if let Ok(mut g) = wp_lock.lock() {
-                    *g = Some(wp);
-                }
+                // Per window: several windows can be full screen and each restores its own placement.
+                let mut g = FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner());
+                g.retain(|(h, _)| *h != hwnd.0);
+                g.push((hwnd.0, wp));
             }
             let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
@@ -1069,7 +1130,11 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 );
             }
         } else {
-            let saved = wp_lock.lock().ok().and_then(|mut g| g.take());
+            let saved = {
+                let mut g = FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner());
+                let at = g.iter().position(|(h, _)| *h == hwnd.0);
+                at.map(|i| g.remove(i).1)
+            };
             if let Some(wp) = saved {
                 let _ = SetWindowPlacement(hwnd, &wp);
                 let _ = SetWindowPos(
@@ -1178,7 +1243,10 @@ fn capture_tab_screenshot_to_file(webview: &WebView) {
                         let _ = GlobalUnlock(hglobal);
                         let shots_dir = BrowserStorage::downloads_root_dir().join("Screenshots");
                         let _ = fs::create_dir_all(&shots_dir);
-                        let out_path = shots_dir.join(format!("shunno_shot_{}.png", now_epoch_secs()));
+                        // Two shots in the same second must not overwrite each other.
+                        let Ok(out_path) = downloader::reserve_unique_path(&shots_dir, &format!("shunno_shot_{}.png", now_epoch_secs())) else {
+                            return Ok(());
+                        };
                         if fs::write(&out_path, &bytes).is_ok() {
                             let _ = Command::new("explorer.exe")
                                 .args(["/select,", &out_path.to_string_lossy()])
@@ -1813,7 +1881,34 @@ fn attach_native_webview2_hooks(
         // Only intercept known ad/tracker URL patterns so 99% of page traffic runs at full native Chromium speed
         // Request policy: Brave's adblock engine for every request (all frames and workers), plus
         // image blocking when images are off for this site. One handler re-checks each request.
-        if adblock_enabled || block_images {
+        TAB_NET_POLICY.with(|m| m.borrow_mut().insert(tab_id, (adblock_enabled, block_images)));
+        // Site settings that WebView2 applies per navigation: set them for the site being opened.
+        // Changes made inside NavigationStarting apply to that navigation (WebView2 settings docs).
+        {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+            use webview2_com::NavigationStartingEventHandler;
+            let mut ns_token = Default::default();
+            let ns_handler = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+                let mut p = windows::core::PWSTR::null();
+                if args.Uri(&mut p).is_err() {
+                    return Ok(());
+                }
+                let uri = webview2_com::take_pwstr(p);
+                let pol = state::site_policy_for(&extract_host(&uri));
+                TAB_NET_POLICY.with(|m| m.borrow_mut().insert(tab_id, (pol.adblock, !pol.images_enabled)));
+                if let Ok(settings) = sender.Settings() {
+                    let _ = settings.SetIsScriptEnabled(pol.js_enabled);
+                    if let (Some(desktop), Ok(s2)) = (DESKTOP_UA.get(), settings.cast::<ICoreWebView2Settings2>()) {
+                        let want = if pol.mobile_ua { MOBILE_UA } else { desktop.as_str() };
+                        let _ = s2.SetUserAgent(&windows::core::HSTRING::from(want));
+                    }
+                }
+                Ok(())
+            }));
+            let _ = core.add_NavigationStarting(&ns_handler, &mut ns_token);
+        }
+        {
             use webview2_com::Microsoft::Web::WebView2::Win32::{
                 ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
                 COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
@@ -1821,7 +1916,8 @@ fn attach_native_webview2_hooks(
                 COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
                 COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
             };
-            let filter_ctx = if adblock_enabled { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL } else { COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE };
+            // Every request: the tab may move to a site where ad blocking or image blocking applies.
+            let filter_ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
             // ICoreWebView2_22 also delivers requests from iframes and workers, where most ads load.
             let added = match core.cast::<ICoreWebView2_22>() {
                 Ok(c22) => c22
@@ -1849,6 +1945,7 @@ fn attach_native_webview2_hooks(
                 }
                 let mut ctx = Default::default();
                 let _ = args.ResourceContext(&mut ctx);
+                let (adblock_enabled, block_images) = TAB_NET_POLICY.with(|m| m.borrow().get(&tab_id).copied()).unwrap_or((true, false));
                 let is_blocked_image = block_images && ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
 
                 let mut is_ad = false;
@@ -1875,7 +1972,10 @@ fn attach_native_webview2_hooks(
                     };
                     // Never block the page itself (a main-frame document); Brave shows an
                     // interstitial there, a blank tab would just look broken.
-                    let is_main_document = ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (page.is_empty() || page == uri);
+                    // Source still names the previous page while the next one is requested, so the
+                    // main-frame target recorded at NavigationStarting is checked too.
+                    let is_main_document = ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
+                        && (page.is_empty() || page == uri || MAIN_NAV.with(|m| m.borrow().get(&tab_id).is_some_and(|n| *n == uri)));
                     if !is_main_document {
                         let source = if page.starts_with("http") { page.as_str() } else { uri.as_str() };
                         is_ad = blocker::global().should_block(&uri, source, req_type);
@@ -2061,13 +2161,19 @@ fn attach_native_webview2_hooks(
                 let category = downloader::detect_download_category(&safe_name);
                 let target_dir = BrowserStorage::downloads_root_dir().join(&category);
                 let _ = fs::create_dir_all(&target_dir);
+                // WebView2 writes to a temporary file until the end, so a name can be free on disk yet
+                // already promised to another running download: both are checked.
+                let stem = std::path::Path::new(&safe_name).file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+                let ext = std::path::Path::new(&safe_name).extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
                 let mut dest_path = target_dir.join(&safe_name);
-                if dest_path.exists() {
-                    let stem = dest_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-                    let ext = dest_path.extension().and_then(|s| s.to_str()).unwrap_or("bin");
-                    dest_path = target_dir.join(format!("{}_{}.{}", stem, now_epoch_secs() % 100_000, ext));
+                let mut n = 1;
+                while dest_path.exists() || NATIVE_DESTS.with(|d| d.borrow().contains(&dest_path.to_string_lossy().to_lowercase())) {
+                    dest_path = target_dir.join(format!("{stem} ({n}){ext}"));
+                    n += 1;
                 }
                 let dest_str = dest_path.to_string_lossy().to_string();
+                let dest_key = dest_str.to_lowercase();
+                NATIVE_DESTS.with(|d| d.borrow_mut().insert(dest_key.clone()));
                 let wide_dest: Vec<u16> = dest_str.encode_utf16().chain(Some(0)).collect();
                 let _ = args.SetResultFilePath(PCWSTR::from_raw(wide_dest.as_ptr()));
 
@@ -2138,6 +2244,7 @@ fn attach_native_webview2_hooks(
                         let mut st = Default::default();
                         if dl_op.State(&mut st).is_ok() {
                             if st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                                NATIVE_DESTS.with(|d| d.borrow_mut().remove(&dest_key));
                                 NATIVE_OPS.with(|ops| {
                                     ops.borrow_mut().remove(&dl_id);
                                 });
@@ -2161,6 +2268,7 @@ fn attach_native_webview2_hooks(
                                         reason: Some(format!("Interrupted (reason {}), press Resume", reason.0)),
                                     });
                                 } else {
+                                    NATIVE_DESTS.with(|d| d.borrow_mut().remove(&dest_key));
                                     NATIVE_OPS.with(|ops| {
                                         ops.borrow_mut().remove(&dl_id);
                                     });
@@ -2289,7 +2397,7 @@ fn attach_native_webview2_hooks(
                                 let dl_sel_proxy = ctx_proxy.clone();
                                 let dl_sel_uri = link_uri.clone();
                                 let dl_sel_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
-                                    let _ = dl_sel_proxy.send_event(AppEvent::DownloadIntercepted(dl_sel_uri.clone()));
+                                    let _ = dl_sel_proxy.send_event(AppEvent::DownloadIntercepted(tab_id, dl_sel_uri.clone()));
                                     Ok(())
                                 }));
                                 let _ = dl_link_item.add_CustomItemSelected(&dl_sel_handler, &mut dl_sel_token);
@@ -2320,7 +2428,7 @@ fn attach_native_webview2_hooks(
                                 let m_proxy = ctx_proxy.clone();
                                 let m_uri = src_uri.clone();
                                 let m_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
-                                    let _ = m_proxy.send_event(AppEvent::DownloadIntercepted(m_uri.clone()));
+                                    let _ = m_proxy.send_event(AppEvent::DownloadIntercepted(tab_id, m_uri.clone()));
                                     Ok(())
                                 }));
                                 let _ = dl_media_item.add_CustomItemSelected(&m_handler, &mut m_token);
@@ -2359,8 +2467,7 @@ fn create_tab_webview(
 ) -> wry::Result<WebView> {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let content_h = (size.height - CHROME_BAR_HEIGHT).max(100.0);
-    let host = extract_host(url);
-    let user_js = load_approved_user_scripts(&host, &global.approved_script_hashes);
+    let user_js = load_approved_user_scripts(&global.approved_script_hashes);
     let init_script = build_content_init_script(policy, global, ipc_token, &user_js);
 
     let ipc_proxy = proxy.clone();
@@ -2409,6 +2516,8 @@ fn create_tab_webview(
                 }
                 https_guard::Decision::Allow => {}
             }
+            let target = nav_url.split('#').next().unwrap_or("").to_string();
+            MAIN_NAV.with(|m| m.borrow_mut().insert(tab_id, target));
             if nav_url.starts_with("http://") || nav_url.starts_with("https://") {
                 let _ = nav_proxy.send_event(AppEvent::TabUrlChanged(tab_id, nav_url));
             }
@@ -2420,12 +2529,13 @@ fn create_tab_webview(
 
         .with_new_window_req_handler(move |popup_url| {
             let lower = popup_url.to_ascii_lowercase();
-            if popup_url.is_empty()
-                || lower.starts_with("about:blank")
-                || lower.starts_with("javascript:")
-                || lower.contains("accounts.google.com")
-                || lower.contains("oauth")
-            {
+            // Sign-in popups must stay real popups (window.opener). Judged on host and path only:
+            // a query string such as "?next=oauth" must not let an ordinary popup through.
+            let sign_in = url::Url::parse(&lower).ok().is_some_and(|u| {
+                let host = u.host_str().unwrap_or("");
+                host == "accounts.google.com" || host.contains("oauth") || u.path().contains("oauth")
+            });
+            if popup_url.is_empty() || lower.starts_with("about:blank") || lower.starts_with("javascript:") || sign_in {
                 return true;
             }
             let _ = win_proxy.send_event(AppEvent::NewWindowBlockedOrOpened(tab_id, popup_url));
@@ -2542,6 +2652,9 @@ struct MaxButton {
     pressed: bool,
     active: bool,
 }
+/// Each subclassed window's previous window procedure (HWND, procedure).
+static ORIG_WNDPROCS: std::sync::Mutex<Vec<(isize, isize)>> = std::sync::Mutex::new(Vec::new());
+
 /// Per browser window (keyed by its HWND): the native maximize button and the toolbar web view's
 /// host window (wry's container HWND).
 static MAX_BUTTONS: std::sync::Mutex<Vec<(isize, MaxButton, isize)>> = std::sync::Mutex::new(Vec::new());
@@ -2564,6 +2677,10 @@ fn set_chrome_host(main: isize, host: isize) {
 }
 fn forget_window_native(main: isize) {
     MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.0 != main);
+    #[cfg(windows)]
+    FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| *h != main);
+    // A later window may get the same handle value: it must be subclassed afresh.
+    ORIG_WNDPROCS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| *h != main);
 }
 
 /// Parse "#RRGGBB" to COLORREF (0x00BBGGRR).
@@ -2729,6 +2846,9 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use wry::WebViewExtWindows;
 
     static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+    fn orig_wndproc_for(h: isize) -> Option<isize> {
+        ORIG_WNDPROCS.lock().ok()?.iter().find(|(x, _)| *x == h).map(|(_, p)| *p)
+    }
     let hwnd = HWND(window.hwnd() as isize);
 
     unsafe {
@@ -2789,9 +2909,20 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             for (metric, class_slot, which) in [(SM_CXICON, GCLP_HICON, ICON_BIG), (SM_CXSMICON, GCLP_HICONSM, ICON_SMALL)] {
                 let want = GetSystemMetricsForDpi(metric, dpi).max(16);
                 if let Some((_, bytes)) = pick(want) {
-                    if let Ok(hicon) = CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR) {
-                        SetClassLongPtrW(hwnd, class_slot, hicon.0);
-                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(hicon.0));
+                    // One icon per size for the whole process: every window (Ctrl+N) reuses it, so
+                    // no HICON is created per window and none leaks.
+                    static ICONS: std::sync::Mutex<Vec<(i32, isize)>> = std::sync::Mutex::new(Vec::new());
+                    let mut cache = ICONS.lock().unwrap_or_else(|e| e.into_inner());
+                    let hicon = match cache.iter().find(|(w, _)| *w == want) {
+                        Some((_, h)) => Some(*h),
+                        None => CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR).ok().map(|h| {
+                            cache.push((want, h.0));
+                            h.0
+                        }),
+                    };
+                    if let Some(h) = hicon {
+                        SetClassLongPtrW(hwnd, class_slot, h);
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(h));
                     }
                 }
             }
@@ -2907,7 +3038,9 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                         // Client area = whole window (custom frame). When maximized, Windows places a
                         // WS_THICKFRAME window ~8 px beyond every monitor edge; inset by the real frame size
                         // for this window's DPI, or the top of the tab strip and the window buttons are clipped.
-                        if IsZoomed(hwnd).as_bool() {
+                        // Not in full screen: there the window must cover the monitor exactly, even if it
+                        // was maximized when F11 was pressed.
+                        if IsZoomed(hwnd).as_bool() && !is_fullscreen_hwnd(hwnd.0) {
                             use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
                             use windows::Win32::UI::WindowsAndMessaging::{
                                 NCCALCSIZE_PARAMS, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
@@ -2967,8 +3100,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 }
                 _ => {}
             }
-            let prev_ptr = ORIG_WNDPROC.load(Ordering::Relaxed);
-            if prev_ptr != 0 {
+            let prev_ptr = orig_wndproc_for(hwnd.0).unwrap_or_else(|| ORIG_WNDPROC.load(Ordering::Relaxed));
+            if prev_ptr != 0 && prev_ptr != borderless_resize_wndproc as *const () as usize as isize {
                 let prev_fn: WNDPROC = std::mem::transmute(prev_ptr);
                 CallWindowProcW(prev_fn, hwnd, msg, wparam, lparam)
             } else {
@@ -2976,9 +3109,15 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             }
         }
 
-        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, borderless_resize_wndproc as *const () as usize as isize);
-        if prev != 0 {
-            ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+        // Subclass once per window, and remember each window's own previous procedure (never our
+        // own: chaining to ourselves would recurse forever).
+        let ours = borderless_resize_wndproc as *const () as usize as isize;
+        if orig_wndproc_for(hwnd.0).is_none() {
+            let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
+            if prev != 0 && prev != ours {
+                ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+                ORIG_WNDPROCS.lock().unwrap_or_else(|e| e.into_inner()).push((hwnd.0, prev));
+            }
         }
     }
 }
@@ -3263,6 +3402,22 @@ fn main() -> wry::Result<()> {
 
     install_native_win32_window_features(&window, &chrome_wv);
     #[cfg(windows)]
+    unsafe {
+        // The engine's default User-Agent, for tabs leaving a "mobile site" host.
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+        use windows::core::Interface;
+        use wry::WebViewExtWindows;
+        if let Ok(s2) = chrome_wv.controller().CoreWebView2().and_then(|c| c.Settings()).and_then(|s| s.cast::<ICoreWebView2Settings2>()) {
+            let mut p = windows::core::PWSTR::null();
+            if s2.UserAgent(&mut p).is_ok() {
+                let ua = webview2_com::take_pwstr(p);
+                if !ua.is_empty() {
+                    let _ = DESKTOP_UA.set(ua);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
     {
         use tao::platform::windows::WindowExtWindows;
         little::publish_main_window(window.hwnd() as isize);
@@ -3312,6 +3467,8 @@ fn main() -> wry::Result<()> {
     let mut site_data_cleared = false;
     // Tabs for which the user asked "Save page"; OFFLINE_HTML from any other tab is ignored.
     let mut pending_offline_saves: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Tabs for which the user pressed "Grab"; GRAB_RESULTS from any other tab is ignored.
+    let mut pending_grabs: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     SPACES.with(|s| *s.borrow_mut() = BrowserStorage::load_spaces());
     let saved_session = BrowserStorage::load_session();
@@ -3329,6 +3486,7 @@ fn main() -> wry::Result<()> {
     };
     // The other windows are rebuilt once the event loop runs.
     for w in saved_windows {
+        RESTORES_PENDING.with(|r| r.set(r.get() + 1));
         let _ = proxy.send_event(AppEvent::RestoreWindow(w));
     }
 
@@ -3358,7 +3516,7 @@ fn main() -> wry::Result<()> {
                 reader_active: false,
                 sleeping: false,
                 last_active_secs: now_epoch_secs(),
-                zoom: 1.0,
+                zoom: pol.zoom,
                 webview: wv,
             });
         }
@@ -3369,9 +3527,10 @@ fn main() -> wry::Result<()> {
     }
     // Little Shunno (one at a time).
     struct Little {
-        window: Window,
+        // Fields drop in this order: web views before the window that hosts them.
         bar: WebView,
         content: WebView,
+        window: Window,
         id: usize,
     }
     let mut little: Option<Little> = None;
@@ -3821,6 +3980,14 @@ fn main() -> wry::Result<()> {
         }
 
         // Route the event to its window.
+        if let Event::WindowEvent { window_id, .. } = &event {
+            let ours = *window_id == window.id()
+                || parked.iter().any(|p| p.window.id() == *window_id)
+                || little.as_ref().map(|l| l.window.id()) == Some(*window_id);
+            if !ours {
+                return;
+            }
+        }
         let event = match event {
             Event::UserEvent(AppEvent::ChromeIpcW(k, m)) => {
                 switch_to!(k);
@@ -3854,14 +4021,20 @@ fn main() -> wry::Result<()> {
                 e
             }
         };
-        WINDOW_KEY.with(|k| k.set(current_key));
-        OTHER_WINDOWS.with(|w| {
-            *w.borrow_mut() = parked
-                .iter()
-                .map(|p| WindowView { key: p.key, title: p.tabs.get(p.active_tab_idx).map(|t| t.title.clone()).unwrap_or_default() })
-                .collect()
-        });
-        OTHER_TAB_IDS.with(|o| *o.borrow_mut() = parked.iter().flat_map(|p| p.tabs.iter().map(|t| t.id)).collect());
+        // Per-window values the toolbar snapshot reads; recomputed whenever another window is swapped in.
+        macro_rules! refresh_window_locals {
+            () => {{
+                WINDOW_KEY.with(|k| k.set(current_key));
+                OTHER_WINDOWS.with(|w| {
+                    *w.borrow_mut() = parked
+                        .iter()
+                        .map(|p| WindowView { key: p.key, title: p.tabs.get(p.active_tab_idx).map(|t| t.title.clone()).unwrap_or_default() })
+                        .collect()
+                });
+                OTHER_TAB_IDS.with(|o| *o.borrow_mut() = parked.iter().flat_map(|p| p.tabs.iter().map(|t| t.id)).collect());
+            }};
+        }
+        refresh_window_locals!();
 
         // Little Shunno's own window events never reach the main window's handlers.
         if let Event::WindowEvent { window_id, event: ref wev, .. } = event {
@@ -3998,6 +4171,11 @@ fn main() -> wry::Result<()> {
 
             Event::UserEvent(AppEvent::SleepCheck) => {
                 sweep_permissions(&tabs, &little.as_ref().map(|l| vec![l.id]).unwrap_or_default());
+                // Every window's tabs sleep and archive, not only the focused window's.
+                let keys: Vec<u64> = std::iter::once(current_key).chain(parked.iter().map(|p| p.key)).collect();
+                for key in keys {
+                switch_to!(key);
+                refresh_window_locals!();
                 let now = now_epoch_secs();
                 let mut changed = false;
                 // Visible tabs are "in use": keep their clock fresh so switching away starts the idle timer.
@@ -4024,6 +4202,7 @@ fn main() -> wry::Result<()> {
                     let split_id = split_tab_idx.and_then(|i| tabs.get(i)).map(|t| t.id);
                     for idx in doomed {
                         let removed = tabs.remove(idx);
+                        set_tab_group(removed.id, None);
                         if removed.url != "shunno://newtab" {
                             closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None, window: 0 });
                         }
@@ -4069,6 +4248,9 @@ fn main() -> wry::Result<()> {
                         &engine,
                     );
                 }
+                }
+                switch_to!(focused_key);
+                refresh_window_locals!();
             }
 
             Event::UserEvent(AppEvent::ToggleFullscreen) => {
@@ -4470,7 +4652,7 @@ fn main() -> wry::Result<()> {
                             BrowserStorage::save_bookmarks(&bookmarks);
                         }
                         if nh > 0 {
-                            BrowserStorage::save_history(&history);
+                            save_history_ordered(None, history.clone());
                         }
                         importer::set_status(format!(
                             "Imported {nb} bookmark{} and {nh} history entr{} from {browser}.",
@@ -4559,10 +4741,21 @@ fn main() -> wry::Result<()> {
                 #[cfg(not(windows))]
                 let _ = op;
                 engine.delete(native_id);
-                let _ = engine.enqueue_named(&rt_handle, url, global_settings.default_threads, referer, cookie, "RENAME", None, Some(file_name));
+                // "UNIQUE": no duplicate prompt and no forced rename; a taken name becomes "name (1).ext" at the end.
+                let _ = engine.enqueue_named(&rt_handle, url, global_settings.default_threads, referer, cookie, "UNIQUE", None, Some(file_name));
             }
 
-            Event::UserEvent(AppEvent::ExternalOpen(url)) => {
+            Event::UserEvent(AppEvent::ExternalOpen(raw)) => {
+                // Any program on the desktop can send this message: accept only what a command line
+                // may carry (http(s), file:///, a local page path), never javascript: or shunno:.
+                let url = if raw.is_empty() || raw == little::LITTLE_PAYLOAD {
+                    raw
+                } else {
+                    match little::url_from_arg(&raw) {
+                        Some(u) => u,
+                        None => return,
+                    }
+                };
                 if url == little::LITTLE_PAYLOAD {
                     let _ = proxy.send_event(AppEvent::LittleOpen(None));
                 } else if url.is_empty() {
@@ -4724,7 +4917,15 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::RestoreWindow(list)) => {
+                RESTORES_PENDING.with(|r| r.set(r.get().saturating_sub(1)));
+                // Show the Space this window's tabs are in.
+                let first_space = list.first().map(|t| t.1);
                 if open_window!(None) {
+                    if let Some(sp) = first_space {
+                        if !list.iter().any(|t| t.1 == active_space()) {
+                            SPACES.with(|s| s.borrow_mut().active = sp);
+                        }
+                    }
                     for (u, sp, grp) in list {
                         let host = extract_host(&u);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
@@ -4805,8 +5006,16 @@ fn main() -> wry::Result<()> {
                 }
             }
 
-            Event::UserEvent(AppEvent::DownloadIntercepted(dl_url)) => {
-                let active_tab = tabs.get(active_tab_idx);
+            Event::UserEvent(AppEvent::DownloadIntercepted(src_tab, dl_url)) => {
+                // Referer and cookies of the page that was right-clicked (split view, Little Shunno),
+                // not of whichever tab happens to be active.
+                let little_tab = little.as_ref().filter(|l| l.id == src_tab).map(|l| &l.content);
+                let active_tab = tabs.iter().find(|t| t.id == src_tab).or_else(|| if little_tab.is_some() { None } else { tabs.get(active_tab_idx) });
+                if let Some(wv) = little_tab {
+                    let referer = wv.url().ok().filter(|u| u.starts_with("http"));
+                    dispatch_download_with_httponly_cookies(Some(wv), dl_url, global_settings.default_threads, referer, None, "CHECK", None, true, proxy.clone());
+                    return;
+                }
                 let (ref_url, cookie_val, wv_opt) = active_tab
                     .map(|t| (Some(t.url.clone()), t.cookie.clone(), Some(&t.webview)))
                     .unwrap_or((None, None, None));
@@ -4879,7 +5088,8 @@ fn main() -> wry::Result<()> {
                     || lower.contains("propellerads");
                 if global_settings.block_popups && is_ad_popup {
                     blocked_count += 1;
-                } else if popup_url.starts_with("http") {
+                } else if popup_url.starts_with("http") || (opener_id == 0 && popup_url.starts_with("file:///")) {
+                    // file:/// only from outside (Explorer, the command line), never from a page.
                     let clean = sanitize_url(&popup_url, &global_settings);
                     let host = extract_host(&clean);
                     let pol = site_policies.get(&host).cloned().unwrap_or_default();
@@ -4897,7 +5107,7 @@ fn main() -> wry::Result<()> {
                             reader_active: false,
                             sleeping: false,
                             last_active_secs: now_epoch_secs(),
-                            zoom: 1.0,
+                            zoom: pol.zoom,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -5087,19 +5297,19 @@ fn main() -> wry::Result<()> {
                 } else if let Some(key_cmd) = msg.strip_prefix("KEY:") {
                     match key_cmd {
                         "zoom_in" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = (tab.zoom + 0.1).min(3.0);
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_out" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = (tab.zoom - 0.1).max(0.4);
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_reset" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = 1.0;
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
@@ -5107,48 +5317,18 @@ fn main() -> wry::Result<()> {
                         "f11" => {
                             let _ = proxy.send_event(AppEvent::ToggleFullscreen);
                         }
-                        "next_tab" => {
-                            if !tabs.is_empty() {
-                                active_tab_idx = (active_tab_idx + 1) % tabs.len();
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "prev_tab" => {
-                            if !tabs.is_empty() {
-                                active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "t" => {
-                            let start = "shunno://newtab".to_string();
-                            let pol = SitePolicy::default();
-                            let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, pinned: false, playing_audio: false, muted: false, reader_active: false, sleeping: false, last_active_secs: now_epoch_secs(), zoom: 1.0, webview: wv });
-                                active_tab_idx = tabs.len() - 1;
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "w" => {
-                            if tabs.len() <= 1 {
-                                BrowserStorage::save_session(&[]);
-                                *control_flow = ControlFlow::Exit;
-                                return;
-                            } else if active_tab_idx < tabs.len() {
-                                tabs.remove(active_tab_idx);
-                                if active_tab_idx >= tabs.len() { active_tab_idx = tabs.len() - 1; }
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "k" => {
-                            palette_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            let _ = chrome_wv.evaluate_script("if (window.openPalette) window.openPalette();");
-                        }
-                        "j" => {
-                            drawer_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            let _ = chrome_wv.evaluate_script("if (window.openDrawer) window.openDrawer('downloads');");
+                        // Same path as the native accelerator hook, so Spaces, groups, split view,
+                        // Recently Closed and multiple windows are handled in one place.
+                        "t" | "w" | "j" | "k" | "next_tab" | "prev_tab" => {
+                            let id: &'static str = match key_cmd {
+                                "t" => "new-tab",
+                                "w" => "close-tab",
+                                "j" => "downloads",
+                                "k" => "palette",
+                                "next_tab" => "next-tab",
+                                _ => "prev-tab",
+                            };
+                            let _ = proxy.send_event(AppEvent::PageShortcut(id));
                         }
                         _ => {}
                     }
@@ -5161,10 +5341,20 @@ fn main() -> wry::Result<()> {
                         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("snapshot");
                         let html = val.get("html").and_then(|v| v.as_str()).unwrap_or("");
                         let safe_name = downloader::sanitize_download_filename(&format!("{}.html", title.replace(' ', "_")));
-                        let out = BrowserStorage::downloads_root_dir().join(&safe_name);
-                        let _ = fs::write(out, html);
+                        // Never overwrite an existing file; mark it as from the Internet (it is the page's own HTML).
+                        if let Ok(out) = downloader::reserve_unique_path(&BrowserStorage::downloads_root_dir(), &safe_name) {
+                            if fs::write(&out, html).is_ok() {
+                                downloader::mark_of_the_web(&out, page_url.as_deref().unwrap_or(""), None);
+                            } else {
+                                let _ = fs::remove_file(&out);
+                            }
+                        }
                     }
                 } else if let Some(grab_json) = msg.strip_prefix("GRAB_RESULTS:") {
+                    // Only right after the user pressed Grab for this tab (a page could call the grab itself).
+                    if !pending_grabs.remove(&tab_id) {
+                        return;
+                    }
                     if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(grab_json) {
                         for it in items.into_iter().rev() {
                             let u = it.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -5199,7 +5389,7 @@ fn main() -> wry::Result<()> {
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                     let _ = chrome_wv.evaluate_script("toggleDrawer('streams');");
                 } else if let Some(stream_url) = msg.strip_prefix("STREAM:") {
-                    if !sniffed_streams.iter().any(|s| s.url == stream_url) {
+                    if stream_url.starts_with("http") && page_may_target(page_url.as_deref(), stream_url) && !sniffed_streams.iter().any(|s| s.url == stream_url) {
                         let name = stream_url
                             .split('?')
                             .next()
@@ -5282,10 +5472,8 @@ fn main() -> wry::Result<()> {
                                             visited_at: now,
                                         },
                                     );
-                                    let hist_snapshot = history.clone();
-                                    rt_handle.spawn(async move {
-                                        BrowserStorage::save_history(&hist_snapshot);
-                                    });
+                                    history.truncate(state::HISTORY_CAP);
+                                    save_history_ordered(Some(&rt_handle), history.clone());
                                 }
                             }
                         }
@@ -5501,14 +5689,25 @@ fn main() -> wry::Result<()> {
                         let _ = chrome_wv.focus();
                         let _ = chrome_wv.evaluate_script("window.__focusHomeSearch && window.__focusHomeSearch()");
                     }
-                } else if cmd == "NEXT_TAB" {
+                } else if cmd == "NEXT_TAB" || cmd == "PREV_TAB" {
                     if !tabs.is_empty() {
-                        active_tab_idx = state::step_in_space(&tab_space_pairs(&tabs), active_tab_idx, true);
-                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                    }
-                } else if cmd == "PREV_TAB" {
-                    if !tabs.is_empty() {
-                        active_tab_idx = state::step_in_space(&tab_space_pairs(&tabs), active_tab_idx, false);
+                        let idx = state::step_in_space(&tab_space_pairs(&tabs), active_tab_idx, cmd == "NEXT_TAB");
+                        active_tab_idx = idx.min(tabs.len() - 1);
+                        // As SWITCH_TAB: wake a sleeping tab, restart its idle clock, open its group.
+                        if split_tab_idx == Some(active_tab_idx) {
+                            split_tab_idx = None;
+                        }
+                        let t = &mut tabs[active_tab_idx];
+                        if t.sleeping {
+                            resume_tab_webview(&t.webview);
+                            t.sleeping = false;
+                        }
+                        t.last_active_secs = now_epoch_secs();
+                        if let Some(g) = tab_group(t.id) {
+                            if group_mut(g, |x| std::mem::replace(&mut x.collapsed, false)) == Some(true) {
+                                save_groups();
+                            }
+                        }
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                     }
                 } else if cmd == "REFRESH_UI" {
@@ -5590,6 +5789,7 @@ fn main() -> wry::Result<()> {
                             return;
                         } else if idx < tabs.len() {
                             let removed = tabs.remove(idx);
+                            set_tab_group(removed.id, None);
                             if !removed.incognito && removed.url != "shunno://newtab" {
                                 closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None, window: 0 });
                             }
@@ -5644,7 +5844,7 @@ fn main() -> wry::Result<()> {
                                 reader_active: false,
                                 sleeping: false,
                                 last_active_secs: now_epoch_secs(),
-                                zoom: 1.0,
+                                zoom: pol.zoom,
                                 webview: wv,
                             });
                             active_tab_idx = tabs.len() - 1;
@@ -5658,6 +5858,8 @@ fn main() -> wry::Result<()> {
                             if tabs[idx].pinned {
                                 set_tab_group(tabs[idx].id, None);
                             }
+                            let active_id = tabs.get(active_tab_idx).map(|t| t.id);
+                            let split_id = split_tab_idx.and_then(|k| tabs.get(k)).map(|t| t.id);
                             let tab_item = tabs.remove(idx);
                             let target_idx = if tab_item.pinned {
                                 tabs.iter().take_while(|t| t.pinned).count()
@@ -5665,7 +5867,8 @@ fn main() -> wry::Result<()> {
                                 tabs.len()
                             };
                             tabs.insert(target_idx, tab_item);
-                            active_tab_idx = target_idx;
+                            active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(target_idx);
+                            split_tab_idx = split_id.and_then(|id| tabs.iter().position(|t| t.id == id));
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
@@ -5935,7 +6138,12 @@ fn main() -> wry::Result<()> {
                         let is_incog = tab.incognito;
                         let is_muted = tab.muted;
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                        let old_id = tab.id;
                         if let Ok(new_wv) = create_tab_webview(&window, &mut web_context, tid, &current_url, &updated_pol, &global_settings, &ipc_token, proxy.clone(), is_incog) {
+                            // The rebuilt tab keeps its Space and group.
+                            set_tab_space(tid, tab_space(old_id));
+                            set_tab_group(tid, tab_group(old_id));
+                            set_tab_group(old_id, None);
                             if is_muted { set_webview_muted(&new_wv, true); }
                             if (tab.zoom - 1.0).abs() > f64::EPSILON { apply_tab_zoom(&new_wv, tab.zoom); }
                             tabs[active_tab_idx] = BrowserTab {
@@ -5957,6 +6165,8 @@ fn main() -> wry::Result<()> {
                         }
                     }
                 } else if let Some(spd) = cmd.strip_prefix("SET_PLAYBACK_SPEED:") {
+                    // A number only: this text is placed into script run in the page.
+                    let Some(spd) = spd.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (0.0625..=16.0).contains(v)) else { return };
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         let js = format!("document.querySelectorAll('video,audio').forEach(m => m.playbackRate = {});", spd);
                         let _ = tab.webview.evaluate_script(&js);
@@ -6119,6 +6329,7 @@ fn main() -> wry::Result<()> {
                             while i < tabs.len() {
                                 if tab_space(tabs[i].id) == id && tabs.len() > 1 {
                                     let removed = tabs.remove(i);
+                                    set_tab_group(removed.id, None);
                                     if !removed.incognito && removed.url != "shunno://newtab" {
                                         closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url, group: None, window: 0 });
                                     }
@@ -6130,6 +6341,17 @@ fn main() -> wry::Result<()> {
                             for t in &tabs {
                                 if tab_space(t.id) == id {
                                     set_tab_space(t.id, target);
+                                }
+                            }
+                            // Other windows keep their tabs, moved into the Space that remains.
+                            for p in parked.iter_mut() {
+                                for t in &p.tabs {
+                                    if tab_space(t.id) == id {
+                                        set_tab_space(t.id, target);
+                                    }
+                                }
+                                if p.space == id {
+                                    p.space = target;
                                 }
                             }
                             split_tab_idx = None;
@@ -6223,6 +6445,11 @@ fn main() -> wry::Result<()> {
                                 active_tab_idx -= 1;
                             }
                             split_tab_idx = split_tab_idx.map(|k| if k > i { k - 1 } else { k });
+                            if tabs.get(active_tab_idx).map(|x| tab_space(x.id)) != Some(active_space()) {
+                                if let Some(k) = state::pick_tab_for_space(&tab_space_pairs(&tabs), active_space(), None) {
+                                    active_tab_idx = k;
+                                }
+                            }
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                             let _ = proxy.send_event(AppEvent::RefreshChrome);
                             let space = tab_space(t.id);
@@ -6500,8 +6727,9 @@ fn main() -> wry::Result<()> {
                     BrowserStorage::save_global_settings(&global_settings);
                 } else if let Some(query) = cmd.strip_prefix("FIND:") {
                     if let Some(tab) = tabs.get(active_tab_idx) {
-                        let escaped = query.replace('\\', "\\\\").replace('\'', "\\'");
-                        let js = format!("if (window.__shunnoFindOnPage) window.__shunnoFindOnPage('{}', 'next');", escaped);
+                        // A JSON string is a valid JS string literal for any text (quotes, newlines).
+                        let arg = serde_json::Value::String(query.to_string());
+                        let js = format!("if (window.__shunnoFindOnPage) window.__shunnoFindOnPage({}, 'next');", arg);
                         let _ = tab.webview.evaluate_script(&js);
                     }
                 } else if cmd == "FIND_NEXT" || cmd == "FIND_PREV" {
@@ -6587,15 +6815,13 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "CLEAR_HISTORY" {
                     history.clear();
-                    BrowserStorage::save_history(&history);
+                    // Ordered with background saves: an older snapshot finishing late must not bring it back.
+                    save_history_ordered(None, Vec::new());
                 } else if cmd == "SAVE_OFFLINE_HTML" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         pending_offline_saves.insert(tab.id);
-                        let js = format!(
-                            "if (window.ipc) window.ipc.postMessage('{}|OFFLINE_HTML:' + JSON.stringify({{ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }}));",
-                            ipc_token
-                        );
-                        let _ = tab.webview.evaluate_script(&js);
+                        // content_guard posts the page itself; the IPC token never goes into evaluated script.
+                        let _ = tab.webview.evaluate_script("window.__shunnoSaveOffline && window.__shunnoSaveOffline()");
                     }
                 } else if cmd == "OPEN_SCRIPTS_FOLDER" {
                     let dir = user_scripts_dir();
@@ -6608,6 +6834,7 @@ fn main() -> wry::Result<()> {
                     let _ = Command::new("explorer.exe").arg(dir).spawn();
                 } else if cmd == "GRAB_PAGE_LINKS" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
+                        pending_grabs.insert(tab.id);
                         let _ = tab.webview.evaluate_script("if (window.__shunnoGrabAllPageLinks) window.__shunnoGrabAllPageLinks();");
                     }
                 } else if let Some(snap_payload) = cmd.strip_prefix("SNAP_WIN:") {
@@ -6841,7 +7068,7 @@ fn main() -> wry::Result<()> {
                         .map(|l| l.iter().any(|t| t.saved_path.as_deref() == Some(path)))
                         .unwrap_or(false);
                     if known && std::path::Path::new(path).exists() {
-                        let _ = Command::new("explorer.exe").arg(format!("/select,{}", path)).spawn();
+                        let _ = Command::new("explorer.exe").args(["/select,", path]).spawn();
                     }
                 }
 

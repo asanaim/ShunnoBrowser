@@ -8,7 +8,20 @@
 6. **Path traversal & Windows device names.** `sanitize_download_filename` strips separators, collapses `..`, removes control/illegal characters, caps length and prefixes reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `LPT9`).
 7. **Verified helper tools.** ffmpeg and yt-dlp are downloaded over HTTPS and accepted only if their SHA-256 matches the publisher's checksum file. They run without a console window and are killed as a process tree on pause.
 8. **TLS.** `reqwest` uses native Windows TLS (SChannel via `native-tls`).
-9. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
+9. **Downloads are marked as from the Internet.** Files the engine saves (and saved pages) get the
+   NTFS `Zone.Identifier` stream (Mark of the Web), so SmartScreen and Office Protected View check
+   them; WebView2 marks its own downloads. File names lose bidirectional control characters
+   (`photo\u202Egpj.exe`). A finished file never overwrites another: the final name is claimed with
+   create-new before the move.
+10. **Site settings follow the site, not the tab.** JavaScript, mobile User-Agent, ad and image
+   blocking are set at every top-level NavigationStarting from the destination host's policy; the
+   content script reads its flags from a per-host table by the top-level host.
+11. **Helper processes end with the browser.** FFmpeg and yt-dlp run inside a kill-on-close job
+   object. HLS playlists are fetched with network protocols only (`-protocol_whitelist`), and a public
+   playlist may not point the engine at local addresses.
+12. **Links from other programs** (second launch, `WM_COPYDATA`) are accepted only as http(s),
+   `file:///` or a local page path; never `javascript:` or internal schemes.
+13. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
 
 ## Password vault (v2.17.0)
 

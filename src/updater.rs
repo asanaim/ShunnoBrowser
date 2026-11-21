@@ -135,6 +135,9 @@ impl Updater {
         if !resp.status().is_success() {
             return Err(fail(format!("HTTP {}", resp.status())));
         }
+        if resp.content_length().is_some_and(|n| n > 64 * 1024) {
+            return Err(fail("manifest too large".to_string()));
+        }
         let text = resp.text().await.map_err(|e| fail(e.to_string()))?;
         let m: Manifest = serde_json::from_str(&text).map_err(|e| fail(format!("bad manifest: {}", e)))?;
         if !is_newer(&m.version, APP_VERSION) {
@@ -158,21 +161,33 @@ impl Updater {
             return Ok(UpdateState::Available { version, reason: "cannot locate the running EXE".to_string() });
         };
 
-        let bytes = client
+        let resp = client
             .get(&m.url)
             .timeout(Duration::from_secs(600))
             .send()
             .await
             .map_err(|e| fail(e.to_string()))?
             .error_for_status()
-            .map_err(|e| fail(e.to_string()))?
-            .bytes()
-            .await
             .map_err(|e| fail(e.to_string()))?;
-        if bytes.len() > MAX_EXE_BYTES || bytes.len() < 1024 || &bytes[..2] != b"MZ" {
+        if resp.content_length().is_some_and(|n| n as usize > MAX_EXE_BYTES) {
+            return Err(fail("downloaded file is too large".to_string()));
+        }
+        // Stream with a hard size cap, hashing as it arrives (never buffers more than the cap).
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut hasher = Sha256::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            let chunk = chunk.map_err(|e| fail(e.to_string()))?;
+            if bytes.len() + chunk.len() > MAX_EXE_BYTES {
+                return Err(fail("downloaded file is too large".to_string()));
+            }
+            hasher.update(&chunk);
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.len() < 1024 || &bytes[..2] != b"MZ" {
             return Err(fail("downloaded file is not a Windows program".to_string()));
         }
-        if hex::encode(Sha256::digest(&bytes)) != m.sha256.trim().to_ascii_lowercase() {
+        if hex::encode(hasher.finalize()) != m.sha256.trim().to_ascii_lowercase() {
             return Err(fail("checksum mismatch, update discarded".to_string()));
         }
 
@@ -189,9 +204,16 @@ impl Updater {
 
 /// Swaps the running EXE: Windows allows renaming a running executable, not overwriting it.
 pub fn install(exe: &Path, bytes: &[u8]) -> Result<(), String> {
-    let staged = exe.with_extension("new.exe");
+    // Another Shunno process (another profile) may have installed this same update already.
+    if fs::read(exe).map(|cur| cur == bytes).unwrap_or(false) {
+        return Ok(());
+    }
+    let staged = exe.with_extension(format!("new.{}.exe", std::process::id()));
     let old = old_exe_path(exe);
-    fs::write(&staged, bytes).map_err(|e| format!("folder not writable ({}); download manually", e))?;
+    if let Err(e) = fs::write(&staged, bytes) {
+        let _ = fs::remove_file(&staged);
+        return Err(format!("folder not writable ({}); download manually", e));
+    }
     let _ = fs::remove_file(&old);
     if let Err(e) = fs::rename(exe, &old) {
         let _ = fs::remove_file(&staged);
@@ -199,6 +221,7 @@ pub fn install(exe: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     if let Err(e) = fs::rename(&staged, exe) {
         let _ = fs::rename(&old, exe); // roll back
+        let _ = fs::remove_file(&staged);
         return Err(format!("install failed ({}); kept the current version", e));
     }
     Ok(())

@@ -284,6 +284,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .nav-btn:hover { filter: brightness(0.95); }
   .nav-btn:active { transform: scale(0.94); }
   .nav-btn.on { background: var(--blue-soft); color: var(--blue); }
+  /* Toolbar icon buttons (Bookmark, Library) and the compact Downloads button, one height. */
+  .tb-icon { border: none; background: transparent; color: var(--text); width: 30px; height: 30px; border-radius: 9px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
+    transition: background 0.18s var(--ease-fluid), transform 0.18s var(--ease-spring), color 0.2s ease; }
+  .tb-icon:hover { background: var(--input-bg); }
+  .tb-icon:active { transform: scale(0.92); }
+  .tb-icon.marked { color: var(--blue); }
+  .nav-btn.dl { height: 30px; padding: 0 8px; gap: 3px; font-size: 12px; border-radius: 9px; }
+  .nav-btn.dl .n { font-variant-numeric: tabular-nums; }
+  .nav-btn.dl .n:empty { display: none; }
   .nav-btn.green { background: var(--green-soft); color: #24B44B; }
 
   /* Responsive Centered Search + URL Capsule (proportional scaling, balanced margins) */
@@ -809,7 +819,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="ext-bar" id="ext-bar"></div>
         <button class="profile-btn" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"></button>
         <div id="pw-offer" class="pw-offer" style="display:none"></div>
-        <button class="nav-btn on" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">⚡ 0</button>
+        <button class="tb-icon" id="btn-bookmark" onclick="promptSaveBookmarkWithFolder()" title="Bookmark this page">
+          <svg width="15" height="16" viewBox="0 0 15 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 1.75h9a.75.75 0 0 1 .75.75v12.1l-5.25-3.3-5.25 3.3V2.5A.75.75 0 0 1 3 1.75z"/></svg>
+        </button>
+        <button class="tb-icon" id="btn-library" onclick="toggleDrawer('bookmarks', this)" title="Library: bookmarks and history">
+          <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="1.25" y="2.25" width="3.5" height="12" rx=".8"/><rect x="5.75" y="1.25" width="3.5" height="13" rx=".8"/><path d="M10.6 3.4l2.9-.9a.8.8 0 0 1 1 .5l2.9 9.9a.8.8 0 0 1-.5 1l-2.9.9a.8.8 0 0 1-1-.5L10 4.4a.8.8 0 0 1 .6-1z"/></svg>
+        </button>
+        <button class="nav-btn on dl" id="btn-downloads" onclick="toggleDrawer('downloads')" title="Downloads (Ctrl+J)">
+          <svg width="12" height="13" viewBox="0 0 12 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1.5v7.2M2.8 5.6L6 8.8l3.2-3.2M1.5 11.6h9"/></svg><span class="n" id="dl-count"></span>
+        </button>
         <button class="nav-btn" id="btn-controls" onclick="toggleDrawer('controls')" title="Controls &amp; Settings">•••</button>
       </div>
     </div>
@@ -1020,7 +1038,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
           </div>
           <div class="meta" id="import-status" style="margin-top:6px;"></div>
-          <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; CSV import arrives with the password manager.</div>
+          <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; then use Import… in the Passwords panel.</div>
         </div>
         <div class="card">
           <div class="card-header">
@@ -1396,7 +1414,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   let drawerAnchor = null;
 
   function defaultAnchorFor(name) {
-    return document.getElementById(name === 'downloads' ? 'btn-downloads' : 'btn-controls');
+    return document.getElementById(name === 'downloads' ? 'btn-downloads' : name === 'bookmarks' ? 'btn-library' : 'btn-controls');
   }
 
   // Place the popover under its anchor; the caret points at the anchor's centre.
@@ -2034,12 +2052,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const bySite = new Map();
     items.forEach(e => { if (!bySite.has(e.origin)) bySite.set(e.origin, []); bySite.get(e.origin).push(e); });
     list.innerHTML = '<div class="dl-group">' + Array.from(bySite.entries()).map(([origin, rows]) => {
-      const o = encodeAttr(origin);
+      const o = escapeHtml(origin); // read back through dataset, so plain HTML escaping
       return `<div class="perm-site" title="${o}"><span>${escapeHtml(pwHost(origin))}</span>
           <button class="text-btn" onclick="send('PERM_RESET_SITE:' + this.dataset.o)" data-o="${o}" title="Forget every decision for this site">Reset</button></div>` +
         rows.map(e => `<div class="perm-row">
           <span>${escapeHtml(e.icon)}</span><span class="lbl">${escapeHtml(e.label.charAt(0).toUpperCase() + e.label.slice(1))}</span>
-          <span class="perm-seg" data-o="${o}" data-k="${encodeAttr(e.kind)}">
+          <span class="perm-seg" data-o="${o}" data-k="${escapeHtml(e.kind)}">
             <button class="${e.decision === 'allow' ? 'on' : ''}" onclick="permSet(this.parentNode,'allow')">Allow</button>
             <button class="${e.decision === 'block' ? 'on' : ''}" onclick="permSet(this.parentNode,'block')">Block</button>
           </span>
@@ -2086,7 +2104,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           </div>
         </div>
         ${editing ? `<div class="pw-edit">
-          <input class="text-box" id="pw-e-u-${c.id}" value="${encodeAttr(c.username)}" placeholder="Username" />
+          <input class="text-box" id="pw-e-u-${c.id}" value="${escapeHtml(c.username)}" placeholder="Username" />
           <input class="text-box" id="pw-e-p-${c.id}" type="password" placeholder="New password" />
           <div style="display:flex;gap:6px;justify-content:flex-end;">
             <button class="text-btn" onclick="pwEditing = null; renderPasswords(lastState)">Cancel</button>
@@ -2127,7 +2145,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const bar = document.getElementById('ext-bar');
     const shown = list.filter(e => e.enabled && e.popup).slice(0, 4);
     const barHtml = list.length ? shown.map(e =>
-      `<button class="ext-ic" title="${encodeAttr(e.name)}" onclick="send('EXT_OPEN:${e.id}|popup')">${extIcon(e)}</button>`).join('') +
+      `<button class="ext-ic" title="${escapeHtml(e.name)}" onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">${extIcon(e)}</button>`).join('') +
       `<button class="ext-ic" id="ext-puzzle" title="Extensions" onclick="toggleDrawer('extensions', this)">${PUZZLE_SVG}</button>` : '';
     if (bar.dataset.h !== barHtml) { bar.dataset.h = barHtml; bar.innerHTML = barHtml; }
     bar.classList.toggle('on', list.length > 0);
@@ -2143,16 +2161,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}">
         <div class="ic">${extIcon(e, 24)}</div>
         <div class="tx">
-          <div class="nm" title="${encodeAttr(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
-          ${e.description ? `<div class="ds" title="${encodeAttr(e.description)}">${escapeHtml(e.description)}</div>` : ''}
+          <div class="nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
+          ${e.description ? `<div class="ds" title="${escapeHtml(e.description)}">${escapeHtml(e.description)}</div>` : ''}
           <div class="acts">
-            ${e.popup && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|popup')">Open</button>` : ''}
-            ${e.options && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|options')">Settings</button>` : ''}
-            <button class="rm" onclick="extRemove('${e.id}')">Remove</button>
+            ${e.popup && e.enabled ? `<button onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">Open</button>` : ''}
+            ${e.options && e.enabled ? `<button onclick="send('EXT_OPEN:${encodeAttr(e.id)}|options')">Settings</button>` : ''}
+            <button class="rm" onclick="extRemove('${encodeAttr(e.id)}')">Remove</button>
           </div>
         </div>
-        <button class="switch ${e.enabled ? 'on' : ''}" role="switch" aria-checked="${e.enabled}" aria-label="Enable ${encodeAttr(e.name)}"
-          onclick="this.classList.toggle('on'); send('EXT_SET:${e.id}|' + (this.classList.contains('on') ? 'enable' : 'disable'))"><i></i></button>
+        <button class="switch ${e.enabled ? 'on' : ''}" role="switch" aria-checked="${e.enabled}" aria-label="Enable ${escapeHtml(e.name)}"
+          onclick="this.classList.toggle('on'); send('EXT_SET:${encodeAttr(e.id)}|' + (this.classList.contains('on') ? 'enable' : 'disable'))"><i></i></button>
       </div>`).join('') : '<div class="meta" style="text-align:center;padding:18px 8px;">No extensions yet.</div>';
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
   }
@@ -2527,12 +2545,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       .filter(({ b }) => activeBookmarkFolder === 'All' || (b.folder || 'General') === activeBookmarkFolder);
 
     bmStrip.innerHTML = `
-      <button class="bm-chip action" onclick="toggleDrawer('bookmarks')" title="Open Library">📚 Library</button>
-      <button class="bm-chip action" onclick="promptSaveBookmarkWithFolder()" title="Bookmark Current Page" style="padding:3px 7px;">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-        </svg>
-      </button>
     ` + allFolders.filter(f => f !== 'All').map(f => `
       <button class="bm-chip ${activeBookmarkFolder === f ? 'action' : ''}"
               onclick="activeBookmarkFolder = (activeBookmarkFolder === '${encodeAttr(f)}' ? 'All' : '${encodeAttr(f)}'); send('REFRESH_UI');"
@@ -2565,7 +2577,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
 
 
-    document.getElementById('btn-downloads').textContent = `⚡ ${state.downloads.length}`;
+    // Compact Downloads button: the count shows only while there is something in the list.
+    const dlCount = document.getElementById('dl-count');
+    const dlN = state.downloads.length ? String(state.downloads.length) : '';
+    if (dlCount.textContent !== dlN) dlCount.textContent = dlN;
+    document.getElementById('btn-downloads').title = 'Downloads (Ctrl+J)' + (dlN ? ': ' + dlN : '');
+    // Bookmark button is filled when this page is already bookmarked.
+    const bmBtn = document.getElementById('btn-bookmark');
+    const marked = !!state.active_url && (state.bookmarks || []).some(b => b.url === state.active_url);
+    bmBtn.classList.toggle('marked', marked);
+    bmBtn.querySelector('path').setAttribute('fill', marked ? 'currentColor' : 'none');
+    bmBtn.title = marked ? 'Bookmarked (add again to another folder)' : 'Bookmark this page';
+    bmBtn.style.display = isHome ? 'none' : '';
     document.getElementById('speed-limit-select').value = String(state.global.speed_limit_bps);
 
     const dupBanner = document.getElementById('duplicate-banner');

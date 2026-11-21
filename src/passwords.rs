@@ -312,10 +312,34 @@ fn dpapi(_data: &[u8], _protect: bool) -> Result<Vec<u8>, String> {
     Err("password vault requires Windows".into())
 }
 
-fn load() -> VaultData {
-    let Ok(raw) = std::fs::read(vault_path()) else { return VaultData::default() };
-    let Some(blob) = raw.strip_prefix(MAGIC) else { return VaultData::default() };
-    dpapi(blob, false).ok().and_then(|plain| serde_json::from_slice(&plain).ok()).unwrap_or_default()
+/// Read the vault. A missing file is an empty vault. A file that cannot be read right now (locked,
+/// I/O error) is an error, so nothing is saved over it. A file that can be read but not decrypted
+/// or parsed (another Windows account, damage) is moved aside, never overwritten, and the user is told.
+fn load() -> Result<(VaultData, Option<String>), String> {
+    let path = vault_path();
+    let raw = match std::fs::read(&path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((VaultData::default(), None)),
+        Err(e) => return Err(format!("Saved passwords could not be read right now ({e}). Nothing was changed.")),
+    };
+    let parsed = raw
+        .strip_prefix(MAGIC)
+        .and_then(|blob| dpapi(blob, false).ok())
+        .and_then(|plain| serde_json::from_slice::<VaultData>(&plain).ok());
+    match parsed {
+        Some(v) => Ok((v, None)),
+        None => {
+            let aside = path.with_extension(format!("vault.unreadable-{}", now()));
+            let note = match std::fs::rename(&path, &aside) {
+                Ok(()) => format!(
+                    "The saved password file could not be opened by this Windows account, so it was kept as {} and a new one was started.",
+                    aside.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                ),
+                Err(e) => return Err(format!("The saved password file could not be opened ({e}). Nothing was changed.")),
+            };
+            Ok((VaultData::default(), Some(note)))
+        }
+    }
 }
 
 fn save(v: &VaultData) -> Result<(), String> {
@@ -323,10 +347,8 @@ fn save(v: &VaultData) -> Result<(), String> {
     let blob = dpapi(&plain, true)?;
     let mut out = MAGIC.to_vec();
     out.extend_from_slice(&blob);
-    let path = vault_path();
-    let tmp = path.with_extension("vault.tmp");
-    std::fs::write(&tmp, &out).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    // Temp file plus rename; a failed write never leaves a stray copy of the encrypted vault behind.
+    crate::state::write_atomic(&vault_path(), &out).map_err(|e| e.to_string())
 }
 
 pub struct Vault {
@@ -354,7 +376,23 @@ impl Vault {
     /// Run `f` on the (lazily loaded) vault; persist if it returns `true` as the second value.
     pub fn with<R>(&self, f: impl FnOnce(&mut VaultData) -> (R, bool)) -> R {
         let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        let v = g.get_or_insert_with(load);
+        if g.is_none() {
+            match load() {
+                Ok((v, note)) => {
+                    *g = Some(v);
+                    if let Some(n) = note {
+                        self.set_status(n);
+                    }
+                }
+                Err(e) => {
+                    // Not cached: the next call tries again. Work on an empty copy that is never saved.
+                    self.set_status(e);
+                    let mut tmp = VaultData::default();
+                    return f(&mut tmp).0;
+                }
+            }
+        }
+        let v = g.get_or_insert_with(VaultData::default); // always loaded above
         let (r, dirty) = f(v);
         if dirty {
             if let Err(e) = save(v) {
@@ -387,27 +425,40 @@ pub enum HelloResult {
 }
 
 /// Ask Windows Hello (PIN, face, fingerprint) to confirm the user. Blocks: call off the UI thread.
+/// Fails closed: only "Hello is not set up / not allowed here" counts as Unavailable; any other
+/// problem (busy device, cancelled, unexpected error) is Denied.
 #[cfg(windows)]
 pub fn verify_user(hwnd: isize, message: &str) -> HelloResult {
     use windows::core::{factory, HSTRING};
     use windows::Foundation::IAsyncOperation;
-    use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier};
+    use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability};
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
-    let run = || -> windows::core::Result<UserConsentVerificationResult> {
-        let interop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
-        let op: IAsyncOperation<UserConsentVerificationResult> =
-            unsafe { interop.RequestVerificationForWindowAsync(HWND(hwnd), &HSTRING::from(message))? };
-        op.get()
+    use windows::Win32::System::WinRT::{IUserConsentVerifierInterop, RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+    // This runs on a worker thread: give it a WinRT apartment for the duration of the call.
+    let inited = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+    let availability = UserConsentVerifier::CheckAvailabilityAsync().and_then(|op| op.get());
+    let result = match availability {
+        Ok(UserConsentVerifierAvailability::Available) => {
+            let run = || -> windows::core::Result<UserConsentVerificationResult> {
+                let interop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
+                let op: IAsyncOperation<UserConsentVerificationResult> =
+                    unsafe { interop.RequestVerificationForWindowAsync(HWND(hwnd), &HSTRING::from(message))? };
+                op.get()
+            };
+            match run() {
+                Ok(UserConsentVerificationResult::Verified) => HelloResult::Verified,
+                _ => HelloResult::Denied,
+            }
+        }
+        Ok(UserConsentVerifierAvailability::DeviceNotPresent)
+        | Ok(UserConsentVerifierAvailability::NotConfiguredForUser)
+        | Ok(UserConsentVerifierAvailability::DisabledByPolicy) => HelloResult::Unavailable,
+        _ => HelloResult::Denied,
     };
-    match run() {
-        Ok(UserConsentVerificationResult::Verified) => HelloResult::Verified,
-        Ok(UserConsentVerificationResult::DeviceNotPresent)
-        | Ok(UserConsentVerificationResult::NotConfiguredForUser)
-        | Ok(UserConsentVerificationResult::DisabledByPolicy) => HelloResult::Unavailable,
-        Ok(_) => HelloResult::Denied,
-        Err(_) => HelloResult::Unavailable,
+    if inited {
+        unsafe { RoUninitialize() };
     }
+    result
 }
 #[cfg(not(windows))]
 pub fn verify_user(_hwnd: isize, _message: &str) -> HelloResult {
@@ -416,30 +467,55 @@ pub fn verify_user(_hwnd: isize, _message: &str) -> HelloResult {
 
 // ---------------------------------------------------------------- clipboard
 
-/// Put text on the clipboard (Unicode).
+/// Put text on the clipboard (Unicode), marked so Windows keeps it out of Clipboard History (Win+V),
+/// cloud clipboard sync and clipboard monitors (the formats password managers use).
 #[cfg(windows)]
 pub fn set_clipboard(text: &str) -> bool {
-    use windows::Win32::Foundation::{HANDLE, HWND};
-    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::core::w;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HWND};
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     const CF_UNICODETEXT: u32 = 13;
-    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    /// Copy `bytes` into a movable global block and hand it to the clipboard. The clipboard owns
+    /// the block only when SetClipboardData succeeds; otherwise it is freed here.
+    unsafe fn put(format: u32, bytes: &[u8]) -> bool {
+        let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) else { return false };
+        let p = GlobalLock(h) as *mut u8;
+        if p.is_null() {
+            let _ = GlobalFree(h);
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+        let _ = GlobalUnlock(h);
+        if SetClipboardData(format, HANDLE(h.0 as isize)).is_ok() {
+            true
+        } else {
+            let _ = GlobalFree(h);
+            false
+        }
+    }
+    let wide: Vec<u8> = text.encode_utf16().chain(Some(0)).flat_map(|u| u.to_le_bytes()).collect();
     unsafe {
         if OpenClipboard(HWND(0)).is_err() {
             return false;
         }
         let _ = EmptyClipboard();
-        let ok = (|| {
-            let h = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2).ok()?;
-            let p = GlobalLock(h) as *mut u16;
-            if p.is_null() {
-                return None;
+        let ok = put(CF_UNICODETEXT, &wide);
+        if ok {
+            let zero = 0u32.to_le_bytes();
+            let exclude = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+            let history = RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"));
+            let cloud = RegisterClipboardFormatW(w!("CanUploadToCloudClipboard"));
+            if exclude != 0 {
+                put(exclude, &zero);
             }
-            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
-            let _ = GlobalUnlock(h);
-            SetClipboardData(CF_UNICODETEXT, HANDLE(h.0 as isize)).ok()
-        })()
-        .is_some();
+            if history != 0 {
+                put(history, &zero);
+            }
+            if cloud != 0 {
+                put(cloud, &zero);
+            }
+        }
         let _ = CloseClipboard();
         ok
     }
