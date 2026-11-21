@@ -1,3 +1,8 @@
+## v2.17.2
+
+### Window
+* **Windows 11 Snap Layouts are now the real system flyout.** Hovering Maximize asks Windows to open its own Snap Layouts (the same flyout, zones, app thumbnails and keyboard numbers as every other app) instead of Shunno's imitation. It is only triggered when Shunno is the active window, so it never acts on another app; otherwise, and on Windows 10 (which has no Snap Layouts), Shunno's own flyout is used.
+
 ## v2.17.1
 
 ### Appearance
