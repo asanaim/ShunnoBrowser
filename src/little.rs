@@ -80,14 +80,43 @@ pub fn publish_main_window(hwnd: isize) {
     let _ = std::fs::write(hwnd_file(), hwnd.to_string());
 }
 
-/// If Shunno is already running, give it `url` (or ask it to come forward) and return true:
+/// Payload asking a running profile to open Little Shunno (Ctrl+Alt+N routed to it).
+pub const LITTLE_PAYLOAD: &str = "shunno:little";
+
+/// Give `payload` (a URL, LITTLE_PAYLOAD, or "" for "come forward") to the main window of a
+/// running profile. True when that window took it.
+#[cfg(windows)]
+pub fn send_to_profile(profile: &str, payload: &str) -> bool {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, IsWindow, SendMessageTimeoutW, ASFW_ANY, SMTO_ABORTIFHUNG, WM_COPYDATA};
+    let file = crate::state::profile_dir_in(&crate::state::BrowserStorage::shared_data_dir(), profile).join("instance.hwnd");
+    let Some(hwnd) = std::fs::read_to_string(file).ok().and_then(|s| s.trim().parse::<isize>().ok()) else {
+        return false;
+    };
+    unsafe {
+        let target = HWND(hwnd);
+        if !IsWindow(target).as_bool() {
+            return false;
+        }
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let data: Vec<u16> = payload.encode_utf16().collect();
+        let cds = COPYDATASTRUCT { dwData: COPYDATA_TAG, cbData: (data.len() * 2) as u32, lpData: data.as_ptr() as *mut core::ffi::c_void };
+        let mut result = 0usize;
+        SendMessageTimeoutW(target, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, 3000, Some(&mut result)).0 != 0
+    }
+}
+#[cfg(not(windows))]
+pub fn send_to_profile(_profile: &str, _payload: &str) -> bool {
+    false
+}
+
+/// If this profile is already running, give it `url` (or ask it to come forward) and return true:
 /// the caller should exit. Holds a named mutex for the life of the first instance.
 #[cfg(windows)]
 pub fn hand_off_to_running_instance(url: Option<&str>) -> bool {
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, WPARAM};
-    use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, IsWindow, SendMessageTimeoutW, ASFW_ANY, SMTO_ABORTIFHUNG, WM_COPYDATA};
     unsafe {
         // One instance per profile: each profile is its own process and window.
         let name: Vec<u16> = instance_mutex_name(crate::state::profile_id()).encode_utf16().chain(std::iter::once(0)).collect();
@@ -97,25 +126,8 @@ pub fn hand_off_to_running_instance(url: Option<&str>) -> bool {
             std::mem::forget(m);
             return false;
         }
-        let Some(hwnd) = std::fs::read_to_string(hwnd_file()).ok().and_then(|s| s.trim().parse::<isize>().ok()) else {
-            return false;
-        };
-        let target = HWND(hwnd);
-        if !IsWindow(target).as_bool() {
-            return false;
-        }
-        let _ = AllowSetForegroundWindow(ASFW_ANY);
-        let payload: Vec<u16> = url.unwrap_or("").encode_utf16().collect();
-        let cds = COPYDATASTRUCT {
-            dwData: COPYDATA_TAG,
-            cbData: (payload.len() * 2) as u32,
-            lpData: payload.as_ptr() as *mut core::ffi::c_void,
-        };
-        let mut result = 0usize;
-        SendMessageTimeoutW(target, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, 3000, Some(&mut result))
-            .0
-            != 0
     }
+    send_to_profile(crate::state::profile_id(), url.unwrap_or(""))
 }
 #[cfg(not(windows))]
 pub fn hand_off_to_running_instance(_url: Option<&str>) -> bool {
@@ -199,8 +211,15 @@ pub fn register_as_browser() -> Result<(), String> {
 pub fn register_hotkey(hwnd: isize) -> bool {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT};
-    unsafe { RegisterHotKey(HWND(hwnd), HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x4E).is_ok() }
+    if HOTKEY_HELD.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    // Only one process can own Ctrl+Alt+N; the others retry, so it survives that window closing.
+    let ok = unsafe { RegisterHotKey(HWND(hwnd), HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x4E).is_ok() };
+    HOTKEY_HELD.store(ok, std::sync::atomic::Ordering::Relaxed);
+    ok
 }
+static HOTKEY_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(not(windows))]
 pub fn register_hotkey(_hwnd: isize) -> bool {
     false

@@ -1,3 +1,9 @@
+## v2.22.1
+
+### Profiles
+* **Links from other apps follow your profile.** New setting in the Profiles panel, *Open links from other apps in*: **Last used window** (default) or a chosen profile. A link starts that profile if it is not open.
+* **Ctrl+Alt+N works from every profile.** It opens Little Shunno in the profile you used last, whichever window owns the shortcut, and another open profile takes the shortcut over when that window closes.
+
 ## v2.22.0
 
 ### Profiles (Safari-style)

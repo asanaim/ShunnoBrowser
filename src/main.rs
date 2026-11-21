@@ -276,9 +276,11 @@ struct ProfileView {
 }
 thread_local! {
     static PROFILES: std::cell::RefCell<Vec<ProfileView>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LINKS_PROFILE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 fn refresh_profiles() -> Vec<state::Profile> {
     let list = BrowserStorage::load_profiles();
+    LINKS_PROFILE.with(|l| *l.borrow_mut() = BrowserStorage::load_links_profile());
     let me = state::profile_id();
     PROFILES.with(|p| {
         *p.borrow_mut() = list
@@ -450,6 +452,7 @@ struct ChromeSnapshot {
     perm_prompt: Option<permissions::PromptView>,
     profile_id: &'static str,
     profiles: Vec<ProfileView>,
+    links_profile: String,
     permissions: Vec<permissions::Entry>,
     active_reader_available: bool,
     import_status: String,
@@ -2489,6 +2492,11 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                     }
                 }
                 0x0312 /* WM_HOTKEY */ if wparam.0 as i32 == little::HOTKEY_ID => {
+                    // Ctrl+Alt+N opens Little Shunno in the profile used last, whichever process owns the key.
+                    let last = BrowserStorage::load_last_profile().unwrap_or_else(|| state::profile_id().to_string());
+                    if last != state::profile_id() && little::profile_running(&last) && little::send_to_profile(&last, little::LITTLE_PAYLOAD) {
+                        return LRESULT(0);
+                    }
                     if let Some(p) = THEME_PROXY.get().and_then(|m| m.lock().ok()) {
                         let _ = p.send_event(AppEvent::LittleOpen(None));
                     }
@@ -2842,10 +2850,19 @@ fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
 
     // Profile first: every data path below depends on it.
-    state::set_profile(&state::profile_from_args(std::env::args()));
-
     // One Shunno per profile: a second launch (e.g. a link clicked in another app) hands its link over.
     let start_url = little::url_from_args(std::env::args());
+    {
+        let explicit = std::env::args().any(|a| a.starts_with("--profile="));
+        let arg = explicit.then(|| state::profile_from_args(std::env::args()));
+        state::set_profile(&state::choose_launch_profile(
+            arg.as_deref(),
+            start_url.is_some(),
+            &BrowserStorage::load_links_profile(),
+            BrowserStorage::load_last_profile().as_deref(),
+            &BrowserStorage::load_profiles(),
+        ));
+    }
     if little::hand_off_to_running_instance(start_url.as_deref()) {
         return Ok(());
     }
@@ -3182,6 +3199,7 @@ fn main() -> wry::Result<()> {
             permissions: permissions::global().lock().map(|s| s.entries()).unwrap_or_default(),
             profile_id: state::profile_id(),
             profiles: PROFILES.with(|p| p.borrow().clone()),
+            links_profile: LINKS_PROFILE.with(|l| l.borrow().clone()),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
@@ -3302,6 +3320,20 @@ fn main() -> wry::Result<()> {
                     is_fullscreen,
                     &engine,
                 );
+            }
+
+            Event::WindowEvent {
+                event: WindowEvent::Focused(true),
+                ..
+            } => {
+                // Remember this profile as the one in use (links and Ctrl+Alt+N follow it),
+                // and take Ctrl+Alt+N if the window that held it has closed.
+                BrowserStorage::save_last_profile(state::profile_id());
+                #[cfg(windows)]
+                {
+                    use tao::platform::windows::WindowExtWindows;
+                    little::register_hotkey(window.hwnd() as isize);
+                }
             }
 
             Event::WindowEvent {
@@ -3936,7 +3968,9 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::ExternalOpen(url)) => {
-                if url.is_empty() {
+                if url == little::LITTLE_PAYLOAD {
+                    let _ = proxy.send_event(AppEvent::LittleOpen(None));
+                } else if url.is_empty() {
                     window.set_minimized(false);
                     window.set_focus();
                 } else if global_settings.little_for_links {
@@ -5488,6 +5522,9 @@ fn main() -> wry::Result<()> {
                             refresh_profiles();
                         }
                     }
+                } else if let Some(v) = cmd.strip_prefix("PROFILE_LINKS:") {
+                    BrowserStorage::save_links_profile(v);
+                    refresh_profiles();
                 } else if let Some(id) = cmd.strip_prefix("PROFILE_DELETE:") {
                     // Only a closed, non-default profile other than this one. Its folder is deleted.
                     if state::valid_profile_id(id) && id != state::DEFAULT_PROFILE && id != state::profile_id() && !little::profile_running(id) {
