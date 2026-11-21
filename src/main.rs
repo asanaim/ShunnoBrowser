@@ -160,7 +160,12 @@ fn live_groups(tabs: &[BrowserTab]) -> Vec<state::TabGroup> {
         let mut g = g.borrow_mut();
         let before = g.len();
         let others = OTHER_TAB_IDS.with(|o| o.borrow().clone());
-        g.retain(|x| tabs.iter().map(|t| t.id).chain(others.iter().copied()).any(|id| tab_group(id) == Some(x.id)));
+        let alive = |x: &state::TabGroup| tabs.iter().map(|t| t.id).chain(others.iter().copied()).any(|id| tab_group(id) == Some(x.id));
+        if RESTORES_PENDING.with(|r| r.get()) > 0 {
+            // Windows still being rebuilt hold tabs of these groups: show, but do not forget, them.
+            return g.iter().filter(|x| alive(x)).cloned().collect();
+        }
+        g.retain(alive);
         if g.len() != before {
             BrowserStorage::save_tab_groups(&g);
         }
@@ -710,6 +715,8 @@ thread_local! {
     /// Tab ids living in the other windows (so groups and permission requests there stay alive).
     static OTHER_TAB_IDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     static WINDOW_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    /// Saved windows not yet rebuilt at startup.
+    static RESTORES_PENDING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Clone, Serialize)]
@@ -3329,6 +3336,7 @@ fn main() -> wry::Result<()> {
     };
     // The other windows are rebuilt once the event loop runs.
     for w in saved_windows {
+        RESTORES_PENDING.with(|r| r.set(r.get() + 1));
         let _ = proxy.send_event(AppEvent::RestoreWindow(w));
     }
 
@@ -3358,7 +3366,7 @@ fn main() -> wry::Result<()> {
                 reader_active: false,
                 sleeping: false,
                 last_active_secs: now_epoch_secs(),
-                zoom: 1.0,
+                zoom: pol.zoom,
                 webview: wv,
             });
         }
@@ -3821,6 +3829,14 @@ fn main() -> wry::Result<()> {
         }
 
         // Route the event to its window.
+        if let Event::WindowEvent { window_id, .. } = &event {
+            let ours = *window_id == window.id()
+                || parked.iter().any(|p| p.window.id() == *window_id)
+                || little.as_ref().map(|l| l.window.id()) == Some(*window_id);
+            if !ours {
+                return;
+            }
+        }
         let event = match event {
             Event::UserEvent(AppEvent::ChromeIpcW(k, m)) => {
                 switch_to!(k);
@@ -4724,7 +4740,15 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::RestoreWindow(list)) => {
+                RESTORES_PENDING.with(|r| r.set(r.get().saturating_sub(1)));
+                // Show the Space this window's tabs are in.
+                let first_space = list.first().map(|t| t.1);
                 if open_window!(None) {
+                    if let Some(sp) = first_space {
+                        if !list.iter().any(|t| t.1 == active_space()) {
+                            SPACES.with(|s| s.borrow_mut().active = sp);
+                        }
+                    }
                     for (u, sp, grp) in list {
                         let host = extract_host(&u);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
@@ -4879,7 +4903,8 @@ fn main() -> wry::Result<()> {
                     || lower.contains("propellerads");
                 if global_settings.block_popups && is_ad_popup {
                     blocked_count += 1;
-                } else if popup_url.starts_with("http") {
+                } else if popup_url.starts_with("http") || (opener_id == 0 && popup_url.starts_with("file:///")) {
+                    // file:/// only from outside (Explorer, the command line), never from a page.
                     let clean = sanitize_url(&popup_url, &global_settings);
                     let host = extract_host(&clean);
                     let pol = site_policies.get(&host).cloned().unwrap_or_default();
@@ -4897,7 +4922,7 @@ fn main() -> wry::Result<()> {
                             reader_active: false,
                             sleeping: false,
                             last_active_secs: now_epoch_secs(),
-                            zoom: 1.0,
+                            zoom: pol.zoom,
                             webview: wv,
                         });
                         active_tab_idx = tabs.len() - 1;
@@ -5087,19 +5112,19 @@ fn main() -> wry::Result<()> {
                 } else if let Some(key_cmd) = msg.strip_prefix("KEY:") {
                     match key_cmd {
                         "zoom_in" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = (tab.zoom + 0.1).min(3.0);
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_out" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = (tab.zoom - 0.1).max(0.4);
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
                         }
                         "zoom_reset" => {
-                            if let Some(tab) = tabs.get_mut(active_tab_idx) {
+                            if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                                 tab.zoom = 1.0;
                                 apply_tab_zoom(&tab.webview, tab.zoom);
                             }
@@ -5107,48 +5132,18 @@ fn main() -> wry::Result<()> {
                         "f11" => {
                             let _ = proxy.send_event(AppEvent::ToggleFullscreen);
                         }
-                        "next_tab" => {
-                            if !tabs.is_empty() {
-                                active_tab_idx = (active_tab_idx + 1) % tabs.len();
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "prev_tab" => {
-                            if !tabs.is_empty() {
-                                active_tab_idx = if active_tab_idx == 0 { tabs.len() - 1 } else { active_tab_idx - 1 };
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "t" => {
-                            let start = "shunno://newtab".to_string();
-                            let pol = SitePolicy::default();
-                            let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
-                            if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &start, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
-                                tabs.push(BrowserTab { id: tid, title: "New Tab".to_string(), url: start, cookie: None, incognito: false, pinned: false, playing_audio: false, muted: false, reader_active: false, sleeping: false, last_active_secs: now_epoch_secs(), zoom: 1.0, webview: wv });
-                                active_tab_idx = tabs.len() - 1;
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "w" => {
-                            if tabs.len() <= 1 {
-                                BrowserStorage::save_session(&[]);
-                                *control_flow = ControlFlow::Exit;
-                                return;
-                            } else if active_tab_idx < tabs.len() {
-                                tabs.remove(active_tab_idx);
-                                if active_tab_idx >= tabs.len() { active_tab_idx = tabs.len() - 1; }
-                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            }
-                        }
-                        "k" => {
-                            palette_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            let _ = chrome_wv.evaluate_script("if (window.openPalette) window.openPalette();");
-                        }
-                        "j" => {
-                            drawer_open = true;
-                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
-                            let _ = chrome_wv.evaluate_script("if (window.openDrawer) window.openDrawer('downloads');");
+                        // Same path as the native accelerator hook, so Spaces, groups, split view,
+                        // Recently Closed and multiple windows are handled in one place.
+                        "t" | "w" | "j" | "k" | "next_tab" | "prev_tab" => {
+                            let id: &'static str = match key_cmd {
+                                "t" => "new-tab",
+                                "w" => "close-tab",
+                                "j" => "downloads",
+                                "k" => "palette",
+                                "next_tab" => "next-tab",
+                                _ => "prev-tab",
+                            };
+                            let _ = proxy.send_event(AppEvent::PageShortcut(id));
                         }
                         _ => {}
                     }
@@ -5590,6 +5585,7 @@ fn main() -> wry::Result<()> {
                             return;
                         } else if idx < tabs.len() {
                             let removed = tabs.remove(idx);
+                            set_tab_group(removed.id, None);
                             if !removed.incognito && removed.url != "shunno://newtab" {
                                 closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None, window: 0 });
                             }
@@ -5644,7 +5640,7 @@ fn main() -> wry::Result<()> {
                                 reader_active: false,
                                 sleeping: false,
                                 last_active_secs: now_epoch_secs(),
-                                zoom: 1.0,
+                                zoom: pol.zoom,
                                 webview: wv,
                             });
                             active_tab_idx = tabs.len() - 1;
@@ -5658,6 +5654,8 @@ fn main() -> wry::Result<()> {
                             if tabs[idx].pinned {
                                 set_tab_group(tabs[idx].id, None);
                             }
+                            let active_id = tabs.get(active_tab_idx).map(|t| t.id);
+                            let split_id = split_tab_idx.and_then(|k| tabs.get(k)).map(|t| t.id);
                             let tab_item = tabs.remove(idx);
                             let target_idx = if tab_item.pinned {
                                 tabs.iter().take_while(|t| t.pinned).count()
@@ -5665,7 +5663,8 @@ fn main() -> wry::Result<()> {
                                 tabs.len()
                             };
                             tabs.insert(target_idx, tab_item);
-                            active_tab_idx = target_idx;
+                            active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(target_idx);
+                            split_tab_idx = split_id.and_then(|id| tabs.iter().position(|t| t.id == id));
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
@@ -6132,6 +6131,17 @@ fn main() -> wry::Result<()> {
                                     set_tab_space(t.id, target);
                                 }
                             }
+                            // Other windows keep their tabs, moved into the Space that remains.
+                            for p in parked.iter_mut() {
+                                for t in &p.tabs {
+                                    if tab_space(t.id) == id {
+                                        set_tab_space(t.id, target);
+                                    }
+                                }
+                                if p.space == id {
+                                    p.space = target;
+                                }
+                            }
                             split_tab_idx = None;
                             let remembered = SPACE_LAST_TAB.with(|m| m.borrow().get(&target).copied());
                             match state::pick_tab_for_space(&tab_space_pairs(&tabs), target, remembered) {
@@ -6223,6 +6233,11 @@ fn main() -> wry::Result<()> {
                                 active_tab_idx -= 1;
                             }
                             split_tab_idx = split_tab_idx.map(|k| if k > i { k - 1 } else { k });
+                            if tabs.get(active_tab_idx).map(|x| tab_space(x.id)) != Some(active_space()) {
+                                if let Some(k) = state::pick_tab_for_space(&tab_space_pairs(&tabs), active_space(), None) {
+                                    active_tab_idx = k;
+                                }
+                            }
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                             let _ = proxy.send_event(AppEvent::RefreshChrome);
                             let space = tab_space(t.id);
@@ -6841,7 +6856,7 @@ fn main() -> wry::Result<()> {
                         .map(|l| l.iter().any(|t| t.saved_path.as_deref() == Some(path)))
                         .unwrap_or(false);
                     if known && std::path::Path::new(path).exists() {
-                        let _ = Command::new("explorer.exe").arg(format!("/select,{}", path)).spawn();
+                        let _ = Command::new("explorer.exe").args(["/select,", path]).spawn();
                     }
                 }
 

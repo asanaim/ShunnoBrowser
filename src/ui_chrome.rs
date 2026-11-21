@@ -2127,7 +2127,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const bar = document.getElementById('ext-bar');
     const shown = list.filter(e => e.enabled && e.popup).slice(0, 4);
     const barHtml = list.length ? shown.map(e =>
-      `<button class="ext-ic" title="${encodeAttr(e.name)}" onclick="send('EXT_OPEN:${e.id}|popup')">${extIcon(e)}</button>`).join('') +
+      `<button class="ext-ic" title="${escapeHtml(e.name)}" onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">${extIcon(e)}</button>`).join('') +
       `<button class="ext-ic" id="ext-puzzle" title="Extensions" onclick="toggleDrawer('extensions', this)">${PUZZLE_SVG}</button>` : '';
     if (bar.dataset.h !== barHtml) { bar.dataset.h = barHtml; bar.innerHTML = barHtml; }
     bar.classList.toggle('on', list.length > 0);
@@ -2143,16 +2143,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}">
         <div class="ic">${extIcon(e, 24)}</div>
         <div class="tx">
-          <div class="nm" title="${encodeAttr(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
-          ${e.description ? `<div class="ds" title="${encodeAttr(e.description)}">${escapeHtml(e.description)}</div>` : ''}
+          <div class="nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
+          ${e.description ? `<div class="ds" title="${escapeHtml(e.description)}">${escapeHtml(e.description)}</div>` : ''}
           <div class="acts">
-            ${e.popup && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|popup')">Open</button>` : ''}
-            ${e.options && e.enabled ? `<button onclick="send('EXT_OPEN:${e.id}|options')">Settings</button>` : ''}
-            <button class="rm" onclick="extRemove('${e.id}')">Remove</button>
+            ${e.popup && e.enabled ? `<button onclick="send('EXT_OPEN:${encodeAttr(e.id)}|popup')">Open</button>` : ''}
+            ${e.options && e.enabled ? `<button onclick="send('EXT_OPEN:${encodeAttr(e.id)}|options')">Settings</button>` : ''}
+            <button class="rm" onclick="extRemove('${encodeAttr(e.id)}')">Remove</button>
           </div>
         </div>
-        <button class="switch ${e.enabled ? 'on' : ''}" role="switch" aria-checked="${e.enabled}" aria-label="Enable ${encodeAttr(e.name)}"
-          onclick="this.classList.toggle('on'); send('EXT_SET:${e.id}|' + (this.classList.contains('on') ? 'enable' : 'disable'))"><i></i></button>
+        <button class="switch ${e.enabled ? 'on' : ''}" role="switch" aria-checked="${e.enabled}" aria-label="Enable ${escapeHtml(e.name)}"
+          onclick="this.classList.toggle('on'); send('EXT_SET:${encodeAttr(e.id)}|' + (this.classList.contains('on') ? 'enable' : 'disable'))"><i></i></button>
       </div>`).join('') : '<div class="meta" style="text-align:center;padding:18px 8px;">No extensions yet.</div>';
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
   }

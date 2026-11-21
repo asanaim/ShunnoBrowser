@@ -755,3 +755,15 @@ fn extensions_crx_manifest_and_urls() {
     assert_eq!(slug("uBlock Origin!"), "ublock-origin");
     assert_eq!(slug("مرحبا"), "extension");
 }
+
+#[test]
+fn audit_local_files_and_odd_input() {
+    let cfg = GlobalSettings::default();
+    // Local files open as typed (Explorer hands these over), not as a web address or search.
+    assert_eq!(sanitize_url("file:///C:/Users/me/page.html", &cfg), "file:///C:/Users/me/page.html");
+    assert_eq!(sanitize_url("FILE:///D:/a%20b.pdf", &cfg), "FILE:///D:/a%20b.pdf");
+    // Multi-byte text near the start must not panic.
+    let _ = sanitize_url("ফাইল:///খ.html", &cfg);
+    let _ = sanitize_url("é", &cfg);
+    let _ = sanitize_url("日本語のテキスト", &cfg);
+}

@@ -1,3 +1,21 @@
+## v1.0.0
+
+First numbered release after a full code audit. Version numbers restart at 1.0.0; the entries
+below it (v2.x and earlier) are the development history leading here.
+
+### Fixes from the audit
+* **Closing tabs from inside a page could wipe the saved session.** Ctrl+W, Ctrl+T, Ctrl+Tab, Ctrl+J and Ctrl+K sent by the page script used an old code path that ignored Spaces, split view, Recently Closed and other windows, and closing the last tab of one window quit Shunno and saved an empty session for every window. They now use the same path as the native shortcuts.
+* **Zoom keys zoomed the wrong pane** in split view (always the left one). They now zoom the page you pressed them in.
+* **Pinning a background tab jumped to it** and could leave split view pointing at the wrong tab. The active and split tabs now stay put.
+* **Restored tabs forgot their zoom** (the page was zoomed but the zoom steps started from 100%). Restored, reopened and pop-up tabs now start from the site's saved zoom.
+* **Opening a local .html or .pdf from Explorer did nothing**, and typing a `file:///` address turned it into a web search. Both now open the file. Pages still cannot open local files.
+* **Deleting a Space left other windows showing it**, with their tabs in a Space that no longer existed. Those tabs and windows now move to the remaining Space.
+* **Tab groups of restored second and later windows were lost** at startup, because groups were pruned before those windows were rebuilt.
+* **A restored window could open on an empty tab bar** when its tabs were in a different Space; it now shows its own Space. Moving a tab out of a window keeps that window on a tab of its Space.
+* **Window events for a window that had just closed** could act on another window; they are now ignored.
+* Show in folder now passes paths with spaces and commas to Explorer the same way everywhere.
+* Extension names with quotes showed backslashes in tooltips.
+
 ## v2.25.0
 
 ### Extensions

@@ -63,6 +63,10 @@ pub fn sanitize_url(raw: &str, global: &GlobalSettings) -> String {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("shunno://newtab") || trimmed.eq_ignore_ascii_case("about:newtab") {
         return "shunno://newtab".to_string();
     }
+    // A local file (typed, or handed over by Explorer) is opened as is, never turned into a search.
+    if trimmed.len() > 8 && trimmed.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("file:///")) {
+        return trimmed.to_string();
+    }
     let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
     } else if trimmed.contains('.') && !trimmed.contains(' ') {
