@@ -1,3 +1,12 @@
+## v2.21.0
+
+### Site Permissions (Safari-style)
+* When a site asks for the **camera, microphone, location, notifications**, clipboard, sensors, MIDI, file access, local fonts, multiple downloads or window management, a small **Allow / Block** prompt appears in the toolbar instead of the WebView2 dialog. The page keeps working while it waits.
+* Your answer is **remembered per site** (stored in `permissions.json`, not in WebView2's profile). Saved Blocks apply everywhere.
+* **Private tabs** always ask and never remember; a saved Allow does not carry into a private tab, a saved Block does.
+* New **Site Permissions** panel (Menu, or the command palette): every site's decisions, an Allow/Block switch per permission, forget one, or **Reset** a whole site.
+* A pending request is refused automatically when its tab closes or navigates to another site. Peek and Little windows have no toolbar, so undecided requests from them are blocked.
+
 ## v2.20.0
 
 ### Reader (Safari Reader-style)

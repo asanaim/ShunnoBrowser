@@ -5,6 +5,7 @@ mod downloader;
 mod https_guard;
 mod importer;
 mod passwords;
+mod permissions;
 mod little;
 mod updater;
 mod sanitizer;
@@ -156,6 +157,110 @@ thread_local! {
     static READER_AVAILABLE: std::cell::RefCell<std::collections::HashSet<usize>> = std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
+/// Permission requests held open (WebView2 deferral) until the user or a saved decision answers.
+#[cfg(windows)]
+struct PendingPermission {
+    id: u64,
+    tab_id: usize,
+    origin: String,
+    kind: &'static str,
+    private: bool,
+    args: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2PermissionRequestedEventArgs,
+    deferral: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral,
+}
+#[cfg(windows)]
+thread_local! {
+    static PERM_PENDING: std::cell::RefCell<Vec<PendingPermission>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+static PERM_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(windows)]
+fn permission_key(kind: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_KIND) -> &'static str {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    match kind {
+        COREWEBVIEW2_PERMISSION_KIND_CAMERA => "camera",
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => "microphone",
+        COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION => "location",
+        COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS => "notifications",
+        COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ => "clipboard",
+        COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS => "sensors",
+        COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS => "downloads",
+        COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE => "files",
+        COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS => "fonts",
+        COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES => "midi",
+        COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT => "windows",
+        COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY => "autoplay",
+        _ => "other",
+    }
+}
+
+/// Answer a held request. Saves the decision when asked to and the tab is not private.
+#[cfg(windows)]
+fn answer_permission(id: u64, decision: permissions::Decision, remember: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY};
+    let Some(p) = PERM_PENDING.with(|q| {
+        let mut q = q.borrow_mut();
+        q.iter().position(|p| p.id == id).map(|i| q.remove(i))
+    }) else {
+        return;
+    };
+    unsafe {
+        let _ = p.args.SetState(if decision == permissions::Decision::Allow { COREWEBVIEW2_PERMISSION_STATE_ALLOW } else { COREWEBVIEW2_PERMISSION_STATE_DENY });
+        let _ = p.deferral.Complete();
+    }
+    if remember && !p.private && p.kind != "other" {
+        if let Ok(mut st) = permissions::global().lock() {
+            st.set(&p.origin, p.kind, decision);
+            permissions::save(&st);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn answer_permission(_id: u64, _decision: permissions::Decision, _remember: bool) {}
+
+/// Refuse requests whose page is gone: tab closed, or navigated to another site.
+#[cfg(windows)]
+fn sweep_permissions(tabs: &[BrowserTab], extra_live: &[usize]) {
+    let stale: Vec<u64> = PERM_PENDING.with(|q| {
+        q.borrow()
+            .iter()
+            .filter(|p| match tabs.iter().find(|t| t.id == p.tab_id) {
+                Some(t) => t.webview.url().ok().and_then(|u| passwords::origin_of(&u)).as_deref() != Some(p.origin.as_str()),
+                None => !extra_live.contains(&p.tab_id),
+            })
+            .map(|p| p.id)
+            .collect()
+    });
+    for id in stale {
+        answer_permission(id, permissions::Decision::Block, false);
+    }
+}
+#[cfg(not(windows))]
+fn sweep_permissions(_tabs: &[BrowserTab], _extra_live: &[usize]) {}
+
+/// The request to show in the toolbar: the oldest one from the visible tab.
+#[cfg(windows)]
+fn permission_prompt(active_tab_id: Option<usize>) -> Option<permissions::PromptView> {
+    PERM_PENDING.with(|q| {
+        q.borrow().iter().find(|p| Some(p.tab_id) == active_tab_id).map(|p| {
+            let (label, icon) = permissions::label(p.kind);
+            permissions::PromptView {
+                id: p.id,
+                origin: p.origin.clone(),
+                host: url::Url::parse(&p.origin).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_default(),
+                kind: p.kind.to_string(),
+                label,
+                icon,
+                private: p.private,
+            }
+        })
+    })
+}
+#[cfg(not(windows))]
+fn permission_prompt(_active_tab_id: Option<usize>) -> Option<permissions::PromptView> {
+    None
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -163,6 +268,8 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// A site asked for a permission (id in PERM_PENDING).
+    PermissionRequest(u64),
     /// Another launch of Shunno handed over a link ("" = just bring the window forward).
     ExternalOpen(String),
     /// Open (or focus) Little Shunno, optionally at a URL.
@@ -299,6 +406,8 @@ struct ChromeSnapshot {
     pw_csv_pending: bool,
     force_dark_active: bool,
     snap_native: bool,
+    perm_prompt: Option<permissions::PromptView>,
+    permissions: Vec<permissions::Entry>,
     active_reader_available: bool,
     import_status: String,
     has_closed_tabs: bool,
@@ -1515,6 +1624,39 @@ fn attach_native_webview2_hooks(
         }));
         let _ = core2.add_WebResourceResponseReceived(&resp_handler, &mut resp_token);
 
+
+        // 2b. Permissions: hold every request (deferral) and let Shunno answer from saved decisions
+        //     or by asking in the toolbar. WebView2 must not keep its own copy of the decision.
+        {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_STATE_DENY,
+            };
+            use webview2_com::PermissionRequestedEventHandler;
+            let perm_proxy = proxy.clone();
+            let perm_handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                let _ = args.PermissionKind(&mut kind);
+                let mut uri_ptr = windows::core::PWSTR::null();
+                let uri = if args.Uri(&mut uri_ptr).is_ok() { webview2_com::take_pwstr(uri_ptr) } else { String::new() };
+                if let Ok(a3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                    let _ = a3.SetSavesInProfile(false);
+                }
+                let Some(origin) = passwords::origin_of(&uri) else {
+                    let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                    return Ok(());
+                };
+                let Ok(deferral) = args.GetDeferral() else { return Ok(()) };
+                let id = PERM_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                PERM_PENDING.with(|q| {
+                    q.borrow_mut().push(PendingPermission { id, tab_id, origin, kind: permission_key(kind), private: false, args: args.clone(), deferral })
+                });
+                let _ = perm_proxy.send_event(AppEvent::PermissionRequest(id));
+                Ok(())
+            }));
+            let mut perm_token = Default::default();
+            let _ = core.add_PermissionRequested(&perm_handler, &mut perm_token);
+        }
 
         // 3. Native WebView2 Download Engine Bridge (ICoreWebView2_4::add_DownloadStarting)
         // Keeps WebView2's native download stream alive (100% compatible with Cloudflare, GDrive, HubCloud, POST, blob:)
@@ -2984,6 +3126,8 @@ fn main() -> wry::Result<()> {
             pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
             force_dark_active: FORCE_DARK_AT_START.load(Ordering::Relaxed),
             snap_native: SNAP_NATIVE.load(Ordering::Relaxed),
+            perm_prompt: permission_prompt(tabs.get(active_idx).map(|t| t.id)),
+            permissions: permissions::global().lock().map(|s| s.entries()).unwrap_or_default(),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
@@ -3140,7 +3284,41 @@ fn main() -> wry::Result<()> {
                 *control_flow = ControlFlow::Exit;
             }
 
+            Event::UserEvent(AppEvent::PermissionRequest(id)) => {
+                #[cfg(windows)]
+                {
+                    // Private? Answer now if a saved decision or a default applies; otherwise ask.
+                    let found = PERM_PENDING.with(|q| {
+                        let mut q = q.borrow_mut();
+                        let p = q.iter_mut().find(|p| p.id == id)?;
+                        let main_tab = tabs.iter().find(|t| t.id == p.tab_id);
+                        p.private = match main_tab {
+                            Some(t) => t.incognito,
+                            None => PEEK.with(|k| k.borrow().as_ref().filter(|k| k.id == p.tab_id).map(|k| k.incognito)).unwrap_or(false),
+                        };
+                        Some((p.origin.clone(), p.kind, p.private, main_tab.is_some()))
+                    });
+                    if let Some((origin, kind, private, in_main)) = found {
+                        let saved = permissions::global().lock().ok().and_then(|s| s.get(&origin, kind));
+                        match permissions::resolve(saved, kind, private) {
+                            Some(d) => {
+                                answer_permission(id, d, false);
+                                return;
+                            }
+                            // Peek and Little have no toolbar to ask in: undecided means Block.
+                            None if !in_main => {
+                                answer_permission(id, permissions::Decision::Block, false);
+                                return;
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
             Event::UserEvent(AppEvent::SleepCheck) => {
+                sweep_permissions(&tabs, &little.as_ref().map(|l| vec![l.id]).unwrap_or_default());
                 let now = now_epoch_secs();
                 let mut changed = false;
                 // Visible tabs are "in use": keep their clock fresh so switching away starts the idle timer.
@@ -5213,6 +5391,32 @@ fn main() -> wry::Result<()> {
                                 }
                             }
                         }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("PERM_DECIDE:") {
+                    // PERM_DECIDE:<id>|allow|block
+                    if let Some((id, d)) = arg.split_once('|') {
+                        if let Ok(id) = id.parse::<u64>() {
+                            let d = if d == "allow" { permissions::Decision::Allow } else { permissions::Decision::Block };
+                            answer_permission(id, d, true);
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("PERM_SET:") {
+                    // PERM_SET:<origin>|<kind>|allow|block|reset
+                    let f: Vec<&str> = arg.splitn(3, '|').collect();
+                    if f.len() == 3 {
+                        if let Ok(mut st) = permissions::global().lock() {
+                            match f[2] {
+                                "allow" => st.set(f[0], f[1], permissions::Decision::Allow),
+                                "block" => st.set(f[0], f[1], permissions::Decision::Block),
+                                _ => st.reset(f[0], Some(f[1])),
+                            }
+                            permissions::save(&st);
+                        }
+                    }
+                } else if let Some(origin) = cmd.strip_prefix("PERM_RESET_SITE:") {
+                    if let Ok(mut st) = permissions::global().lock() {
+                        st.reset(origin, None);
+                        permissions::save(&st);
                     }
                 } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
                     if matches!(mode, "system" | "light" | "dark") {
