@@ -223,6 +223,7 @@ struct ChromeSnapshot {
     pw_status: String,
     pw_csv_pending: bool,
     force_dark_active: bool,
+    snap_native: bool,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -1804,6 +1805,68 @@ fn system_prefers_dark() -> bool {
     false
 }
 
+/// Windows build number (22000+ is Windows 11, which has Snap Layouts).
+#[cfg(windows)]
+fn windows_build() -> u32 {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let mut buf = [0u16; 32];
+    let mut sz = (buf.len() * 2) as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            windows::core::w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut sz),
+        )
+    };
+    if r.is_err() {
+        return 0;
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..n]).trim().parse().unwrap_or(0)
+}
+#[cfg(not(windows))]
+fn windows_build() -> u32 {
+    0
+}
+
+/// Windows 11 Snap Layouts: use the system flyout itself (identical look, zones, keyboard numbers).
+static SNAP_NATIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Open the real Snap Layouts flyout for this window by sending Win+Z. Only when this window is in
+/// the foreground; otherwise Win+Z would act on another app. Returns false if not sent.
+#[cfg(windows)]
+fn open_native_snap_layouts(window: &Window) -> bool {
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+    unsafe {
+        let me = windows::Win32::Foundation::HWND(window.hwnd() as isize);
+        let fg = GetForegroundWindow();
+        if fg != me && GetAncestor(fg, GA_ROOT) != me {
+            return false;
+        }
+        let key = |vk: VIRTUAL_KEY, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, time: 0, dwExtraInfo: 0 },
+            },
+        };
+        let vk_z = VIRTUAL_KEY(0x5A);
+        let inputs = [key(VK_LWIN, false), key(vk_z, false), key(vk_z, true), key(VK_LWIN, true)];
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32
+    }
+}
+#[cfg(not(windows))]
+fn open_native_snap_layouts(_window: &Window) -> bool {
+    false
+}
+
 /// Proxy for the window procedure to report WM_SETTINGCHANGE("ImmersiveColorSet").
 /// "Darken All Sites" as it was when the browser started (the setting applies at next start).
 static FORCE_DARK_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2294,6 +2357,7 @@ fn main() -> wry::Result<()> {
     set_frame_theme(&window, global_settings.full_dark_mode);
     let _ = THEME_PROXY.set(std::sync::Mutex::new(proxy.clone()));
     FORCE_DARK_AT_START.store(global_settings.force_dark_pages, Ordering::Relaxed);
+    SNAP_NATIVE.store(windows_build() >= 22000, Ordering::Relaxed);
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -2490,6 +2554,7 @@ fn main() -> wry::Result<()> {
             pw_status: passwords::global().status.lock().map(|s| s.clone()).unwrap_or_default(),
             pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
             force_dark_active: FORCE_DARK_AT_START.load(Ordering::Relaxed),
+            snap_native: SNAP_NATIVE.load(Ordering::Relaxed),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
                     url: k.webview.url().unwrap_or_default(),
@@ -4290,6 +4355,12 @@ fn main() -> wry::Result<()> {
                     engine.install_ffmpeg_bundle(&rt_handle);
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
+                } else if cmd == "SNAP_LAYOUTS" {
+                    if !open_native_snap_layouts(&window) {
+                        // Not in the foreground: show Shunno's own flyout instead of acting on another app.
+                        let _ = chrome_wv.evaluate_script("window.__snapFallback && window.__snapFallback()");
+                    }
+                    return;
                 } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
                     if matches!(mode, "system" | "light" | "dark") {
                         global_settings.theme_mode = mode.to_string();

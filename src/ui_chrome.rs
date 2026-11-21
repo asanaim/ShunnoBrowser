@@ -1087,9 +1087,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   let snapHoverTimer = null;
   let snapCloseTimer = null;
+  // Windows 11: hovering Maximize opens the system's own Snap Layouts flyout (same as every other app).
+  // Windows 10 (no Snap Layouts) and background windows use Shunno's flyout.
+  let snapNative = false;
   function startSnapHover() {
     keepSnapOpen();
     if (snapHoverTimer) clearTimeout(snapHoverTimer);
+    if (snapNative) {
+      snapHoverTimer = setTimeout(() => { snapHoverTimer = null; send('SNAP_LAYOUTS'); }, 450);
+      return;
+    }
     snapHoverTimer = setTimeout(() => {
       const el = document.getElementById('snap-flyout');
       if (el && !el.classList.contains('open')) {
@@ -1114,6 +1121,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       send('ENGINE_MENU:0');
     }
   }
+  window.__snapFallback = function () {
+    const el = document.getElementById('snap-flyout');
+    if (el && !el.classList.contains('open')) {
+      el.classList.add('open');
+      send('ENGINE_MENU:1');
+    }
+  };
   function cancelSnapHover() {
     scheduleSnapClose();
   }
@@ -1778,6 +1792,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const wantDark = !!state.global.full_dark_mode;
     if (document.body.classList.contains('dark') !== wantDark) applyTheme(wantDark);
     applyWindowState(!!state.is_maximized);
+    snapNative = !!state.snap_native;
 
     document.getElementById('version-badge').textContent = state.version || '';
     const upBtn = document.getElementById('btn-update');
