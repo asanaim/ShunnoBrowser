@@ -1,3 +1,28 @@
+## v2.28.0
+
+Toolbar and bookmarks, rebuilt the way Safari does them.
+
+### Toolbar
+* **One button style.** Sidebar, Back, Forward, extensions, Downloads, profile and More are the same
+  size with the same glyph size and no fill until hovered (filled while their popover is open).
+* **Order as in Safari:** Sidebar (bookmarks and history) leads, then Back and Forward. Reload and
+  Bookmark sit inside the address field as page actions. The Home button is gone (New Tab is the
+  start page).
+* **Downloads** appears once there are downloads; while some run, a ring shows their combined
+  progress and a badge counts them.
+
+### Bookmarks
+* **Favorites** is the main folder: the New Tab page shows it as tiles (with Add), and the
+  **Favorites Bar** shows it on web pages. The bar is off until you turn it on (Sidebar > Bookmarks),
+  so there is no empty strip any more, on New Tab or elsewhere.
+* **Add Bookmark (Ctrl+D or the bookmark in the address field):** choose the folder ("Add this page
+  to", New Folder…) and the title. On a bookmarked page the filled icon opens **Edit Bookmark**:
+  folder, title, address, Remove.
+* **Sidebar popover:** Bookmarks / History switch, search, folders that open and close, edit and
+  delete on hover; History grouped Today, Yesterday, Earlier; Clear History asks first.
+* Existing bookmarks in "General" and the old New Tab shortcuts move into Favorites once.
+* Right-click a favorite (bar or New Tab) to edit it; middle-click opens it in a new tab.
+
 ## v2.27.0
 
 Fixes from testing v2.26.0.

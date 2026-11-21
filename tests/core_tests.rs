@@ -975,3 +975,27 @@ fn web_store_pages_give_the_extension_id() {
     );
     assert_eq!(extensions::chrome_version_from_ua("Mozilla/5.0"), None);
 }
+
+#[test]
+fn bookmarks_follow_the_favorites_model() {
+    use state::{save_bookmark, BookmarkEntry, FAVORITES};
+    let mut b: Vec<BookmarkEntry> = vec![BookmarkEntry { title: "Old".into(), url: "https://a.example/".into(), folder: "General".into(), created_at: 1 }];
+    let sc = vec![state::QuickShortcut { title: "Mail".into(), url: "https://mail.example/".into() }, state::QuickShortcut { title: "Dup".into(), url: "https://a.example/".into() }];
+    state::migrate_to_favorites(&mut b, &sc, 10);
+    assert_eq!(b.len(), 2);
+    assert!(b.iter().all(|x| x.folder == FAVORITES));
+    // Add, then edit title, folder and address of the same bookmark.
+    assert!(save_bookmark(&mut b, "", "https://new.example/", "New", "", 20));
+    assert_eq!(b.last().unwrap().folder, FAVORITES);
+    assert!(save_bookmark(&mut b, "https://new.example/", "https://renamed.example/", " Renamed ", "Work", 21));
+    let e = b.iter().find(|x| x.url == "https://renamed.example/").unwrap();
+    assert_eq!((e.title.as_str(), e.folder.as_str()), ("Renamed", "Work"));
+    assert_eq!(b.len(), 3);
+    // Editing an address onto one already saved keeps one entry; bad schemes are refused.
+    assert!(save_bookmark(&mut b, "https://renamed.example/", "https://a.example/", "A", "Work", 22));
+    assert_eq!(b.iter().filter(|x| x.url == "https://a.example/").count(), 1);
+    assert!(!save_bookmark(&mut b, "", "javascript:alert(1)", "x", "", 23));
+    // Empty title falls back to the address.
+    assert!(save_bookmark(&mut b, "", "https://t.example/", "  ", "", 24));
+    assert_eq!(b.last().unwrap().title, "https://t.example/");
+}

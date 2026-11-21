@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.27.0";
+pub const APP_VERSION: &str = "v2.28.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -121,8 +121,60 @@ impl Default for SitePolicy {
     }
 }
 
+/// Safari's model: the "Favorites" folder is what the Favorites bar and the New Tab page show.
+pub const FAVORITES: &str = "Favorites";
+
 fn default_bookmark_folder() -> String {
-    "General".to_string()
+    FAVORITES.to_string()
+}
+
+/// One-time move to the Favorites model: the old default folder "General" becomes Favorites and
+/// the New Tab shortcuts become Favorites bookmarks (one place for both, as in Safari).
+pub fn migrate_to_favorites(bookmarks: &mut Vec<BookmarkEntry>, shortcuts: &[QuickShortcut], now: u64) {
+    for b in bookmarks.iter_mut() {
+        if b.folder.trim().is_empty() || b.folder == "General" {
+            b.folder = FAVORITES.to_string();
+        }
+    }
+    for (i, sc) in shortcuts.iter().enumerate() {
+        let url = sc.url.trim();
+        if url.is_empty() || bookmarks.iter().any(|b| b.url == url) {
+            continue;
+        }
+        bookmarks.push(BookmarkEntry { title: sc.title.trim().to_string(), url: url.to_string(), folder: FAVORITES.to_string(), created_at: now + i as u64 });
+    }
+}
+
+/// Add a bookmark or change the one at `orig_url`: Add Bookmark, Edit Bookmark, the Library's Edit.
+/// New bookmarks go to the end, so Favorites keep the order they were added in.
+pub fn save_bookmark(bookmarks: &mut Vec<BookmarkEntry>, orig_url: &str, url: &str, title: &str, folder: &str, now: u64) -> bool {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file:///")) || url.len() > 8192 {
+        return false;
+    }
+    let title: String = if title.trim().is_empty() { url.to_string() } else { title.trim().chars().take(300).collect() };
+    let folder: String = {
+        let f: String = folder.trim().chars().filter(|c| !c.is_control()).take(60).collect();
+        if f.is_empty() { FAVORITES.to_string() } else { f }
+    };
+    let at = bookmarks.iter().position(|b| b.url == orig_url).or_else(|| bookmarks.iter().position(|b| b.url == url));
+    match at {
+        Some(i) => {
+            bookmarks[i].title = title;
+            bookmarks[i].url = url.to_string();
+            bookmarks[i].folder = folder;
+            // Editing an address onto one that is already bookmarked: keep one entry.
+            let keep = i;
+            let mut idx = 0;
+            bookmarks.retain(|b| {
+                let dup = idx != keep && b.url == url;
+                idx += 1;
+                !dup
+            });
+        }
+        None => bookmarks.push(BookmarkEntry { title, url: url.to_string(), folder, created_at: now }),
+    }
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -371,6 +423,12 @@ pub struct GlobalSettings {
     /// Shift+click a link opens it in a floating Peek preview (Arc-style).
     #[serde(default = "default_true")]
     pub peek_links: bool,
+    /// Safari's Favorites bar under the address bar on web pages (View > Show Favorites Bar).
+    #[serde(default)]
+    pub show_favorites_bar: bool,
+    /// The one-time move to the Favorites model has been done.
+    #[serde(default)]
+    pub favorites_migrated: bool,
     /// "system" (follow Windows), "light" or "dark".
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
@@ -419,6 +477,8 @@ impl Default for GlobalSettings {
             strict_tracking: false,
             auto_archive_hours: 0,
             peek_links: true,
+            show_favorites_bar: false,
+            favorites_migrated: false,
             theme_mode: default_theme_mode(),
             force_dark_pages: false,
             download_takeover: true,
@@ -842,7 +902,7 @@ impl BrowserStorage {
                     BookmarkEntry {
                         title,
                         url,
-                        folder: "General".to_string(),
+                        folder: FAVORITES.to_string(),
                         created_at: 0,
                     },
                 );
