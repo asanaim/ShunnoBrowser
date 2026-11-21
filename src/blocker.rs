@@ -36,7 +36,7 @@ pub fn global() -> &'static Blocker {
 }
 
 fn cache_path() -> PathBuf {
-    let dir = BrowserStorage::app_data_dir().join("filters");
+    let dir = BrowserStorage::shared_data_dir().join("filters");
     let _ = fs::create_dir_all(&dir);
     dir.join(CACHE_FILE)
 }

@@ -1,3 +1,12 @@
+## v2.22.0
+
+### Profiles (Safari-style)
+* **Separate profiles** for work, school or personal browsing. Each profile opens in **its own window** with its own cookies and sign-ins, history, bookmarks, saved passwords, site permissions, settings, Spaces, session and download queue.
+* A round, coloured **profile badge** appears in the toolbar once you have more than one profile; the window title shows the profile name. Also in the Menu (👤 Profiles) and the command palette.
+* Create, rename, recolour and **Open/Show** profiles from the Profiles panel. A profile can be deleted only when it is closed (and never the default one); deleting erases its data folder after a confirmation.
+* Your existing data becomes the default profile, **Personal**, with no migration. Helper tools (ffmpeg, yt-dlp) and block lists are shared, so they download once.
+* Opening links from other apps still goes to the default profile.
+
 ## v2.21.1
 
 ### Site Permissions

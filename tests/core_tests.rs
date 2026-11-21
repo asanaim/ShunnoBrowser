@@ -604,3 +604,32 @@ fn permissions_resolve_and_store() {
     let back: Store = serde_json::from_str(&t).unwrap();
     assert_eq!(back.get("https://a.example", "location"), Some(Decision::Block));
 }
+
+#[test]
+fn profiles_ids_dirs_and_sanitizing() {
+    use state::*;
+    assert!(valid_profile_id("work") && valid_profile_id("side-2"));
+    for bad in ["", "Work", "../x", "a/b", "-x", "x y", &"a".repeat(33)] {
+        assert!(!valid_profile_id(bad), "{bad}");
+    }
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(profile_from_args(args(&["shunno.exe", "--profile=work", "https://x.org"])), "work");
+    assert_eq!(profile_from_args(args(&["shunno.exe", "--profile=..\\evil"])), DEFAULT_PROFILE);
+    assert_eq!(profile_from_args(args(&["shunno.exe"])), DEFAULT_PROFILE);
+
+    let shared = std::path::Path::new("/data/ShunnoBrowser");
+    assert_eq!(profile_dir_in(shared, DEFAULT_PROFILE), shared);
+    assert_eq!(profile_dir_in(shared, "work"), shared.join("Profiles").join("work"));
+
+    let p = |id: &str, name: &str, color: &str| Profile { id: id.into(), name: name.into(), color: color.into() };
+    let list = sanitize_profiles(vec![p("work", " Work ", "#FF9F0A"), p("work", "Dup", "#0A84FF"), p("Bad Id", "x", "#0A84FF"), p("school", "", "#30D158"), p("home", "Home", "red")]);
+    let ids: Vec<&str> = list.iter().map(|q| q.id.as_str()).collect();
+    assert_eq!(ids, ["default", "work", "home"]);
+    assert_eq!(list[1].name, "Work");
+    assert_eq!(list[2].color, PROFILE_COLORS[0]);
+
+    assert_eq!(new_profile_id("Work Stuff!", &list), "work-stuff");
+    assert_eq!(new_profile_id("Work", &list), "work-2");
+    assert_eq!(new_profile_id("কাজ", &list), "profile");
+    assert_eq!(new_profile_id("Default", &list), "profile");
+}

@@ -266,6 +266,42 @@ fn permission_prompt(active_tab_id: Option<usize>) -> Option<permissions::Prompt
     peek_id().or(active_tab_id).and_then(pending_prompt)
 }
 
+/// Profiles as the toolbar sees them (refreshed on start, when the panel opens and after edits).
+#[derive(Clone, Serialize)]
+struct ProfileView {
+    id: String,
+    name: String,
+    color: String,
+    running: bool,
+}
+thread_local! {
+    static PROFILES: std::cell::RefCell<Vec<ProfileView>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+fn refresh_profiles() -> Vec<state::Profile> {
+    let list = BrowserStorage::load_profiles();
+    let me = state::profile_id();
+    PROFILES.with(|p| {
+        *p.borrow_mut() = list
+            .iter()
+            .map(|q| ProfileView { id: q.id.clone(), name: q.name.clone(), color: q.color.clone(), running: q.id == me || little::profile_running(&q.id) })
+            .collect()
+    });
+    list
+}
+/// "Shunno Browser" for the default profile, "Shunno Browser · Work" for others.
+fn window_title_for_profile(list: &[state::Profile]) -> String {
+    let me = state::profile_id();
+    match list.iter().find(|p| p.id == me) {
+        Some(p) if me != state::DEFAULT_PROFILE => format!("Shunno Browser \u{00b7} {}", p.name),
+        _ => "Shunno Browser".to_string(),
+    }
+}
+#[derive(serde::Deserialize)]
+struct ProfileForm {
+    name: String,
+    color: String,
+}
+
 fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -412,6 +448,8 @@ struct ChromeSnapshot {
     force_dark_active: bool,
     snap_native: bool,
     perm_prompt: Option<permissions::PromptView>,
+    profile_id: &'static str,
+    profiles: Vec<ProfileView>,
     permissions: Vec<permissions::Entry>,
     active_reader_available: bool,
     import_status: String,
@@ -2803,7 +2841,10 @@ fn bring_webview_to_top(_wv: &WebView) {}
 fn main() -> wry::Result<()> {
     set_explicit_app_user_model_id();
 
-    // One Shunno at a time: a second launch (e.g. a link clicked in another app) hands its link over.
+    // Profile first: every data path below depends on it.
+    state::set_profile(&state::profile_from_args(std::env::args()));
+
+    // One Shunno per profile: a second launch (e.g. a link clicked in another app) hands its link over.
     let start_url = little::url_from_args(std::env::args());
     if little::hand_off_to_running_instance(start_url.as_deref()) {
         return Ok(());
@@ -2840,7 +2881,7 @@ fn main() -> wry::Result<()> {
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
-        .with_title("Shunno Browser")
+        .with_title(window_title_for_profile(&refresh_profiles()))
         .with_decorations(false)
         .with_window_icon(load_embedded_window_icon())
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
@@ -3139,6 +3180,8 @@ fn main() -> wry::Result<()> {
             snap_native: SNAP_NATIVE.load(Ordering::Relaxed),
             perm_prompt: permission_prompt(tabs.get(active_idx).map(|t| t.id)),
             permissions: permissions::global().lock().map(|s| s.entries()).unwrap_or_default(),
+            profile_id: state::profile_id(),
+            profiles: PROFILES.with(|p| p.borrow().clone()),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
@@ -4678,6 +4721,9 @@ fn main() -> wry::Result<()> {
                     let _ = proxy.send_event(AppEvent::ToggleFullscreen);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
                     drawer_open = true;
+                    if cmd == "DRAWER_OPEN:profiles" {
+                        refresh_profiles();
+                    }
                     if cmd == "DRAWER_OPEN:controls" {
                         if let Ok(mut cs) = cached_scripts.lock() {
                             *cs = list_user_scripts(&global_settings.approved_script_hashes);
@@ -5411,6 +5457,46 @@ fn main() -> wry::Result<()> {
                             }
                         }
                     }
+                } else if let Some(id) = cmd.strip_prefix("PROFILE_OPEN:") {
+                    // Each profile is its own window; an open one comes forward (single instance per profile).
+                    if id != state::profile_id() && refresh_profiles().iter().any(|p| p.id == id) {
+                        little::launch_profile(id);
+                    }
+                } else if let Some(json) = cmd.strip_prefix("PROFILE_NEW:") {
+                    if let Ok(f) = serde_json::from_str::<ProfileForm>(json) {
+                        let mut list = BrowserStorage::load_profiles();
+                        let id = state::new_profile_id(&f.name, &list);
+                        list.push(state::Profile { id: id.clone(), name: f.name, color: f.color });
+                        let list = state::sanitize_profiles(list);
+                        if list.iter().any(|p| p.id == id) {
+                            BrowserStorage::save_profiles(&list);
+                            little::launch_profile(&id);
+                        }
+                        refresh_profiles();
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("PROFILE_EDIT:") {
+                    if let Some((id, json)) = arg.split_once('|') {
+                        if let Ok(f) = serde_json::from_str::<ProfileForm>(json) {
+                            let mut list = BrowserStorage::load_profiles();
+                            if let Some(p) = list.iter_mut().find(|p| p.id == id) {
+                                p.name = f.name;
+                                p.color = f.color;
+                            }
+                            let list = state::sanitize_profiles(list);
+                            BrowserStorage::save_profiles(&list);
+                            window.set_title(&window_title_for_profile(&list));
+                            refresh_profiles();
+                        }
+                    }
+                } else if let Some(id) = cmd.strip_prefix("PROFILE_DELETE:") {
+                    // Only a closed, non-default profile other than this one. Its folder is deleted.
+                    if state::valid_profile_id(id) && id != state::DEFAULT_PROFILE && id != state::profile_id() && !little::profile_running(id) {
+                        let mut list = BrowserStorage::load_profiles();
+                        list.retain(|p| p.id != id);
+                        BrowserStorage::save_profiles(&list);
+                        let _ = fs::remove_dir_all(state::profile_dir_in(&BrowserStorage::shared_data_dir(), id));
+                    }
+                    refresh_profiles();
                 } else if let Some(arg) = cmd.strip_prefix("PERM_DECIDE:") {
                     // PERM_DECIDE:<id>|allow|block
                     if let Some((id, d)) = arg.split_once('|') {
