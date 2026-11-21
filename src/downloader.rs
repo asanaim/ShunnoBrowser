@@ -703,8 +703,16 @@ impl NativeDownloadEngine {
     /// not an HTML page. Anything else (POST forms, one-time links, sign-in walls) stays with WebView2.
     pub async fn probe_takeover(&self, url: &str, referer: Option<String>, cookie: Option<String>, expected_total: Option<u64>) -> Option<u64> {
         let ua = self.current_user_agent();
-        let rb = with_headers(self.client.get(url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
-        let resp = rb.timeout(Duration::from_secs(12)).send().await.ok()?;
+        // One retry: a pooled connection the server already closed fails the first send.
+        let mut resp = None;
+        for _ in 0..2 {
+            let rb = with_headers(self.client.get(url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
+            if let Ok(r) = rb.timeout(Duration::from_secs(12)).send().await {
+                resp = Some(r);
+                break;
+            }
+        }
+        let resp = resp?;
         if resp.status() != StatusCode::PARTIAL_CONTENT {
             return None;
         }

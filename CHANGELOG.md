@@ -1,3 +1,19 @@
+## v2.19.0
+
+### Spaces (from Arc)
+* Group tabs into **Spaces** (Work, Study, Personal...), each with a name, icon and colour. The Space button at the left of the tab strip switches Spaces; the tab strip shows only the current Space's tabs, and the current tab is underlined in the Space colour.
+* Each Space remembers its last tab. New tabs open in the current Space; Ctrl+Tab and Ctrl+W stay within it; Ctrl+Shift+T reopens a tab into the Space it came from. Picking a tab from another Space in the command palette switches to that Space.
+* Create, rename, recolour, delete (its tabs close and stay reopenable), and move the current tab to another Space from the Spaces popover or the palette. Up to 12 Spaces. Spaces share cookies and logins.
+
+### Little Shunno (Arc's Little Arc)
+* A small, quick window for a single page: **Ctrl+Alt+N from anywhere in Windows**, the Little button in the Menu, or links opened from other apps. Its own address bar searches or navigates; **Open in Shunno** moves the page into the main window as a tab.
+* Shunno now runs as a single instance: opening a link from another app hands it to the running browser instead of starting a second copy. Setting: **Links in Little Window** (on); off opens them as tabs.
+* **Set as Default** (Menu) registers Shunno as a Windows browser for this user and opens Windows Default apps, where you confirm the choice.
+
+### Fixes
+* Ctrl+W used its own close path that ignored split view; it now uses the same one as the tab's close button.
+* The download takeover check retries once after a dropped connection.
+
 ## v2.18.0
 
 ### Downloads (IDM-style takeover)

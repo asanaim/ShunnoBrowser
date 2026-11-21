@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.18.0";
+pub const APP_VERSION: &str = "v2.19.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -86,10 +86,102 @@ pub struct HistoryEntry {
     pub visited_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SavedTab {
     pub title: String,
     pub url: String,
+    /// Space the tab belongs to (0 = the first Space, for sessions saved before Spaces existed).
+    #[serde(default)]
+    pub space: u32,
+}
+
+/// Arc-style Space: a named, coloured set of tabs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Space {
+    pub id: u32,
+    pub name: String,
+    /// "#RRGGBB" accent.
+    pub color: String,
+    /// One emoji or character.
+    pub icon: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpacesFile {
+    pub spaces: Vec<Space>,
+    pub active: u32,
+}
+
+impl Default for SpacesFile {
+    fn default() -> Self {
+        SpacesFile {
+            spaces: vec![Space { id: 1, name: "Personal".into(), color: "#0A84FF".into(), icon: "🏠".into() }],
+            active: 1,
+        }
+    }
+}
+
+impl SpacesFile {
+    /// Valid after load: at least one Space, `active` exists, names/colours sane.
+    pub fn normalized(mut self) -> Self {
+        self.spaces.retain(|s| s.id != 0);
+        if self.spaces.is_empty() {
+            return SpacesFile::default();
+        }
+        for sp in &mut self.spaces {
+            sp.name = sanitize_space_name(&sp.name);
+            if !is_hex_color(&sp.color) {
+                sp.color = "#0A84FF".into();
+            }
+            sp.icon = sp.icon.chars().take(2).collect();
+        }
+        if !self.spaces.iter().any(|s| s.id == self.active) {
+            self.active = self.spaces[0].id;
+        }
+        self
+    }
+
+    pub fn next_id(&self) -> u32 {
+        self.spaces.iter().map(|s| s.id).max().unwrap_or(0) + 1
+    }
+
+    /// Map a saved Space id onto an existing one (0 or unknown → the first Space).
+    pub fn resolve(&self, id: u32) -> u32 {
+        if self.spaces.iter().any(|s| s.id == id) { id } else { self.spaces[0].id }
+    }
+}
+
+pub fn sanitize_space_name(s: &str) -> String {
+    let t: String = s.chars().filter(|c| !c.is_control()).take(24).collect();
+    let t = t.trim().to_string();
+    if t.is_empty() { "Space".into() } else { t }
+}
+
+pub fn is_hex_color(c: &str) -> bool {
+    c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit())
+}
+
+/// Which tab (index) to show when entering `space`: the remembered one if it is still in that
+/// Space, else the first tab there. `tabs` = (tab id, space) in strip order.
+pub fn pick_tab_for_space(tabs: &[(usize, u32)], space: u32, remembered: Option<usize>) -> Option<usize> {
+    if let Some(id) = remembered {
+        if let Some(i) = tabs.iter().position(|&(t, s)| t == id && s == space) {
+            return Some(i);
+        }
+    }
+    tabs.iter().position(|&(_, s)| s == space)
+}
+
+/// Next/previous tab index within the same Space as `current`, wrapping around.
+pub fn step_in_space(tabs: &[(usize, u32)], current: usize, forward: bool) -> usize {
+    let Some(&(_, space)) = tabs.get(current) else { return current };
+    let members: Vec<usize> = tabs.iter().enumerate().filter(|(_, &(_, s))| s == space).map(|(i, _)| i).collect();
+    let pos = members.iter().position(|&i| i == current).unwrap_or(0);
+    let n = members.len();
+    if n <= 1 {
+        return current;
+    }
+    members[if forward { (pos + 1) % n } else { (pos + n - 1) % n }]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -145,6 +237,9 @@ pub struct GlobalSettings {
     /// Hand page-started downloads to Shunno's multi-connection engine when it can fetch them.
     #[serde(default = "default_true")]
     pub download_takeover: bool,
+    /// Links opened from other apps go to Little Shunno (Arc's Little Arc) instead of a main-window tab.
+    #[serde(default = "default_true")]
+    pub little_for_links: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -181,6 +276,7 @@ impl Default for GlobalSettings {
             theme_mode: default_theme_mode(),
             force_dark_pages: false,
             download_takeover: true,
+            little_for_links: true,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
@@ -444,6 +540,22 @@ impl BrowserStorage {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
+    }
+
+    pub fn load_spaces() -> SpacesFile {
+        let path = Self::app_data_dir().join("spaces.json");
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SpacesFile>(&s).ok())
+            .unwrap_or_default()
+            .normalized()
+    }
+
+    pub fn save_spaces(sp: &SpacesFile) {
+        let path = Self::app_data_dir().join("spaces.json");
+        if let Ok(json) = serde_json::to_string_pretty(sp) {
+            let _ = fs::write(path, json);
+        }
     }
 
     pub fn save_session(tabs: &[SavedTab]) {
