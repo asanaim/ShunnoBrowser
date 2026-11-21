@@ -200,7 +200,7 @@ function open() {
   articleEl.append(site, h1, meta, body);
   root.append(bar, panel, articleEl);
   shadow.appendChild(root);
-  shadow.addEventListener('click', (e) => { if (!panel.contains(e.target) && !e.target.closest('.bar')) panel.classList.remove('open'); });
+  shadow.addEventListener('click', (e) => { if (panel && !panel.contains(e.target) && !e.target.closest('.bar')) panel.classList.remove('open'); });
   savedOverflow = document.documentElement.style.overflow;
   document.documentElement.style.overflow = 'hidden';
   // The floating download bar / Drop Link belong to the page view, not to Reader.

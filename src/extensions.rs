@@ -60,7 +60,7 @@ pub fn load_registry() -> BTreeMap<String, Meta> {
 
 pub fn save_registry(r: &BTreeMap<String, Meta>) {
     if let Ok(t) = serde_json::to_string_pretty(r) {
-        let _ = fs::write(registry_path(), t);
+        let _ = crate::state::write_atomic(&registry_path(), t.as_bytes());
     }
 }
 
@@ -249,26 +249,35 @@ pub fn unpack_archive(file: &Path) -> Result<PathBuf, String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes[off..])).map_err(|e| format!("The archive could not be opened: {e}"))?;
     let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let dest = fresh_dir(&stem);
-    let mut total: u64 = 0;
-    for i in 0..zip.len() {
-        let mut f = zip.by_index(i).map_err(|e| e.to_string())?;
-        // enclosed_name() refuses absolute paths and "..": nothing can land outside `dest`.
-        let Some(rel) = f.enclosed_name() else { continue };
-        let out = dest.join(rel);
-        if f.is_dir() {
-            let _ = fs::create_dir_all(&out);
-            continue;
+    const LIMIT: u64 = 500 * 1024 * 1024;
+    let extract = |zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>| -> Result<(), String> {
+        let mut total: u64 = 0;
+        for i in 0..zip.len() {
+            let f = zip.by_index(i).map_err(|e| e.to_string())?;
+            // enclosed_name() refuses absolute paths and "..": nothing can land outside `dest`.
+            let Some(rel) = f.enclosed_name() else { continue };
+            let out = dest.join(rel);
+            if f.is_dir() {
+                fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+                continue;
+            }
+            if let Some(p) = out.parent() {
+                fs::create_dir_all(p).map_err(|e| e.to_string())?;
+            }
+            let mut w = fs::File::create(&out).map_err(|e| e.to_string())?;
+            // Count what is really written (the sizes in the archive can lie).
+            let room = LIMIT - total;
+            let n = std::io::copy(&mut f.take(room + 1), &mut w).map_err(|e| e.to_string())?;
+            total += n;
+            if total > LIMIT {
+                return Err("The extension unpacks to more than 500 MB.".into());
+            }
         }
-        total += f.size();
-        if total > 500 * 1024 * 1024 {
-            let _ = fs::remove_dir_all(&dest);
-            return Err("The extension unpacks to more than 500 MB.".into());
-        }
-        if let Some(p) = out.parent() {
-            fs::create_dir_all(p).map_err(|e| e.to_string())?;
-        }
-        let mut w = fs::File::create(&out).map_err(|e| e.to_string())?;
-        std::io::copy(&mut f, &mut w).map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    if let Err(e) = extract(&mut zip) {
+        let _ = fs::remove_dir_all(&dest);
+        return Err(e);
     }
     // Some archives wrap everything in one top folder.
     let dest = if dest.join("manifest.json").exists() {
@@ -321,7 +330,15 @@ pub fn delete_copy(path: &str) {
     let p = PathBuf::from(path);
     if let (Ok(p), Ok(root)) = (p.canonicalize(), root_dir().canonicalize()) {
         if p.starts_with(&root) && p != root {
-            let _ = fs::remove_dir_all(p);
+            let _ = fs::remove_dir_all(&p);
+            // An archive that wrapped everything in one folder left an empty parent: remove it too.
+            let mut up = p.parent();
+            while let Some(d) = up.filter(|d| *d != root && d.starts_with(&root)) {
+                if fs::remove_dir(d).is_err() {
+                    break; // not empty
+                }
+                up = d.parent();
+            }
         }
     }
 }

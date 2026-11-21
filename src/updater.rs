@@ -135,6 +135,9 @@ impl Updater {
         if !resp.status().is_success() {
             return Err(fail(format!("HTTP {}", resp.status())));
         }
+        if resp.content_length().is_some_and(|n| n > 64 * 1024) {
+            return Err(fail("manifest too large".to_string()));
+        }
         let text = resp.text().await.map_err(|e| fail(e.to_string()))?;
         let m: Manifest = serde_json::from_str(&text).map_err(|e| fail(format!("bad manifest: {}", e)))?;
         if !is_newer(&m.version, APP_VERSION) {

@@ -43,6 +43,16 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// UPDATE_PUBLIC_KEY_HEX as written in src/updater.rs (empty when not set there).
+fn embedded_public_key() -> String {
+    const SRC: &str = include_str!("../updater.rs");
+    SRC.split("UPDATE_PUBLIC_KEY_HEX: &str = \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
 /// The 32-byte seed from an unencrypted PKCS#8 Ed25519 PEM.
 fn seed_from_pem(pem: &str) -> Result<[u8; 32], String> {
     let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
@@ -72,6 +82,13 @@ fn run(args: &[String]) -> Result<(), String> {
         String::new()
     } else {
         let key = SigningKey::from_bytes(&seed_from_pem(pem.trim())?);
+        // A key that does not match the one compiled into the browser would publish an update no
+        // installed copy accepts: stop the release instead.
+        let built_in = embedded_public_key();
+        let ours = hex::encode(key.verifying_key().to_bytes());
+        if !built_in.is_empty() && ours != built_in {
+            return Err(format!("UPDATE_SIGNING_KEY does not match UPDATE_PUBLIC_KEY_HEX in src/updater.rs (key {ours})"));
+        }
         hex::encode(key.sign(message(version, &sha, url).as_bytes()).to_bytes())
     };
     let json = serde_json::json!({ "version": version, "url": url, "sha256": sha, "signature": signature });

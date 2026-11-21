@@ -8,7 +8,10 @@ Every push to `main` builds `ShunnoBrowser.exe` on Windows, runs the tests and p
 Until this is done the browser only *tells* users that a new version exists; it never installs one.
 
 1. On a trusted computer with Python: `pip install cryptography`, then
-   `python scripts/sign_update.py genkey`.
+   `python scripts/sign_update.py genkey`. (Only key generation uses Python. CI signs with the
+   Rust tool `src/bin/sign_update.rs`, which refuses to sign when the key does not match
+   `UPDATE_PUBLIC_KEY_HEX`, so a wrong secret fails the build instead of publishing an update that
+   no installed copy accepts.)
 2. GitHub, repo Settings, Secrets and variables, Actions, New repository secret:
    name `UPDATE_SIGNING_KEY`, value = the whole text of `update_signing_key.pem`.
 3. Paste the printed public key hex into `UPDATE_PUBLIC_KEY_HEX` in `src/updater.rs` and push.
@@ -33,5 +36,7 @@ and offers **Restart to update**. A tampered manifest, EXE or download link is r
 ## 3. Before each release
 
 - Bump `version` in `Cargo.toml` and `APP_VERSION` in `src/state.rs` (updates compare these numbers).
+  The new number must be higher than every published one: installed copies ignore a lower version,
+  so a renumbering such as 2.x to 1.0.0 would stop all of them from updating.
 - Add a `CHANGELOG.md` entry.
 - Generate third-party notices: `cargo install cargo-about && cargo about generate about.hbs > THIRD_PARTY_LICENSES.html`.

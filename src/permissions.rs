@@ -113,18 +113,15 @@ fn path() -> std::path::PathBuf {
 pub fn global() -> &'static Mutex<Store> {
     static S: std::sync::OnceLock<Mutex<Store>> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        let s = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        // A damaged file is kept aside (not overwritten by the next save), as for every settings file.
+        let s: Store = crate::state::load_json(&path()).unwrap_or_default();
         Mutex::new(s)
     })
 }
 
 pub fn save(store: &Store) {
     if let Ok(t) = serde_json::to_string_pretty(store) {
-        let p = path();
-        let tmp = p.with_extension("json.tmp");
-        if std::fs::write(&tmp, t).is_ok() {
-            let _ = std::fs::rename(tmp, p);
-        }
+        let _ = crate::state::write_atomic(&path(), t.as_bytes());
     }
 }
 

@@ -1,9 +1,64 @@
-## v1.0.0
+## v2.26.0
 
-First numbered release after a full code audit. Version numbers restart at 1.0.0; the entries
-below it (v2.x and earlier) are the development history leading here.
+Full code audit, file by file, plus the findings of an external review. The version continues from
+v2.25.0: installed copies only update to a higher number, so restarting at 1.0.0 would have left
+every v2.x install without updates.
 
-### Fixes from the audit
+### Toolbar
+* **Library and Bookmark buttons sit beside Downloads** in the address bar row. Library is an icon
+  only (it opens the bookmarks and history popover under itself); Bookmark is filled when the page
+  is already saved and hidden on the New Tab page.
+* **Downloads is a compact icon** with a count badge that appears only while there are downloads.
+
+### Security and privacy
+* **Site settings follow the site, not the tab.** JavaScript off, mobile site, ad and image
+  blocking used to be fixed when a tab was created, so a tab that moved to another site kept the
+  first site's settings (ads unblocked everywhere after visiting an allowed site; scripts running on
+  a site set to "JavaScript off"). They are now applied at every navigation.
+* **User scripts ran on every site a tab visited**, chosen by the tab's first site. Each script now
+  runs only on pages whose host matches its `@match` / `@include` lines, top frame only.
+* **The IPC token could leak** into evaluated script (Save page) and through `window.ipc` in frames.
+  Neither path exists any more; in-page entry points the browser calls cannot be replaced by the page.
+* **Downloads get Mark of the Web**, so SmartScreen and Office check them; names lose
+  right-to-left override characters that disguise `.exe` files; more Windows device names are refused.
+* **Windows Hello no longer fails open** on errors; only a missing or unconfigured Hello proceeds.
+* **Copied passwords stay out of clipboard history and cloud clipboard.**
+* **Page-supplied addresses cannot reach your network**: redirects and DNS from public to local
+  addresses are refused for page-started probes; IPv6 and embedded IPv4 forms are covered. A public
+  HLS playlist cannot point at local addresses, and FFmpeg is limited to network protocols.
+* **Links handed over by other programs** are accepted only as web, `file:///` or local page links.
+* **Sign-in pop-up exception** is judged by host and path; a query string mentioning "oauth" no longer
+  lets an ordinary pop-up through.
+* **Permissions, downloads queue, settings and the password vault** are written atomically, and a
+  damaged file is kept aside instead of being replaced by defaults.
+* CI: secrets are given only to the steps that need them, actions are pinned to commits, and the
+  release is signed by a Rust tool that refuses a key not matching the one built into the browser.
+* Updates: manifest size limit, streamed and size-capped EXE download, no reinstall when another
+  profile already installed the same version, staged file cleaned up on failure.
+
+### Reliability
+* **Two downloads with the same name could overwrite each other** (engine and WebView2 downloads).
+  Final names are reserved before the move; the second becomes `name (1).ext`.
+* **A file name with a non-ASCII character next to `%`** crashed the download thread.
+* **Clear history could be undone** by a background save finishing later. Saves are now ordered.
+* **Tabs in other windows never slept or archived**; all windows are checked now.
+* **Ctrl+Tab to a sleeping tab** showed a frozen page; it wakes it, as clicking the tab does.
+* **Restart to update could fail to reopen** (the new copy saw the old one still running and quit).
+* **FFmpeg and yt-dlp could keep running after Shunno closed**; they now end with it.
+* **A second launch could start the same profile twice** during start-up; it now waits or hands over.
+* Session cookies given to yt-dlp are deleted whatever the outcome.
+* The download queue file is never silently emptied when it cannot be read.
+* Changing a site setting keeps the tab in its group and Space.
+* Grab results, page saves and stream reports are accepted only when you asked for them.
+* "Download link with Shunno" uses the right-clicked page's cookies and referrer, also in split view
+  and Little Shunno. Taken-over browser downloads keep their file name.
+* Two screenshots in the same second no longer overwrite each other; saved pages never overwrite a file.
+* A downloaded filter list is refused if it fails either check (header or size; the test needed both to fail), checksummed filter cache, Chrome history imported from
+  the write-ahead log, newest visit time kept on import, AMP links keep their query, per-window
+  full-screen placement, per-window window procedure, icon handles reused instead of leaked.
+* Little Shunno closes its web views before its window.
+
+### Fixes from the earlier pass of this audit
 * **Closing tabs from inside a page could wipe the saved session.** Ctrl+W, Ctrl+T, Ctrl+Tab, Ctrl+J and Ctrl+K sent by the page script used an old code path that ignored Spaces, split view, Recently Closed and other windows, and closing the last tab of one window quit Shunno and saved an empty session for every window. They now use the same path as the native shortcuts.
 * **Zoom keys zoomed the wrong pane** in split view (always the left one). They now zoom the page you pressed them in.
 * **Pinning a background tab jumped to it** and could leave split view pointing at the wrong tab. The active and split tabs now stay put.

@@ -142,25 +142,41 @@ pub fn same_program(other: &std::path::Path) -> bool {
 /// the caller should exit. Holds a named mutex for the life of the first instance.
 #[cfg(windows)]
 pub fn hand_off_to_running_instance(url: Option<&str>) -> bool {
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-    unsafe {
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+    let handle = unsafe {
         // One instance per profile: each profile is its own process and window.
         let name: Vec<u16> = instance_mutex_name(crate::state::profile_id()).encode_utf16().chain(std::iter::once(0)).collect();
         let m = CreateMutexW(None, true, windows::core::PCWSTR(name.as_ptr()));
-        if m.is_err() || GetLastError() != ERROR_ALREADY_EXISTS {
+        match m {
+            Ok(h) if GetLastError() == ERROR_ALREADY_EXISTS => h,
             // First instance: keep the handle open (leaked on purpose) so the name stays taken.
-            std::mem::forget(m);
-            return false;
+            other => {
+                std::mem::forget(other);
+                return false;
+            }
         }
-    }
+    };
     // The running instance may still be starting (its window not published yet): wait for it
     // rather than starting a second copy of the same profile, which would share its data folder.
+    // It may also be on its way out (restart after an update): once its owning thread has exited
+    // the mutex can be taken, and this launch becomes the instance.
     for _ in 0..40 {
         if send_to_profile(crate::state::profile_id(), url.unwrap_or("")) {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
             return true;
         }
+        let w = unsafe { WaitForSingleObject(handle, 0) };
+        if w == WAIT_OBJECT_0 || w == WAIT_ABANDONED {
+            // Owned now; the handle stays open for the life of the process.
+            return false;
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    unsafe {
+        let _ = CloseHandle(handle);
     }
     true
 }
@@ -280,7 +296,7 @@ pub const BAR_HTML: &str = r##"<!DOCTYPE html>
   input { flex:1; height:28px; border:1px solid var(--border); border-radius:8px; background:var(--field); color:var(--text);
     padding:0 10px; font:inherit; outline:none; user-select:text; }
   input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(10,132,255,.18); }
-  button { height:28px; border:none; border-radius:8px; padding:0 12px; font:600 12px inherit; font-family:inherit; cursor:pointer; }
+  button { height:28px; border:none; border-radius:8px; padding:0 12px; font-family:inherit; font-size:12px; font-weight:600; cursor:pointer; }
   .open { background:var(--blue); color:#fff; }
   .ghost { background:transparent; color:var(--muted); padding:0 10px; font-size:20px; font-weight:400; line-height:1; }
   .ghost:hover { background:var(--border); color:var(--text); }

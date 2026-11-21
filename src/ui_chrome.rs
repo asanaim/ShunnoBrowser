@@ -1038,7 +1038,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="send('IMPORT_TXT_BOOKMARKS')">Import</button>
           </div>
           <div class="meta" id="import-status" style="margin-top:6px;"></div>
-          <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; CSV import arrives with the password manager.</div>
+          <div class="meta" style="margin-top:6px;">Passwords: export them as CSV from the other browser's password settings; then use Import… in the Passwords panel.</div>
         </div>
         <div class="card">
           <div class="card-header">

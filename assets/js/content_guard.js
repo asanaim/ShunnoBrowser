@@ -1,13 +1,28 @@
 (function() {
   const IPC_TOKEN = "__SHUNNO_IPC_TOKEN__";
-  const ADBLOCK_ON = __SHUNNO_ADBLOCK__;
-  const SPONSORBLOCK_ON = __SHUNNO_SPONSORBLOCK__;
-  const REJECT_COOKIES_ON = __SHUNNO_REJECT_COOKIES__;
+  // Site settings follow the top-level page (an iframe uses its top page's settings), looked up
+  // when each document starts, so a tab that moves to another site gets that site's settings.
+  const TOP_HOST = (function () {
+    try {
+      if (window.top === window) return String(location.hostname || "").toLowerCase();
+      const a = location.ancestorOrigins;
+      if (a && a.length) return new URL(a[a.length - 1]).hostname.toLowerCase();
+    } catch (e) {}
+    return String(location.hostname || "").toLowerCase();
+  })();
+  const SITE_FLAGS = (function () {
+    const table = __SHUNNO_POLICY_TABLE__;
+    const own = Object.prototype.hasOwnProperty.call(table, TOP_HOST) ? table[TOP_HOST] : null;
+    return Array.isArray(own) && own.length === 5 ? own : __SHUNNO_POLICY_DEFAULT__;
+  })();
+  const ADBLOCK_ON = SITE_FLAGS[0] === true;
+  const SPONSORBLOCK_ON = SITE_FLAGS[1] === true;
+  const REJECT_COOKIES_ON = SITE_FLAGS[2] === true;
   const BASKET_ON = __SHUNNO_BASKET__;
   const BG_MEDIA_ON = __SHUNNO_BG_MEDIA__;
   const FULL_DARK_ON = __SHUNNO_FULL_DARK__;
-  const IMAGES_DISABLED = __SHUNNO_IMAGES_DISABLED__;
-  const FP_ON = __SHUNNO_FP__;
+  const IMAGES_DISABLED = SITE_FLAGS[3] === true;
+  const FP_ON = SITE_FLAGS[4] === true;
   const FP_SESSION = "__SHUNNO_FP_SESSION__";
   window.__shunnoPeekOn = __SHUNNO_PEEK__;
 
@@ -199,13 +214,11 @@
     });
   } catch (e) {}
 
+  // Only through the channel captured at document start. Frames have no native channel; there the
+  // message is dropped, never handed to window.ipc, which a framed page could replace to read the token.
   function postSecure(msg) {
-    const payload = IPC_TOKEN + "|" + msg;
-    if (NATIVE_POST) {
-      NATIVE_POST(payload);
-    } else if (window.ipc) {
-      window.ipc.postMessage(payload);
-    }
+    if (!NATIVE_POST) return;
+    try { NATIVE_POST(IPC_TOKEN + "|" + msg); } catch (e) {}
   }
 
   // WebView2 runs this script when the global object is created, before <html> exists.
@@ -452,6 +465,7 @@
   const FILE_EXTS = ['.zip', '.7z', '.rar', '.tar', '.gz', '.iso', '.exe', '.msi', '.pdf', '.dmg', '.deb'];
   const ALL_EXTS = MEDIA_EXTS.concat(FILE_EXTS);
   const capturedStreams = [];
+  let refreshFloatingPill = null; // set by the floating overlay once it exists
 
   function requestSizeProbe(targetUrl) {
     if (!targetUrl || probedSizes.has(targetUrl) || targetUrl === location.href) return;
@@ -499,17 +513,31 @@
     if (item && info.resolved_name) {
       item.name = info.resolved_name;
     }
-    if (window.__shunnoRefreshFloatingPill) {
-      window.__shunnoRefreshFloatingPill(info.url, info.size_label);
-    }
+    // Internal reference only: a page could replace a window property to read probe results.
+    if (refreshFloatingPill) refreshFloatingPill(info.url, info.size_label);
   });
+
+  // Ad request by host (and path for the YouTube entries), never by text elsewhere in the URL:
+  // a search for "criteo.com" or a link carrying it in a query string is not an ad.
+  function isAdRequest(str) {
+    let u;
+    try { u = new URL(str, location.href); } catch (e) { return false; }
+    const host = u.hostname.toLowerCase();
+    const hostPath = host + u.pathname.toLowerCase();
+    return AD_HOSTS.some(h => {
+      const slash = h.indexOf('/');
+      if (slash < 0) return host === h || host.endsWith('.' + h);
+      const hh = h.slice(0, slash);
+      return (host === hh || host.endsWith('.' + hh)) && hostPath.slice(host.length).startsWith(h.slice(slash));
+    });
+  }
 
   function inspectUrl(raw) {
     if (!raw) return false;
     const str = String(raw);
     const lower = str.toLowerCase();
     const cleanLower = lower.split('?')[0];
-    if (ADBLOCK_ON && AD_HOSTS.some(h => lower.includes(h))) {
+    if (ADBLOCK_ON && isAdRequest(str)) {
       postSecure('AD_BLOCKED');
       return true;
     }
@@ -566,7 +594,7 @@
     }));
   }
 
-  window.__shunnoTogglePiP = async function() {
+  fixedFn('__shunnoTogglePiP', async function() {
     try {
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
@@ -577,7 +605,7 @@
         await vids[0].requestPictureInPicture();
       }
     } catch (e) {}
-  };
+  });
 
   function installFloatingOverlay() {
     if (!document.documentElement || document.getElementById('shunno-float-host')) return;
@@ -585,7 +613,8 @@
     const host = document.createElement('div');
     host.id = 'shunno-float-host';
     host.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
-    const shadow = host.attachShadow({ mode: 'open' });
+    // Closed: the page cannot reach (or script clicks on) the download controls.
+    const shadow = host.attachShadow({ mode: 'closed' });
 
     const styleEl = document.createElement('style');
     styleEl.textContent = `
@@ -805,6 +834,7 @@
     basket.addEventListener('drop', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!e.isTrusted) return; // only a real drag by the user starts downloads
       basket.classList.remove('dragover');
       const dropped = (e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'))) || '';
       const urls = dropped.split(/\r?\n/).map(s => s.trim()).filter(s => s.startsWith('http'));
@@ -867,7 +897,7 @@
       if (!basketMoved) postSecure('KEY:j');
     });
 
-    window.__shunnoRefreshFloatingPill = function(url, sizeLabel) {
+    refreshFloatingPill = function(url, sizeLabel) {
       if (activeItems.length === 1 && activeItems[0].url === url && pillWrap.style.display !== 'none') {
         pillText.textContent = activeBaseLabel + ' (' + sizeLabel + ')';
       }
@@ -912,6 +942,7 @@
 
     pillMain.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (!e.isTrusted) return;
       if (activeItems.length === 1) {
         triggerNativeDownload(activeItems[0].url, 16, activeItems[0].via);
         pillWrap.style.display = 'none';
@@ -945,7 +976,8 @@
         const go = document.createElement('button');
         go.className = 'go';
         go.textContent = it.via ? 'Get' : '16T';
-        go.onclick = () => {
+        go.onclick = (ev) => {
+          if (!ev.isTrusted) return;
           triggerNativeDownload(it.url, 16, it.via);
           menu.style.display = 'none';
           pillWrap.style.display = 'none';
@@ -1110,7 +1142,7 @@
   // invalid selector from a filter list cannot disable the others.
   if (ADBLOCK_ON && window.top === window) {
     let cosmeticSheet = null;
-    window.__shunnoApplyCosmetic = function(css) {
+    fixedFn('__shunnoApplyCosmetic', function(css) {
       if (typeof css !== 'string' || !css) return;
       try {
         if (!cosmeticSheet) {
@@ -1126,7 +1158,7 @@
         st.textContent = css;
         appendWhenReady(st);
       }
-    };
+    });
     const sentClasses = new Set();
     const sentIds = new Set();
     function collectAndSend(rootEl) {
@@ -1169,13 +1201,31 @@
     }
     appendWhenReady(styleSheet);
 
+    // Cookie banners: known consent platforms' "reject" buttons, or a "Reject all"/"Decline all"
+    // button inside an element that is clearly a cookie/consent banner. Never any button whose id
+    // merely contains "reject" (that clicked moderation and admin buttons on unrelated pages).
+    const clickedConsent = new WeakSet();
+    function rejectCookieBanners() {
+      const known = '#onetrust-reject-all-handler, .fc-cta-do-not-consent, #didomi-notice-disagree-button, #CybotCookiebotDialogBodyButtonDecline, .cmpboxbtnno, .qc-cmp2-summary-buttons button[mode="secondary"]';
+      const banner = /(cookie|consent|gdpr|cmp|privacy-banner)/i;
+      const label = /^(reject|decline|refuse|deny)( all)?( cookies)?$/i;
+      const pick = [];
+      document.querySelectorAll(known).forEach(b => pick.push(b));
+      document.querySelectorAll('button, [role="button"]').forEach(b => {
+        const text = (b.getAttribute('aria-label') || b.textContent || '').trim().replace(/\s+/g, ' ');
+        if (!label.test(text)) return;
+        for (let el = b.parentElement, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+          if (banner.test((el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : ''))) { pick.push(b); return; }
+        }
+      });
+      pick.forEach(b => { if (!clickedConsent.has(b)) { clickedConsent.add(b); b.click(); } });
+    }
+
     let domScheduled = false;
     function runCleanPass() {
       domScheduled = false;
       skipYtAdImmediately();
-      if (REJECT_COOKIES_ON) {
-        document.querySelectorAll('#onetrust-reject-all-handler, .fc-cta-do-not-consent, [aria-label*="Reject all" i], button[id*="reject" i]').forEach(b => b.click());
-      }
+      if (REJECT_COOKIES_ON) rejectCookieBanners();
     }
 
     const observer = new MutationObserver(() => {
@@ -1212,7 +1262,7 @@
   document.addEventListener('pause', reportAudioState, true);
   document.addEventListener('ended', reportAudioState, true);
 
-  window.__shunnoSyncYtStreams = function(list) {
+  fixedFn('__shunnoSyncYtStreams', function(list) {
     if (!Array.isArray(list)) return;
     list.forEach(it => {
       if (it && it.url && !capturedStreams.some(s => s.url === it.url)) {
@@ -1220,9 +1270,9 @@
         requestSizeProbe(it.url);
       }
     });
-  };
+  });
 
-  window.__shunnoGrabAllPageLinks = function() {
+  fixedFn('__shunnoGrabAllPageLinks', function() {
     const found = [];
     const seen = new Set();
     function pushItem(url, nameHint, extHint) {
@@ -1256,14 +1306,14 @@
     });
 
     postSecure('GRAB_RESULTS:' + JSON.stringify(found.slice(0, 60)));
-  };
+  });
 
   // 10. Non-Destructive Find-in-Page Range Walker & Match Counter (1 / N)
   window.__shunnoFindMatches = [];
   window.__shunnoFindIdx = -1;
   window.__shunnoFindLastQuery = '';
 
-  window.__shunnoFindOnPage = function(query, direction) {
+  fixedFn('__shunnoFindOnPage', function(query, direction) {
     const q = String(query || '').trim();
     if (!q) {
       window.__shunnoFindMatches = [];
@@ -1330,10 +1380,10 @@
     } catch (e) {}
 
     postSecure('FIND_COUNT:' + (window.__shunnoFindIdx + 1) + '|' + total);
-  };
+  });
 
   // 11. Per-Site Cookie & Storage Cleaner
-  window.__shunnoClearSiteStorage = async function() {
+  fixedFn('__shunnoClearSiteStorage', async function() {
     try { localStorage.clear(); } catch (e) {}
     try { sessionStorage.clear(); } catch (e) {}
     try {
@@ -1363,7 +1413,7 @@
       }
     } catch (e) {}
     postSecure('SITE_DATA_CLEARED:' + (location.hostname || 'site'));
-  };
+  });
 
   function sendPageMeta() {
     postSecure('META:' + JSON.stringify({
@@ -1437,7 +1487,7 @@
 
   // Peek (Arc): Shift+click a link previews it in a floating panel instead of a new window.
   document.addEventListener('click', (e) => {
-    if (!window.__shunnoPeekOn || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.button !== 0) return;
+    if (!e.isTrusted || !window.__shunnoPeekOn || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.button !== 0) return;
     const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     if (!a || a.hasAttribute('download')) return;
     let href = '';

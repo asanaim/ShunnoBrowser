@@ -347,10 +347,8 @@ fn save(v: &VaultData) -> Result<(), String> {
     let blob = dpapi(&plain, true)?;
     let mut out = MAGIC.to_vec();
     out.extend_from_slice(&blob);
-    let path = vault_path();
-    let tmp = path.with_extension("vault.tmp");
-    std::fs::write(&tmp, &out).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    // Temp file plus rename; a failed write never leaves a stray copy of the encrypted vault behind.
+    crate::state::write_atomic(&vault_path(), &out).map_err(|e| e.to_string())
 }
 
 pub struct Vault {

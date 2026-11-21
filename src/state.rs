@@ -51,6 +51,48 @@ pub struct SitePolicy {
     pub zoom: f64,
 }
 
+/// Copy of the per-site policies, readable from WebView2 event handlers (navigation starting,
+/// document created) that have no access to the event loop's map.
+static POLICY_MIRROR: std::sync::Mutex<Option<HashMap<String, SitePolicy>>> = std::sync::Mutex::new(None);
+
+pub fn set_policy_mirror(map: &HashMap<String, SitePolicy>) {
+    if let Ok(mut m) = POLICY_MIRROR.lock() {
+        *m = Some(map.clone());
+    }
+}
+
+/// The policy for a page host (exact host, lower case, as `extract_host` gives it).
+pub fn site_policy_for(host: &str) -> SitePolicy {
+    POLICY_MIRROR
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref().and_then(|m| m.get(host).cloned()))
+        .unwrap_or_default()
+}
+
+/// The page-script flags of a policy, in the order content_guard.js reads them:
+/// [adblock, sponsorblock, auto_reject_cookies, images_disabled, fp_protect].
+pub fn page_flags(p: &SitePolicy) -> [bool; 5] {
+    [p.adblock, p.sponsorblock, p.auto_reject_cookies, !p.images_enabled, p.fp_protect]
+}
+
+/// JSON object host -> page flags, for hosts whose flags differ from the defaults. The content
+/// script picks its entry by the top-level page's host, so one injected script serves every site
+/// a tab visits (it is installed once, when the tab is created).
+pub fn page_policy_table_json() -> String {
+    let default = page_flags(&SitePolicy::default());
+    let table: std::collections::BTreeMap<String, [bool; 5]> = POLICY_MIRROR
+        .lock()
+        .ok()
+        .and_then(|m| m.clone())
+        .unwrap_or_default()
+        .iter()
+        .map(|(h, p)| (h.clone(), page_flags(p)))
+        .filter(|(h, f)| !h.is_empty() && *f != default)
+        .collect();
+    serde_json::to_string(&table).unwrap_or_else(|_| "{}".to_string())
+}
+
 impl Default for SitePolicy {
     fn default() -> Self {
         Self {
@@ -533,8 +575,45 @@ pub fn choose_launch_profile(arg_profile: Option<&str>, has_url: bool, links_pre
 /// and share some folders (tools, block lists, the profile list), so fixed ".tmp" names collide.
 pub fn unique_tmp(path: &std::path::Path) -> PathBuf {
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    name.push(format!(".{}.tmp", std::process::id()));
+    // Process id plus a per-process counter: two threads (or two profiles) never share a temp file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    name.push(format!(".{}.{}.tmp", std::process::id(), n));
     path.with_file_name(name)
+}
+
+/// Write a file so that a crash or power cut leaves either the old or the new content, never a
+/// truncated mix (temp file in the same folder, then rename over the original).
+pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = unique_tmp(path);
+    if let Err(e) = fs::write(&tmp, data).and_then(|_| fs::rename(&tmp, path)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Read a JSON file. Missing: `None`. Present but unreadable as `T` (damaged, or from a newer
+/// version): the file is kept as `<name>.unreadable-<time>` so a later save cannot destroy it, and
+/// `None` is returned.
+pub fn load_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    let text = fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<T>(&text) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let mut aside = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            aside.push(format!(".unreadable-{secs}"));
+            let _ = fs::rename(path, path.with_file_name(aside));
+            None
+        }
+    }
+}
+
+fn save_json<T: Serialize + ?Sized>(path: &std::path::Path, v: &T) {
+    if let Ok(json) = serde_json::to_string_pretty(v) {
+        let _ = write_atomic(path, json.as_bytes());
+    }
 }
 
 pub struct BrowserStorage;
@@ -557,7 +636,7 @@ impl BrowserStorage {
 
     pub fn load_profiles() -> Vec<Profile> {
         let path = Self::shared_data_dir().join("profiles.json");
-        let list = fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let list = load_json(&path).unwrap_or_default();
         sanitize_profiles(list)
     }
 
@@ -587,12 +666,7 @@ impl BrowserStorage {
 
     pub fn save_profiles(list: &[Profile]) {
         let path = Self::shared_data_dir().join("profiles.json");
-        if let Ok(t) = serde_json::to_string_pretty(list) {
-            let tmp = unique_tmp(&path);
-            if fs::write(&tmp, t).is_ok() && fs::rename(&tmp, &path).is_err() {
-                let _ = fs::remove_file(&tmp);
-            }
-        }
+        save_json(&path, list);
     }
 
     fn custom_dl_lock() -> &'static Mutex<Option<String>> {
@@ -634,27 +708,18 @@ impl BrowserStorage {
         dir
     }
 
-    fn legacy_bin_dir() -> PathBuf {
-        // Versions <= 2.9.6 stored tools under <Downloads>\ShunnoBrowser\bin
-        Self::downloads_root_dir().join("bin")
-    }
-
+    /// Shunno's own copy first; otherwise an installed copy found through PATH. Only absolute PATH
+    /// entries are searched (never the EXE's or the current folder, where a downloaded file named
+    /// ffmpeg.exe could sit), and the old Downloads\ShunnoBrowser\bin folder is no longer trusted.
     fn find_tool(exe_name: &str, probe_arg: &str) -> Option<PathBuf> {
         let local_exe = Self::ffmpeg_bin_dir().join(exe_name);
         if local_exe.is_file() {
             return Some(local_exe);
         }
-        let legacy = Self::legacy_bin_dir().join(exe_name);
-        if legacy.is_file() {
-            return Some(legacy);
-        }
-        let bare = exe_name.trim_end_matches(".exe");
-        if let Ok(out) = hidden_command(bare).arg(probe_arg).output() {
-            if out.status.success() {
-                return Some(PathBuf::from(bare));
-            }
-        }
-        None
+        let path_var = std::env::var_os("PATH")?;
+        let found = std::env::split_paths(&path_var).filter(|d| d.is_absolute()).map(|d| d.join(exe_name)).find(|p| p.is_file())?;
+        let ok = hidden_command(&found).arg(probe_arg).output().map(|o| o.status.success()).unwrap_or(false);
+        ok.then_some(found)
     }
 
     pub fn find_ffmpeg() -> Option<PathBuf> {
@@ -667,10 +732,7 @@ impl BrowserStorage {
 
     pub fn load_global_settings() -> GlobalSettings {
         let path = Self::app_data_dir().join("global_settings.json");
-        let mut cfg: GlobalSettings = fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut cfg: GlobalSettings = load_json(&path).unwrap_or_default();
         if cfg.search_engines.is_empty() {
             cfg.search_engines = GlobalSettings::default().search_engines;
         }
@@ -687,32 +749,25 @@ impl BrowserStorage {
     pub fn save_global_settings(settings: &GlobalSettings) {
         Self::set_custom_downloads_dir(settings.custom_downloads_dir.clone());
         let path = Self::app_data_dir().join("global_settings.json");
-        if let Ok(json) = serde_json::to_string_pretty(settings) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, settings);
     }
 
     pub fn load_site_policies() -> HashMap<String, SitePolicy> {
         let path = Self::app_data_dir().join("site_policies.json");
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let map: HashMap<String, SitePolicy> = load_json(&path).unwrap_or_default();
+        set_policy_mirror(&map);
+        map
     }
 
     pub fn save_site_policies(policies: &HashMap<String, SitePolicy>) {
+        set_policy_mirror(policies);
         let path = Self::app_data_dir().join("site_policies.json");
-        if let Ok(json) = serde_json::to_string_pretty(policies) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, policies);
     }
 
     pub fn load_bookmarks() -> Vec<BookmarkEntry> {
         let path = Self::app_data_dir().join("bookmarks.json");
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| {
+        load_json(&path).unwrap_or_else(|| {
                 vec![
                     BookmarkEntry {
                         title: "DuckDuckGo Search".to_string(),
@@ -738,9 +793,7 @@ impl BrowserStorage {
 
     pub fn save_bookmarks(bookmarks: &[BookmarkEntry]) {
         let path = Self::app_data_dir().join("bookmarks.json");
-        if let Ok(json) = serde_json::to_string_pretty(bookmarks) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, bookmarks);
     }
 
     pub fn export_portable_txt_bookmarks(bookmarks: &[BookmarkEntry]) -> PathBuf {
@@ -790,59 +843,41 @@ impl BrowserStorage {
 
     pub fn load_history() -> Vec<HistoryEntry> {
         let path = Self::app_data_dir().join("history.json");
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        load_json(&path).unwrap_or_default()
     }
 
     pub fn save_history(history: &[HistoryEntry]) {
         let path = Self::app_data_dir().join("history.json");
         let capped: Vec<HistoryEntry> = history.iter().take(HISTORY_CAP).cloned().collect();
-        if let Ok(json) = serde_json::to_string_pretty(&capped) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, &capped);
     }
 
     pub fn load_session() -> Vec<SavedTab> {
         let path = Self::app_data_dir().join("session.json");
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        load_json(&path).unwrap_or_default()
     }
 
     pub fn load_spaces() -> SpacesFile {
         let path = Self::app_data_dir().join("spaces.json");
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<SpacesFile>(&s).ok())
-            .unwrap_or_default()
-            .normalized()
+        load_json::<SpacesFile>(&path).unwrap_or_default().normalized()
     }
 
     pub fn save_spaces(sp: &SpacesFile) {
         let path = Self::app_data_dir().join("spaces.json");
-        if let Ok(json) = serde_json::to_string_pretty(sp) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, sp);
     }
 
     pub fn load_tab_groups() -> Vec<TabGroup> {
         let path = Self::app_data_dir().join("tab_groups.json");
-        fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        load_json(&path).unwrap_or_default()
     }
     pub fn save_tab_groups(groups: &[TabGroup]) {
-        if let Ok(t) = serde_json::to_string_pretty(groups) {
-            let _ = fs::write(Self::app_data_dir().join("tab_groups.json"), t);
-        }
+        save_json(&Self::app_data_dir().join("tab_groups.json"), groups);
     }
 
     pub fn save_session(tabs: &[SavedTab]) {
         let path = Self::app_data_dir().join("session.json");
-        if let Ok(json) = serde_json::to_string_pretty(tabs) {
-            let _ = fs::write(path, json);
-        }
+        save_json(&path, tabs);
     }
 }
 

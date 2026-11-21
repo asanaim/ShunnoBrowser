@@ -256,12 +256,21 @@ pub fn parse_chromium_history(db: &[u8], limit: usize) -> Result<Vec<HistoryEntr
 
 /// Merge by URL (newest visit wins), keep newest first, cap the total.
 pub fn merge_history(existing: &mut Vec<HistoryEntry>, incoming: Vec<HistoryEntry>, cap: usize) -> usize {
-    let mut seen: HashSet<String> = existing.iter().map(|h| h.url.clone()).collect();
+    let mut at: HashMap<String, usize> = existing.iter().enumerate().map(|(i, h)| (h.url.clone(), i)).collect();
     let mut added = 0;
     for h in incoming {
-        if seen.insert(h.url.clone()) {
-            existing.push(h);
-            added += 1;
+        match at.get(&h.url) {
+            // Already known: keep the newer visit time.
+            Some(&i) => {
+                if h.visited_at > existing[i].visited_at {
+                    existing[i].visited_at = h.visited_at;
+                }
+            }
+            None => {
+                at.insert(h.url.clone(), existing.len());
+                existing.push(h);
+                added += 1;
+            }
         }
     }
     existing.sort_by(|a, b| b.visited_at.cmp(&a.visited_at));

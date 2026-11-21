@@ -23,6 +23,27 @@ const REFRESH_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 const MAX_COSMETIC_SELECTORS: usize = 4000;
 // Serialized engines are only readable by the same crate version.
 const CACHE_FILE: &str = "engine-adblock-0.13.dat";
+/// Cache file = magic + SHA-256 of the engine bytes + engine bytes. The checksum is verified before
+/// the engine library parses the bytes, so a damaged file (disk error, crash while writing) is
+/// discarded instead of being handed to the deserializer at every start.
+const CACHE_MAGIC: &[u8; 8] = b"SHUNADB1";
+
+fn wrap_cache(bytes: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut out = Vec::with_capacity(bytes.len() + 40);
+    out.extend_from_slice(CACHE_MAGIC);
+    out.extend_from_slice(&Sha256::digest(bytes));
+    out.extend_from_slice(bytes);
+    out
+}
+
+/// The engine bytes from a cache file, if it is intact.
+pub fn unwrap_cache(file: &[u8]) -> Option<&[u8]> {
+    use sha2::{Digest, Sha256};
+    let rest = file.strip_prefix(CACHE_MAGIC.as_slice())?;
+    let (sum, body) = (rest.get(..32)?, rest.get(32..)?);
+    (Sha256::digest(body).as_slice() == sum && !body.is_empty()).then_some(body)
+}
 
 #[derive(Default)]
 pub struct Blocker {
@@ -100,7 +121,7 @@ impl Blocker {
             return;
         };
         let mut engine = Engine::default();
-        if engine.deserialize(&bytes).is_ok() {
+        if unwrap_cache(&bytes).is_some_and(|b| engine.deserialize(b).is_ok()) {
             if let Ok(mut slot) = self.engine.write() {
                 *slot = Some(Arc::new(engine));
             }
@@ -144,11 +165,7 @@ impl Blocker {
             .await
             .map_err(|e| e.to_string())?;
         let bytes = engine.serialize();
-        let path = cache_path();
-        let tmp = crate::state::unique_tmp(&path);
-        if fs::write(&tmp, &bytes).is_ok() && fs::rename(&tmp, &path).is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
+        let _ = crate::state::write_atomic(&cache_path(), &wrap_cache(&bytes));
         // Swap in the compact deserialized form: ~13 MB instead of the much larger freshly built engine.
         let mut compact = Engine::default();
         let engine = if compact.deserialize(&bytes).is_ok() { compact } else { engine };
