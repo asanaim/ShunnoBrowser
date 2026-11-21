@@ -1,3 +1,9 @@
+## v2.19.1
+
+* **Open in Shunno keeps the live page.** Little Shunno now moves the page itself into the main window instead of reloading its link, so scroll position, half-filled forms, playing media and sign-ins carry over.
+* **Space colour across the tab bar.** With more than one Space, the whole tab bar takes a light tint of the current Space's colour (Arc-style), in light and dark mode.
+* The native maximize button follows the tinted tab bar colour.
+
 ## v2.19.0
 
 ### Spaces (from Arc)

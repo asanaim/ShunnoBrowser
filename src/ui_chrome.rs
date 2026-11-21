@@ -90,6 +90,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: var(--tab-bg); height: 36px; overflow: hidden;
     border-top-left-radius: 12px; border-top-right-radius: 12px;
   }
+  /* Arc-style: with more than one Space, the whole tab bar takes a light tint of the Space colour,
+     so the current Space is obvious at a glance. */
+  html.spaces-tinted .tab-bar { background: color-mix(in srgb, var(--space-accent) 11%, var(--tab-bg)); }
+  html.spaces-tinted.dark .tab-bar, html.spaces-tinted body.dark .tab-bar { background: color-mix(in srgb, var(--space-accent) 16%, var(--tab-bg)); }
 
   /* Chrome/Safari-inspired Compass-Ring Logo */
   .brand-emblem {
@@ -1168,7 +1172,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   // Tell the window where the maximize button is and how to paint it (physical px, opaque colours).
   function parseRgba(c) {
-    const m = (c || '').match(/rgba?\(([^)]+)\)/);
+    c = c || '';
+    // color-mix() resolves to "color(srgb r g b / a)" with 0..1 channels.
+    let m = c.match(/color\(srgb\s+([^)]+)\)/);
+    if (m) {
+      const [rgb, a] = m[1].split('/');
+      const p = rgb.trim().split(/\s+/).map(v => parseFloat(v) * 255);
+      return [p[0], p[1], p[2], a !== undefined ? parseFloat(a) : 1];
+    }
+    m = c.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
     const p = m[1].split(',').map(v => parseFloat(v));
     return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
@@ -1793,6 +1805,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (!sv) return;
     const cur = sv.list.find(x => x.id === sv.active) || sv.list[0];
     document.documentElement.style.setProperty('--space-accent', cur.color);
+    document.documentElement.classList.toggle('spaces-tinted', sv.list.length > 1);
     const pill = document.getElementById('space-pill');
     const pillHtml = `<span class="ic">${escapeHtml(cur.icon)}</span><span class="nm">${escapeHtml(cur.name)}</span>`;
     if (pill.innerHTML !== pillHtml) pill.innerHTML = pillHtml;
