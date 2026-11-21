@@ -1028,3 +1028,62 @@ fn favorites_bar_follows_the_setting_on_new_tab() {
     assert!(ui.contains("const barOn = favoritesBarOn(state);"));
     assert!(!ui.contains("!isHome && !!state.global.show_favorites_bar"));
 }
+
+#[test]
+fn filter_catalog_and_settings_are_sane() {
+    let ids: std::collections::HashSet<&str> = blocker::CATALOG.iter().map(|l| l.id).collect();
+    assert_eq!(ids.len(), blocker::CATALOG.len(), "list ids are unique");
+    assert!(blocker::CATALOG.iter().all(|l| l.url.starts_with("https://")));
+    let d = blocker::FilterSettings::default();
+    assert_eq!(d.enabled, vec!["easylist".to_string(), "easyprivacy".to_string()], "defaults unchanged from v2.30");
+    let odd = blocker::FilterSettings { enabled: vec!["easyprivacy".into(), "nope".into(), "easylist".into()], interval_days: 3, ..d.clone() }.normalized();
+    assert_eq!(odd.enabled, vec!["easylist".to_string(), "easyprivacy".to_string()]);
+    assert_eq!(odd.interval_days, 7);
+    let old: blocker::FilterSettings = serde_json::from_str("{}").unwrap();
+    assert_eq!(old, d);
+}
+
+#[test]
+fn filter_downloads_must_look_like_lists() {
+    let list: String = (0..30).map(|i| format!("||ads{}.example^\n", i)).collect();
+    assert!(blocker::looks_like_list(&format!("! Title: uBlock filters\n{}", list)));
+    assert!(!blocker::looks_like_list(&format!("<!DOCTYPE html><html>{}", list)));
+    assert!(!blocker::looks_like_list("! only comments\n! here\n"));
+}
+
+#[test]
+fn picker_rules_are_host_scoped_and_safe() {
+    assert_eq!(blocker::picker_rule("www.News.example", "div.promo > a").as_deref(), Some("news.example##div.promo > a"));
+    assert!(blocker::picker_rule("news.example", "div{x}").is_none());
+    assert!(blocker::picker_rule("news.example", "a\n||evil^").is_none());
+    assert!(blocker::picker_rule("news.example", "+js(abort)").is_none());
+    assert!(blocker::picker_rule("news.example", "x##y").is_none());
+    assert!(blocker::picker_rule("", ".ad").is_none());
+    assert!(blocker::picker_rule("bad host", ".ad").is_none());
+    assert!(blocker::picker_rule("localhost", ".ad").is_none());
+}
+
+#[test]
+fn my_filters_are_cleaned_validated_and_compiled() {
+    let text = "! mine\r\n||ads.example^   \r\nnews.example##.promo\r\n\r\n\r\n";
+    assert_eq!(blocker::clean_user_text(text), "! mine\n||ads.example^\nnews.example##.promo\n");
+    assert_eq!(blocker::clean_user_text("  \n \n"), "");
+    assert_eq!(blocker::rule_lines(text).count(), 2);
+    let bad = blocker::invalid_rules("||ok.example^\nexample.com##\n! c\n");
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0].0, 2);
+    let (engine, _) = blocker::build_engine(&[blocker::clean_user_text(text)]);
+    let req = adblock::request::Request::new("https://ads.example/x.js", "https://site.example/", "script", "GET").unwrap();
+    assert!(engine.check_network_request(&req).should_block());
+    assert!(blocker::cosmetic_css_for(&engine, "https://news.example/a", &[], &[]).contains(".promo{display:none !important}"));
+}
+
+#[test]
+fn element_picker_is_wired_safely() {
+    let guard = include_str!("../assets/js/content_guard.js");
+    let main = include_str!("../src/main.rs");
+    assert!(guard.contains("fixedFn('__shunnoPicker'"));
+    assert!(guard.contains("if (!e.isTrusted) return;"), "page script cannot click for the user");
+    assert!(main.contains("if !pending_picks.remove(&tab_id)"), "PICK_FILTER only after the user started the picker");
+    assert!(main.contains("blocker::picker_rule(&host, &sel)"), "rule host comes from the tab, not the page");
+}

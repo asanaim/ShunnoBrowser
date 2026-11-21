@@ -542,9 +542,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .pw-offer .t b { font-weight: 600; }
   .pw-offer .save { border: none; background: var(--blue); color: #fff; border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
   .perm-offer .deny { border: none; background: rgba(118,118,128,.16); color: var(--text); border-radius: 11px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
-  .perm-site { font-size: 12px; font-weight: 600; padding: 8px 10px 2px; display: flex; align-items: center; justify-content: space-between; }
-  .perm-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; }
-  .perm-row .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cb-pick { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; height: 32px; border: none; border-radius: 9px;
+    background: var(--blue-soft); color: var(--blue); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .cb-pick:hover { filter: brightness(1.05); }
+  .cb-pick:active { transform: scale(0.98); }
+  .cb-notice { margin-top: 8px; padding: 7px 10px; border-radius: 9px; font-size: 11.5px; line-height: 1.4; background: rgba(118,118,128,.1); word-break: break-word; }
+  .cb-h { font-size: 12px; font-weight: 600; margin: 12px 2px 6px; }
+  .cb-user { width: 100%; box-sizing: border-box; min-height: 110px; max-height: 220px; resize: vertical; border: none; border-radius: 10px; padding: 8px 10px;
+    font: 11.5px/1.5 ui-monospace, Consolas, monospace; background: var(--input-bg); color: var(--text); outline: none; }
+  .cb-user:focus { box-shadow: 0 0 0 3px var(--blue-soft); }
+  .perm-site, .cb-site { font-size: 12px; font-weight: 600; padding: 8px 10px 2px; display: flex; align-items: center; justify-content: space-between; }
+  .perm-row, .cb-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; }
+  .perm-row .lbl, .cb-row .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .perm-seg { display: inline-flex; background: rgba(118,118,128,.14); border-radius: 8px; padding: 2px; }
   .perm-seg button { border: none; background: transparent; color: var(--text-dim, inherit); font-size: 11px; padding: 2px 9px; border-radius: 6px; cursor: pointer; }
   .perm-seg button.on { background: var(--surface, #fff); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
@@ -1104,7 +1113,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('profiles', document.getElementById('btn-controls'))" title="Separate cookies, logins and history">👤 Profiles</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('extensions', document.getElementById('btn-controls'))" title="Add and manage browser extensions">🧩 Extensions</button>
             <button class="pill-btn pill-soft" onclick="send('NEW_WINDOW'); closeDrawer()" title="New Window (Ctrl+N)">🪟 New Window</button>
-            <button class="pill-btn pill-soft" id="btn-update-filters" onclick="send('UPDATE_FILTERS')" title="Download the latest EasyList and EasyPrivacy">🛡️ Update Block Lists</button>
+            <button class="pill-btn pill-soft" id="btn-update-filters" onclick="toggleDrawer('blocker', document.getElementById('btn-controls'))" title="Filter lists, My Filters and the element picker">🛡️ Content Blocker</button>
           </div>
           <div class="grid-toggles" id="site-toggles-grid"></div>
         </div>
@@ -1294,6 +1303,46 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Each profile opens in its own window with separate cookies, sign-ins, history, bookmarks, passwords, permissions and settings.
           Spaces, by contrast, share one profile. Ctrl+Alt+N opens Little Shunno in the profile you used last.
+        </div>
+      </div>
+
+      <div id="panel-blocker" style="display:none">
+        <div class="sheet-head"><h3>Content Blocker</h3>
+          <button class="text-btn" id="cb-update" onclick="send('UPDATE_FILTERS')" title="Download the chosen lists again now">Update Now</button>
+        </div>
+        <div class="meta" id="cb-status" style="margin:-2px 2px 8px;line-height:1.4;"></div>
+        <button class="cb-pick" onclick="startPicker()" title="Point at something on the page to hide it (also in the page's right click menu)">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l4.2 10 1.5-4.3L13 7.2z"/><path d="M9.2 9.2l3.3 3.3"/></svg>
+          <span>Hide an Element on This Page</span>
+        </button>
+        <div class="cb-notice" id="cb-notice" style="display:none"></div>
+        <div class="cb-h">Filter Lists</div>
+        <div class="dl-group" id="cb-lists"></div>
+        <div class="dl-group" style="margin-top:8px;">
+          <div class="cb-row"><span class="lbl">Update lists automatically</span>
+            <button class="switch" id="cb-auto" role="switch" aria-label="Update lists automatically" onclick="this.classList.toggle('on'); send('FILTER_AUTO:' + (this.classList.contains('on') ? 1 : 0))"><i></i></button></div>
+          <div class="cb-row" id="cb-interval-row"><span class="lbl">Check for updates every</span>
+            <select class="select-box" id="cb-interval" style="padding:3px 6px;font-size:11.5px;" onchange="send('FILTER_INTERVAL:' + this.value)">
+              <option value="1">Day</option><option value="4">4 days</option><option value="7">Week</option><option value="14">2 weeks</option>
+            </select></div>
+        </div>
+        <div class="cb-h" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>My Filters <span class="meta" id="cb-user-count" style="font-weight:500;"></span></span>
+          <span style="display:flex;gap:2px;">
+            <button class="text-btn" onclick="send('FILTERS_IMPORT')" title="Add rules from a .txt file">Import</button>
+            <button class="text-btn" onclick="send('FILTERS_EXPORT')" title="Save My Filters to a .txt file">Export</button>
+          </span>
+        </div>
+        <textarea class="cb-user" id="cb-user" spellcheck="false" wrap="off"
+          placeholder="One rule per line, in Adblock Plus / uBlock syntax:&#10;||ads.example.com^&#10;example.com##.promo-banner&#10;@@||cdn.example.com^$script"
+          oninput="cbUserDirty(true)"></textarea>
+        <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+          <button class="pill-btn pill-soft" id="cb-revert" onclick="send('FILTERS_USER_GET')" disabled>Revert</button>
+          <button class="pill-btn" id="cb-save" style="background:var(--blue);color:#fff;" onclick="cbSaveUser()" disabled>Save</button>
+        </div>
+        <div class="meta" style="margin-top:8px;line-height:1.45;">
+          Lines starting with ! are comments. Rules apply to pages loaded after saving.
+          Turn the blocker off for one site with Ad Blocker in Site Controls.
         </div>
       </div>
 
@@ -1835,10 +1884,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (drawerAnchor && drawerAnchor.classList.contains('tb')) drawerAnchor.classList.add('open');
     activeDrawer = name;
     if (name === 'bookmarks') renderLibrary();
+    if (name === 'blocker') { cbUserDirty(false); send('FILTERS_USER_GET'); if (lastState) renderBlocker(lastState); }
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions'].forEach(p => {
+    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -2266,6 +2316,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Move Current Tab to New Window', run: () => send('MOVE_TAB_NEW_WINDOW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Add Current Tab to New Group', run: () => send('TAB_GROUP_NEW:' + (st ? st.active_tab : 0)) },
       { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
+      { kind: 'Action', title: 'Content Blocker (filter lists, My Filters)', run: () => toggleDrawer('blocker') },
+      { kind: 'Action', title: 'Hide an Element on This Page', run: () => startPicker() },
       { kind: 'Action', title: 'Profiles: switch or open another profile', run: () => toggleDrawer('profiles') },
       { kind: 'Action', title: 'New Profile', run: () => { toggleDrawer('profiles'); setTimeout(() => profileForm(null), 80); } },
       { kind: 'Action', title: 'Export Download History to CSV (with SHA-256)', run: () => send('EXPORT_DL_CSV') },
@@ -2482,6 +2534,57 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <button class="icon-btn" onclick="permSet(this.previousElementSibling,'reset')" title="Ask next time">${SVG_X}</button>
         </div>`).join('');
     }).join('') + '</div>';
+  }
+  // Content Blocker panel.
+  const CB_GROUPS = ['Ads', 'Privacy', 'Security', 'Annoyances', 'Regional', 'Fixes'];
+  function renderBlocker(state) {
+    const f = state.filters;
+    const list = document.getElementById('cb-lists');
+    if (!f || !list) return;
+    document.getElementById('cb-status').textContent = (f.busy ? 'Updating\u2026 ' : '') + (f.status || '');
+    const nt = document.getElementById('cb-notice');
+    nt.textContent = f.notice || '';
+    nt.style.display = f.notice ? '' : 'none';
+    document.getElementById('cb-update').disabled = !!f.busy;
+    const auto = document.getElementById('cb-auto');
+    auto.classList.toggle('on', !!f.auto_update);
+    auto.setAttribute('aria-checked', String(!!f.auto_update));
+    const iv = document.getElementById('cb-interval');
+    if (document.activeElement !== iv) iv.value = String(f.interval_days);
+    document.getElementById('cb-interval-row').style.opacity = f.auto_update ? '' : '0.45';
+    iv.disabled = !f.auto_update;
+    document.getElementById('cb-user-count').textContent = f.user_rules ? `(${f.user_rules})` : '';
+    const sig = JSON.stringify(f.lists) + f.busy;
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.innerHTML = CB_GROUPS.map(g => {
+      const rows = f.lists.filter(l => l.group === g);
+      if (!rows.length) return '';
+      return `<div class="cb-site"><span>${escapeHtml(g)}</span></div>` + rows.map(l => `
+        <div class="cb-row"><span class="lbl" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}${l.on && !l.have ? ' <span class="meta">(downloading)</span>' : ''}</span>
+          <button class="switch ${l.on ? 'on' : ''}" role="switch" aria-checked="${l.on}" aria-label="${escapeHtml(l.name)}"
+            data-id="${escapeHtml(l.id)}" onclick="this.classList.toggle('on'); send('FILTER_LIST:' + this.dataset.id + '|' + (this.classList.contains('on') ? 1 : 0))"><i></i></button></div>`).join('');
+    }).join('');
+  }
+  let cbDirty = false;
+  function cbUserDirty(d) {
+    cbDirty = d;
+    document.getElementById('cb-save').disabled = !d;
+    document.getElementById('cb-revert').disabled = !d;
+  }
+  window.__setUserFilters = function (text) {
+    const ta = document.getElementById('cb-user');
+    if (!ta) return;
+    ta.value = typeof text === 'string' ? text : '';
+    cbUserDirty(false);
+  };
+  function cbSaveUser() {
+    send('FILTERS_USER_SAVE:' + document.getElementById('cb-user').value);
+    cbUserDirty(false);
+  }
+  function startPicker() {
+    closeDrawer();
+    send('PICK_ELEMENT');
   }
   function permSet(seg, d) { send('PERM_SET:' + seg.dataset.o + '|' + seg.dataset.k + '|' + d); }
   function renderPasswords(state) {
@@ -3179,6 +3282,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     renderProfiles(state);
     renderExtensions(state);
     renderPermissions(state);
+    renderBlocker(state);
     renderPasswords(state);
 
     renderLibrary();

@@ -586,6 +586,8 @@ enum AppEvent {
     PwAuthorized(&'static str, u64, bool, bool),
     /// Right-click → Search <engine> for the selected text (source tab id, raw selection).
     SearchSelection(usize, String),
+    /// Right-click → Hide Element on Page (tab id): start the element picker at the clicked element.
+    StartPicker(usize),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
     /// Toolbar message from a specific browser window (its key); handled as ChromeIpc there.
@@ -709,6 +711,7 @@ fn event_tab_id(e: &AppEvent) -> Option<usize> {
         | AppEvent::TabUrlChanged(t, _)
         | AppEvent::TabZoomChanged(t, _)
         | AppEvent::SearchSelection(t, _)
+        | AppEvent::StartPicker(t)
         | AppEvent::DownloadIntercepted(t, _) => Some(*t),
         AppEvent::NavigationDone(t, _, _) => Some(*t),
         AppEvent::TakeoverCandidate { tab_id, .. } => Some(*tab_id),
@@ -761,6 +764,7 @@ struct ChromeSnapshot {
     ffmpeg_status: String,
     ytdlp_status: String,
     adblock_status: String,
+    filters: blocker::FiltersView,
     /// "", "uptodate", "available", "ready", "failed"
     update_kind: String,
     update_label: String,
@@ -1570,16 +1574,67 @@ fn update_kind_label() -> (&'static str, String) {
     }
 }
 
-/// Downloads and compiles the filter lists; on failure keeps whatever engine is loaded.
-async fn refresh_filter_lists() {
+/// Downloads and compiles the filter lists (all enabled lists, or only those not on disk yet); a
+/// list that fails keeps its previous text and the status says which failed.
+async fn refresh_filter_lists(only_missing: bool) {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .build()
         .unwrap_or_default();
-    if let Err(e) = blocker::global().refresh(&client).await {
-        let current = if blocker::global().has_lists() { "previous lists kept" } else { "built-in list in use" };
-        blocker::global().set_status(format!("Update failed ({}): {}", current, e));
+    let _ = blocker::global().refresh(&client, only_missing).await;
+}
+
+/// After a change to the chosen lists or to "My filters": download any list not on disk yet,
+/// then recompile. Pages keep the old engine until the new one is ready.
+fn apply_filter_change(rt: &tokio::runtime::Handle, proxy: &EventLoopProxy<AppEvent>) {
+    blocker::global().mark_busy();
+    let _ = proxy.send_event(AppEvent::RefreshChrome);
+    let px = proxy.clone();
+    rt.spawn(async move {
+        refresh_filter_lists(true).await;
+        let _ = px.send_event(AppEvent::RefreshChrome);
+    });
+}
+
+/// Native Open or Save dialog for a filter text file ("My filters" import and export).
+#[cfg(windows)]
+fn filter_file_dialog(hwnd: isize, save: bool) -> Option<std::path::PathBuf> {
+    use windows::core::{w, Interface};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog, SIGDN_FILESYSPATH};
+    unsafe {
+        let dlg: IFileDialog = if save {
+            let d: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            d.cast().ok()?
+        } else {
+            let d: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            d.cast().ok()?
+        };
+        let filters = [
+            COMDLG_FILTERSPEC { pszName: w!("Filter rules (*.txt)"), pszSpec: w!("*.txt") },
+            COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
+        ];
+        let _ = dlg.SetFileTypes(&filters);
+        if save {
+            let _ = dlg.SetTitle(w!("Export My Filters"));
+            let _ = dlg.SetFileName(w!("shunno-my-filters.txt"));
+            let _ = dlg.SetDefaultExtension(w!("txt"));
+        } else {
+            let _ = dlg.SetTitle(w!("Import Filter Rules"));
+        }
+        dlg.Show(HWND(hwnd)).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let out = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+        out.map(std::path::PathBuf::from)
     }
+}
+#[cfg(not(windows))]
+fn filter_file_dialog(_hwnd: isize, _save: bool) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Replaces the tab's document with locally generated HTML (warning pages).
@@ -2519,6 +2574,20 @@ fn attach_native_webview2_hooks(
                             }
                         }
                     }
+                }
+
+                // Element picker (uBlock style), last in the menu, starting at the clicked element.
+                if let Ok(pick_item) = env9.CreateContextMenuItem(w!("Hide Element on Page\u{2026}"), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND) {
+                    let mut p_token = Default::default();
+                    let p_proxy = ctx_proxy.clone();
+                    let p_handler = CustomItemSelectedEventHandler::create(Box::new(move |_s, _| {
+                        let _ = p_proxy.send_event(AppEvent::StartPicker(tab_id));
+                        Ok(())
+                    }));
+                    let _ = pick_item.add_CustomItemSelected(&p_handler, &mut p_token);
+                    let mut count = 0u32;
+                    let _ = items.Count(&mut count);
+                    let _ = items.InsertValueAtIndex(count, &pick_item);
                 }
                 Ok(())
             }));
@@ -3640,6 +3709,8 @@ fn main() -> wry::Result<()> {
     let mut pending_offline_saves: std::collections::HashSet<usize> = std::collections::HashSet::new();
     // Tabs for which the user pressed "Grab"; GRAB_RESULTS from any other tab is ignored.
     let mut pending_grabs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Tabs where the user started the element picker; PICK_FILTER from any other tab is ignored.
+    let mut pending_picks: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     SPACES.with(|s| *s.borrow_mut() = BrowserStorage::load_spaces());
     let saved_session = BrowserStorage::load_session();
@@ -3795,7 +3866,7 @@ fn main() -> wry::Result<()> {
         rt_handle.spawn(async move {
             let _ = tokio::task::spawn_blocking(|| blocker::global().load_cache()).await;
             if blocker::global().is_stale() {
-                refresh_filter_lists().await;
+                refresh_filter_lists(false).await;
             }
             let _ = px.send_event(AppEvent::RefreshChrome);
         });
@@ -3853,6 +3924,7 @@ fn main() -> wry::Result<()> {
             ffmpeg_status: ff_status,
             ytdlp_status: engine.ytdlp_install_status.lock().map(|s| s.clone()).unwrap_or_default(),
             adblock_status: blocker::global().status(),
+            filters: blocker::global().view(),
             update_kind: update_kind_label().0.to_string(),
             update_label: update_kind_label().1,
             is_fullscreen,
@@ -4885,6 +4957,13 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
+            Event::UserEvent(AppEvent::StartPicker(tab_id)) => {
+                if let Some(tab) = tabs.iter().find(|t| t.id == tab_id && t.url.starts_with("http")) {
+                    pending_picks.insert(tab_id);
+                    let _ = tab.webview.evaluate_script("window.__shunnoPicker && window.__shunnoPicker(true)");
+                }
+            }
+
             Event::UserEvent(AppEvent::SearchSelection(source_tab, query)) => {
                 // Opens next to the source like a link; a private tab's search stays private.
                 let url = sanitizer::search_url(&query, &global_settings);
@@ -5637,6 +5716,32 @@ fn main() -> wry::Result<()> {
                             sniffed_streams.truncate(25);
                         }
                     }
+                } else if let Some(pick_json) = msg.strip_prefix("PICK_FILTER:") {
+                    // Only after the user started the picker in this tab, and only for this tab's own site.
+                    if !pending_picks.remove(&tab_id) {
+                        return;
+                    }
+                    let host = extract_host(page_url.as_deref().unwrap_or(""));
+                    let sel = serde_json::from_str::<serde_json::Value>(pick_json)
+                        .ok()
+                        .and_then(|v| v.get("selector").and_then(|x| x.as_str()).map(str::to_string))
+                        .unwrap_or_default();
+                    match blocker::picker_rule(&host, &sel) {
+                        Some(rule) => {
+                            let added = blocker::global().add_user_rules(&rule);
+                            blocker::global().set_notice(if added > 0 {
+                                format!("Added to My Filters: {}", rule)
+                            } else {
+                                format!("Already in My Filters: {}", rule)
+                            });
+                            apply_filter_change(&rt_handle, &proxy);
+                        }
+                        None => blocker::global().set_notice("That element cannot be hidden with a rule.".to_string()),
+                    }
+                    return;
+                } else if msg == "PICK_DONE" {
+                    pending_picks.remove(&tab_id);
+                    return;
                 } else if let Some(cos_json) = msg.strip_prefix("COSMETIC:") {
                     // Element hiding for the top frame: page-specific rules plus generic rules for the
                     // classes/ids the page actually uses. Page input only narrows which list rules apply.
@@ -6229,11 +6334,96 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "UPDATE_FILTERS" {
                     blocker::global().set_status("Updating filter lists...".to_string());
+                    blocker::global().set_notice(String::new());
+                    blocker::global().mark_busy();
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
                     let px = proxy.clone();
                     rt_handle.spawn(async move {
-                        refresh_filter_lists().await;
+                        refresh_filter_lists(false).await;
                         let _ = px.send_event(AppEvent::RefreshChrome);
                     });
+                } else if let Some(arg) = cmd.strip_prefix("FILTER_LIST:") {
+                    if let Some((id, on)) = arg.split_once('|') {
+                        if blocker::global().set_list(id, on == "1") {
+                            blocker::global().set_notice(String::new());
+                            apply_filter_change(&rt_handle, &proxy);
+                        }
+                    }
+                } else if let Some(on) = cmd.strip_prefix("FILTER_AUTO:") {
+                    blocker::global().set_auto_update(on == "1");
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                } else if let Some(days) = cmd.strip_prefix("FILTER_INTERVAL:") {
+                    if let Ok(d) = days.parse::<u32>() {
+                        blocker::global().set_interval(d);
+                    }
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                } else if cmd == "FILTERS_USER_GET" {
+                    if let Ok(arg) = serde_json::to_string(&blocker::user_rules_text()) {
+                        let _ = chrome_wv.evaluate_script(&format!("window.__setUserFilters && window.__setUserFilters({});", arg));
+                    }
+                } else if let Some(text) = cmd.strip_prefix("FILTERS_USER_SAVE:") {
+                    let bad = blocker::global().save_user_rules(text);
+                    let n = blocker::rule_lines(&blocker::user_rules_text()).count();
+                    blocker::global().set_notice(match bad.first() {
+                        None => format!("Saved {} rule{}.", n, if n == 1 { "" } else { "s" }),
+                        Some((line, txt)) => format!(
+                            "Saved. {} line{} not understood and skipped, first on line {}: {}",
+                            bad.len(),
+                            if bad.len() == 1 { " was" } else { "s were" },
+                            line,
+                            txt.chars().take(80).collect::<String>()
+                        ),
+                    });
+                    apply_filter_change(&rt_handle, &proxy);
+                } else if cmd == "FILTERS_IMPORT" || cmd == "FILTERS_EXPORT" {
+                    #[cfg(windows)]
+                    let hwnd = {
+                        use tao::platform::windows::WindowExtWindows;
+                        window.hwnd() as isize
+                    };
+                    #[cfg(not(windows))]
+                    let hwnd = 0isize;
+                    let save = cmd == "FILTERS_EXPORT";
+                    if let Some(path) = filter_file_dialog(hwnd, save) {
+                        let msg = if save {
+                            match fs::write(&path, blocker::user_rules_text()) {
+                                Ok(()) => format!("Exported to {}.", path.display()),
+                                Err(e) => format!("Could not export: {e}"),
+                            }
+                        } else {
+                            match fs::read(&path) {
+                                Ok(bytes) if bytes.len() <= blocker::MAX_USER_BYTES => {
+                                    let text = String::from_utf8_lossy(&bytes).to_string();
+                                    if text.trim_start().starts_with('<') {
+                                        "That file is not a list of filter rules.".to_string()
+                                    } else {
+                                        let added = blocker::global().add_user_rules(&text);
+                                        apply_filter_change(&rt_handle, &proxy);
+                                        let bad = blocker::invalid_rules(&blocker::user_rules_text()).len();
+                                        let mut m = format!("Imported {} new rule{}.", added, if added == 1 { "" } else { "s" });
+                                        if bad > 0 {
+                                            m.push_str(&format!(" {} line{} in My Filters cannot be used.", bad, if bad == 1 { "" } else { "s" }));
+                                        }
+                                        m
+                                    }
+                                }
+                                Ok(_) => "That file is larger than 1 MB; My Filters is for your own rules, not whole lists.".to_string(),
+                                Err(e) => format!("Could not read the file: {e}"),
+                            }
+                        };
+                        blocker::global().set_notice(msg);
+                        if let Ok(arg) = serde_json::to_string(&blocker::user_rules_text()) {
+                            let _ = chrome_wv.evaluate_script(&format!("window.__setUserFilters && window.__setUserFilters({});", arg));
+                        }
+                        let _ = proxy.send_event(AppEvent::RefreshChrome);
+                    }
+                } else if cmd == "PICK_ELEMENT" {
+                    if let Some(tab) = tabs.get(active_tab_idx) {
+                        if tab.url.starts_with("http") {
+                            pending_picks.insert(tab.id);
+                            let _ = tab.webview.evaluate_script("window.__shunnoPicker && window.__shunnoPicker(false)");
+                        }
+                    }
                 } else if cmd == "PW_SAVE" || cmd == "PW_NEVER" || cmd == "PW_DISMISS" {
                     let offer = passwords::global().offer.lock().ok().and_then(|mut o| o.take());
                     if let Some(o) = offer {

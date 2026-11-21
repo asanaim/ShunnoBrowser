@@ -1631,4 +1631,197 @@
       Object.defineProperty(window, '__shunnoPwFill', { value: fill, writable: false, configurable: false });
     } catch (e) {}
   })();
+  // 12. Element picker (uBlock style): hover to highlight, click to choose, Broader / Narrower to
+  // pick a container, then hide it once or always. "Always" sends the selector to the browser,
+  // which saves host##selector in My Filters. Only trusted (real user) input drives it.
+  if (window.top === window) (function () {
+    let ctxTarget = null;
+    document.addEventListener('contextmenu', (e) => { if (e.isTrusted) ctxTarget = e.target; }, true);
+    let open = null;
+    const esc = (v) => (window.CSS && CSS.escape) ? CSS.escape(v) : String(v).replace(/[^\w-]/g, c => '\\' + c);
+    const NOISY = /^(active|hover|focus|focused|open|opened|show|shown|visible|selected|is-.*|has-.*|js-.*)$/;
+    function part(el) {
+      let s = el.localName;
+      if (el.id && el.id.length < 64 && !/\d{3,}/.test(el.id) && !/^[0-9]/.test(el.id)) return s + '#' + esc(el.id);
+      const cls = Array.from(el.classList).filter(c => c.length < 48 && !/\d{4,}/.test(c) && !NOISY.test(c)).slice(0, 3);
+      if (cls.length) return s + cls.map(c => '.' + esc(c)).join('');
+      const p = el.parentElement;
+      if (p) {
+        const same = Array.from(p.children).filter(c => c.localName === el.localName);
+        if (same.length > 1) s += ':nth-of-type(' + (same.indexOf(el) + 1) + ')';
+      }
+      return s;
+    }
+    function selectorFor(el) {
+      let sel = part(el);
+      let cur = el;
+      for (let d = 0; d < 4 && !sel.includes('#'); d++) {
+        let n = 0;
+        try { n = document.querySelectorAll(sel).length; } catch (e) { break; }
+        if (n <= 1) break;
+        const p = cur.parentElement;
+        if (!p || p === document.body || p === document.documentElement) break;
+        cur = p;
+        sel = part(cur) + ' > ' + sel;
+      }
+      return sel;
+    }
+    function count(sel) {
+      try { return document.querySelectorAll(sel).length; } catch (e) { return -1; }
+    }
+    function hideNow(sel) {
+      try {
+        const sheet = new CSSStyleSheet();
+        sheet.insertRule(sel + '{display:none !important}', 0);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      } catch (e) {
+        try { document.querySelectorAll(sel).forEach(n => n.style.setProperty('display', 'none', 'important')); } catch (e2) {}
+      }
+    }
+    function start(fromMenu) {
+      if (open) open.close(false);
+      if (!document.documentElement) return;
+      const host = document.createElement('shunno-picker');
+      host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;cursor:crosshair;display:block;';
+      const root = host.attachShadow({ mode: 'closed' });
+      // Constructable stylesheet: not blocked by a page's style-src CSP, unlike a <style> element.
+      const PICKER_CSS = `
+        .box{position:fixed;pointer-events:none;border:2px solid #0A84FF;background:rgba(10,132,255,.16);border-radius:3px;transition:all .08s ease-out;display:none}
+        .panel{position:fixed;right:16px;bottom:16px;width:340px;box-sizing:border-box;padding:12px;border-radius:14px;cursor:default;
+          font:12.5px/1.4 -apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:#1d1d1f;background:rgba(250,250,252,.92);
+          backdrop-filter:blur(24px) saturate(180%);box-shadow:0 12px 40px rgba(0,0,0,.28),0 0 0 .5px rgba(0,0,0,.12)}
+        @media (prefers-color-scheme: dark){.panel{color:#f5f5f7;background:rgba(40,40,44,.9);box-shadow:0 12px 40px rgba(0,0,0,.5),0 0 0 .5px rgba(255,255,255,.12)}
+          input{background:rgba(255,255,255,.08)!important;color:#f5f5f7!important} .sec{background:rgba(255,255,255,.12)!important;color:#f5f5f7!important}}
+        .t{font-weight:600;font-size:13px;margin-bottom:6px}
+        .hint{opacity:.7;margin-bottom:8px}
+        input{width:100%;box-sizing:border-box;border:none;border-radius:8px;padding:6px 8px;font:12px ui-monospace,Consolas,monospace;background:rgba(118,118,128,.12);color:#1d1d1f;outline:none}
+        .row{display:flex;gap:6px;align-items:center;margin-top:8px}
+        .n{flex:1;opacity:.7}
+        button{border:none;border-radius:8px;padding:5px 10px;font-weight:600;font-size:12px;font-family:inherit;cursor:pointer}
+        .pri{background:#0A84FF;color:#fff} .sec{background:rgba(118,118,128,.16);color:#1d1d1f}
+        button:disabled{opacity:.4;cursor:default}`;
+      try { const sh = new CSSStyleSheet(); sh.replaceSync(PICKER_CSS); root.adoptedStyleSheets = [sh]; }
+      catch (e) { const st = document.createElement('style'); st.textContent = PICKER_CSS; root.appendChild(st); }
+      // Built with DOM calls, not innerHTML: pages that enforce Trusted Types refuse HTML strings.
+      const h = (tag, attrs, kids) => {
+        const el = document.createElement(tag);
+        for (const k in (attrs || {})) el.setAttribute(k, attrs[k]);
+        (kids || []).forEach(c => el.append(c));
+        return el;
+      };
+      root.append(
+        h('div', { class: 'box' }),
+        h('div', { class: 'panel' }, [
+          h('div', { class: 't' }, ['Hide Element']),
+          h('div', { class: 'hint' }, ['Point at an element and click it. Press Esc to stop.']),
+          h('input', { spellcheck: 'false', placeholder: 'Click an element on the page', 'aria-label': 'CSS selector' }),
+          h('div', { class: 'row' }, [
+            h('button', { class: 'sec', 'data-a': 'up', title: 'Choose the element that contains this one' }, ['Broader']),
+            h('button', { class: 'sec', 'data-a': 'down', title: 'Back to a smaller element' }, ['Narrower']),
+            h('span', { class: 'n' }),
+          ]),
+          h('div', { class: 'row' }, [
+            h('button', { class: 'sec', 'data-a': 'cancel' }, ['Cancel']),
+            h('span', { class: 'n' }),
+            h('button', { class: 'sec', 'data-a': 'once', title: 'Hide until this page reloads' }, ['Hide Once']),
+            h('button', { class: 'pri', 'data-a': 'always', title: 'Hide on this site from now on (saved in My Filters)' }, ['Hide Always']),
+          ]),
+        ]),
+      );
+      const box = root.querySelector('.box');
+      const panel = root.querySelector('.panel');
+      const input = root.querySelector('input');
+      const info = root.querySelector('.row .n');
+      const btn = (a) => root.querySelector(`[data-a="${a}"]`);
+      let chain = [];   // chosen element and its ancestors
+      let depth = 0;
+      let chosen = false;
+      const pageEl = (x, y) => {
+        const all = document.elementsFromPoint(x, y);
+        return all.find(e => e !== host && e !== document.documentElement && e !== document.body) || null;
+      };
+      const show = (el) => {
+        if (!el) { box.style.display = 'none'; return; }
+        const r = el.getBoundingClientRect();
+        box.style.display = 'block';
+        box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+        box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+      };
+      const refresh = () => {
+        const n = count(input.value.trim());
+        info.textContent = !input.value.trim() ? '' : n < 0 ? 'Not a valid selector' : n === 1 ? '1 element' : n + ' elements';
+        const ok = n > 0;
+        btn('once').disabled = !ok; btn('always').disabled = !ok;
+        btn('up').disabled = !chosen || depth >= chain.length - 1;
+        btn('down').disabled = !chosen || depth <= 0;
+      };
+      const choose = (el) => {
+        if (!el) return;
+        chain = [];
+        for (let c = el; c && c !== document.body && c !== document.documentElement; c = c.parentElement) chain.push(c);
+        depth = 0; chosen = chain.length > 0;
+        if (!chosen) return;
+        input.value = selectorFor(chain[0]);
+        show(chain[0]);
+        refresh();
+      };
+      const setDepth = (d) => {
+        depth = Math.max(0, Math.min(chain.length - 1, d));
+        input.value = selectorFor(chain[depth]);
+        show(chain[depth]);
+        refresh();
+      };
+      const inPanel = (e) => e.composedPath().includes(panel);
+      const onMove = (e) => { if (!chosen && !inPanel(e)) show(pageEl(e.clientX, e.clientY)); };
+      const onClick = (e) => {
+        if (inPanel(e)) return;
+        e.preventDefault(); e.stopPropagation();
+        if (!e.isTrusted) return;
+        choose(pageEl(e.clientX, e.clientY));
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape' && e.isTrusted) { e.preventDefault(); e.stopPropagation(); close(false); }
+      };
+      const swallow = (e) => { if (!inPanel(e)) { e.preventDefault(); e.stopPropagation(); } };
+      host.addEventListener('mousemove', onMove);
+      host.addEventListener('click', onClick);
+      host.addEventListener('mousedown', swallow);
+      host.addEventListener('mouseup', swallow);
+      host.addEventListener('contextmenu', swallow);
+      window.addEventListener('keydown', onKey, true);
+      const onScroll = () => { if (chosen) show(chain[depth]); };
+      window.addEventListener('scroll', onScroll, true);
+      input.addEventListener('input', () => { chosen = false; show(null); try { const el = document.querySelector(input.value.trim()); if (el) show(el); } catch (e) {} refresh(); });
+      panel.addEventListener('click', (e) => {
+        const b = e.target.closest && e.target.closest('button');
+        if (!b || b.disabled || !e.isTrusted) return;
+        const a = b.dataset.a;
+        if (a === 'up') setDepth(depth + 1);
+        else if (a === 'down') setDepth(depth - 1);
+        else if (a === 'cancel') close(false);
+        else if (a === 'once' || a === 'always') {
+          const sel = input.value.trim();
+          if (count(sel) <= 0) return;
+          hideNow(sel);
+          if (a === 'always') postSecure('PICK_FILTER:' + NATIVE_STRINGIFY({ selector: sel }));
+          close(a === 'always');
+        }
+      });
+      function close(sent) {
+        if (open !== api) return;
+        open = null;
+        host.removeEventListener('mousemove', onMove);
+        window.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('scroll', onScroll, true);
+        host.remove();
+        if (!sent) postSecure('PICK_DONE');
+      }
+      const api = { close: close };
+      open = api;
+      document.documentElement.appendChild(host);
+      if (fromMenu && ctxTarget && ctxTarget.isConnected) choose(ctxTarget);
+      else refresh();
+    }
+    fixedFn('__shunnoPicker', function (fromMenu) { start(!!fromMenu); });
+  })();
 })();

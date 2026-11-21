@@ -1,3 +1,16 @@
+## v2.31.0
+
+### Added
+- Content Blocker panel (Site Controls, Content Blocker; also in the command palette).
+- Filter lists: choose from a fixed catalog of maintained lists in six groups (Ads, Privacy, Security, Annoyances, Regional, Fixes). EasyList and EasyPrivacy stay on by default. Each list's text is kept on disk, so turning a list off, or editing My Filters, recompiles without downloading.
+- Updates: automatic updates on or off, every 1, 4, 7 or 14 days, plus Update Now. A list that fails to download keeps its previous version; the status names the failed list. A list chosen while offline does not replace the rules in use until it arrives.
+- My Filters: your own rules in Adblock Plus / uBlock syntax, with Save, Revert, Import (adds new rules, skips duplicates) and Export to a .txt file. Lines the engine cannot use are reported with their line number.
+- Element picker: right click a page, Hide Element on Page…, or Hide an Element on This Page in the panel. Point and click, Broader and Narrower to choose a container, edit the selector, then Hide Once or Hide Always. Hide Always saves `site##selector` to My Filters.
+
+### Security
+- The picker only reacts to real user input; a page cannot click for the user. The browser accepts a picked rule only from a tab where the user started the picker, builds the rule for that tab's own site, and refuses selectors that could escape a CSS rule or form another kind of filter.
+- The picker's interface is built without HTML strings and styled with a constructable stylesheet, so it works on pages with strict CSP and Trusted Types.
+
 ## v2.30.0
 
 ### Fixed
