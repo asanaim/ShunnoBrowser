@@ -1,3 +1,10 @@
+## v2.32.1
+
+### Fixed
+- Menu or Downloads opened over a page showed another tab's page (the tab kept drawn under the current one since v2.32.0 could end up on top beneath the popover). The current page is now always the one directly under the toolbar.
+- Opening a New Tab no longer flashes: the page stays on top while the New Tab page draws at full size, then the New Tab page comes forward. Leaving the New Tab page for a tab works the same way the other way round (the New Tab page stays until the page has drawn).
+- Tabs, as in Chrome: every tab with room shows its close button. A tight background tab drops it, so its title keeps the room and a click there selects the tab; the current tab always has it.
+
 ## v2.32.0
 
 ### Changed
