@@ -11,6 +11,9 @@
 - Tab strip, Safari style: every tab shows its site's icon (or a lettered tile when the site has none) with a centered title. The close button sits at the left of the tab, on the current tab always and on others while hovered. The current tab keeps room for its title while others shrink to their icon. With many tabs the strip scrolls sideways (mouse wheel) with soft edges, and the current tab is always scrolled into view instead of being cut off. Tabs open by growing and close by folding away. While closing tabs with the mouse, the other tabs keep their width until the pointer leaves the strip, so the next close button lands under the pointer. Empty space in the strip moves the window. The New Tab button sits at the right end.
 
 ### Fixed
+- Maximize button on a light/dark switch: the window now fades the button itself, on the same curve and duration as the page cross-fade, from one message (the page used to send one message per frame, which arrived unevenly). The button is drawn off screen and copied in one step, so the glyph no longer flickers while it repaints.
+- Switching tabs: the tab coming on screen is shown before the one leaving is hidden. Switching to a tab further right used to leave a frame with no page, which flashed. In the tab strip, switching changes no sizes and animates only colour.
+- Downloads button: always in the toolbar again (since v2.28 it only appeared once there were downloads).
 - YouTube: videos start at once instead of after a blocked ad. Ad fields are now removed from player data nested inside other responses (watch page data, `playerResponse` wrappers) and from `xhr.response`, and raw responses have their ad keys renamed before anything parses them, so the player never schedules an ad. When an ad still reaches the player, it is skipped as soon as the player marks it, and the video gets its sound and playback speed back afterwards (the shared video element used to stay muted or at 16x).
 
 ### Security
