@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v1.0.0";
+pub const APP_VERSION: &str = "v2.26.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -529,6 +529,14 @@ pub fn choose_launch_profile(arg_profile: Option<&str>, has_url: bool, links_pre
     DEFAULT_PROFILE.to_string()
 }
 
+/// A temporary path next to `path`, unique to this process: profiles run as separate processes
+/// and share some folders (tools, block lists, the profile list), so fixed ".tmp" names collide.
+pub fn unique_tmp(path: &std::path::Path) -> PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(format!(".{}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
 pub struct BrowserStorage;
 
 impl BrowserStorage {
@@ -580,9 +588,9 @@ impl BrowserStorage {
     pub fn save_profiles(list: &[Profile]) {
         let path = Self::shared_data_dir().join("profiles.json");
         if let Ok(t) = serde_json::to_string_pretty(list) {
-            let tmp = path.with_extension("json.tmp");
-            if fs::write(&tmp, t).is_ok() {
-                let _ = fs::rename(tmp, path);
+            let tmp = unique_tmp(&path);
+            if fs::write(&tmp, t).is_ok() && fs::rename(&tmp, &path).is_err() {
+                let _ = fs::remove_file(&tmp);
             }
         }
     }

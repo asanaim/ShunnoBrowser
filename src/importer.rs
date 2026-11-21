@@ -442,10 +442,11 @@ impl<'a> SqliteReader<'a> {
             let k = m + (size - m) % (u - 4);
             if k <= x { k } else { m }
         };
-        let mut out = Vec::with_capacity(size);
-        out.extend_from_slice(page.get(p..p + local)?);
+        // `size` comes from the file: never reserve more than the file could hold.
+        let mut out = Vec::with_capacity(size.min(self.db.len()));
+        out.extend_from_slice(page.get(p..p.checked_add(local)?)?);
         if local < size {
-            let mut next = be(page, p + local, 4)? as u32;
+            let mut next = be(page, p.checked_add(local)?, 4)? as u32;
             let mut guard = 0usize;
             while out.len() < size {
                 guard += 1;
@@ -495,23 +496,79 @@ fn decode_record(r: &[u8]) -> Option<Vec<Val>> {
             8 => (Val::Int(0), 0),
             9 => (Val::Int(1), 0),
             t if t >= 12 && t % 2 == 0 => {
-                let n = ((t - 12) / 2) as usize;
-                r.get(d..d + n)?;
+                let n = usize::try_from((t - 12) / 2).ok()?;
+                r.get(d..d.checked_add(n)?)?;
                 (Val::Blob, n)
             }
             t if t >= 13 => {
-                let n = ((t - 13) / 2) as usize;
-                (Val::Text(String::from_utf8_lossy(r.get(d..d + n)?).into_owned()), n)
+                let n = usize::try_from((t - 13) / 2).ok()?;
+                (Val::Text(String::from_utf8_lossy(r.get(d..d.checked_add(n)?)?).into_owned()), n)
             }
             _ => return None,
         };
         out.push(val);
-        d += n;
+        d = d.checked_add(n)?;
     }
     Some(out)
 }
 
 // ---------------------------------------------------------------- top level
+
+/// Apply a SQLite write-ahead log (`History-wal`) to the main file: while Chrome or Edge is open,
+/// recent visits live only in the WAL. Frames count up to the last commit whose salts match the
+/// WAL header (frames from an earlier, already checkpointed log are ignored). None = no usable WAL.
+pub fn apply_wal(db: &[u8], wal: &[u8]) -> Option<Vec<u8>> {
+    if wal.len() < 32 || db.len() < 100 {
+        return None;
+    }
+    let magic = be(wal, 0, 4)?;
+    if magic != 0x377f_0682 && magic != 0x377f_0683 {
+        return None;
+    }
+    let page_size = match be(wal, 8, 4)? as usize {
+        1 => 65536,
+        n => n,
+    };
+    let db_ps = match be(db, 16, 2)? as usize {
+        1 => 65536,
+        n => n,
+    };
+    if page_size != db_ps || !(512..=65536).contains(&page_size) {
+        return None;
+    }
+    let (salt1, salt2) = (be(wal, 16, 4)?, be(wal, 20, 4)?);
+    let frame = page_size.checked_add(24)?;
+    let mut pending: Vec<(usize, usize)> = Vec::new(); // (page number, offset of page data)
+    let mut committed: Vec<(usize, usize)> = Vec::new();
+    let mut db_pages = db.len() / page_size;
+    let mut off = 32usize;
+    while off.checked_add(frame)? <= wal.len() {
+        let pgno = be(wal, off, 4)? as usize;
+        let commit = be(wal, off + 4, 4)? as usize;
+        if be(wal, off + 8, 4)? != salt1 || be(wal, off + 12, 4)? != salt2 || pgno == 0 {
+            break;
+        }
+        pending.push((pgno, off + 24));
+        if commit != 0 {
+            committed.append(&mut pending);
+            db_pages = commit;
+        }
+        off += frame;
+    }
+    if committed.is_empty() || db_pages == 0 || db_pages > 4_000_000 {
+        return None;
+    }
+    let mut out = vec![0u8; db_pages.checked_mul(page_size)?];
+    let keep = db.len().min(out.len());
+    out[..keep].copy_from_slice(&db[..keep]);
+    for (pgno, data) in committed {
+        if pgno <= db_pages {
+            let at = (pgno - 1) * page_size;
+            out[at..at + page_size].copy_from_slice(wal.get(data..data + page_size)?);
+        }
+    }
+    Some(out)
+}
 
 /// Read a file that the owning browser may hold open; on failure, tell the user to close it.
 fn read_shared(path: &Path, browser: &str) -> Result<Vec<u8>, String> {
@@ -538,7 +595,9 @@ pub fn load(
     }
     if want_history && src.has_history {
         let bytes = read_shared(&src.dir.join("History"), &src.browser)?;
-        h = parse_chromium_history(&bytes, history_cap)?;
+        // Recent visits of a running browser are still in the write-ahead log.
+        let merged = std::fs::read(src.dir.join("History-wal")).ok().and_then(|wal| apply_wal(&bytes, &wal));
+        h = parse_chromium_history(merged.as_deref().unwrap_or(&bytes), history_cap)?;
     }
     Ok((b, h))
 }

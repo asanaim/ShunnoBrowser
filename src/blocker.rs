@@ -135,7 +135,7 @@ impl Blocker {
             }
             let text = resp.text().await.map_err(|e| format!("{}: {}", name, e))?;
             // Guard against captive portals and error pages masquerading as lists.
-            if !text.trim_start().starts_with("[Adblock") && text.lines().count() < 1000 {
+            if !text.trim_start().starts_with("[Adblock") || text.lines().count() < 1000 {
                 return Err(format!("{}: response is not a filter list", name));
             }
             texts.push(text);
@@ -145,9 +145,9 @@ impl Blocker {
             .map_err(|e| e.to_string())?;
         let bytes = engine.serialize();
         let path = cache_path();
-        let tmp = path.with_extension("tmp");
-        if fs::write(&tmp, &bytes).is_ok() {
-            let _ = fs::rename(&tmp, &path);
+        let tmp = crate::state::unique_tmp(&path);
+        if fs::write(&tmp, &bytes).is_ok() && fs::rename(&tmp, &path).is_err() {
+            let _ = fs::remove_file(&tmp);
         }
         // Swap in the compact deserialized form: ~13 MB instead of the much larger freshly built engine.
         let mut compact = Engine::default();

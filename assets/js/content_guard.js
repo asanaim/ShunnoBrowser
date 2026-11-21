@@ -174,6 +174,31 @@
     return null;
   })();
 
+  // Natives captured at document start, before any page script can replace them.
+  const NATIVE_STRINGIFY = JSON.stringify;
+  // Entry points the browser calls with data from outside the page (cross-origin request URLs,
+  // probe results): fixed, so a page cannot replace them to read that data.
+  function fixedFn(name, fn) {
+    try { Object.defineProperty(window, name, { value: fn, writable: false, configurable: false }); } catch (e) {}
+  }
+  const NATIVE_VALUE_SET = (function () {
+    try { return Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; } catch (e) { return null; }
+  })();
+
+  // "Save page": the toolbar asks through this fixed entry point, so the IPC token never
+  // appears in script that the browser evaluates in the page (a page could patch window.ipc).
+  try {
+    Object.defineProperty(window, '__shunnoSaveOffline', {
+      value: function () {
+        if (window.top !== window) return;
+        const root = document.documentElement;
+        postSecure('OFFLINE_HTML:' + NATIVE_STRINGIFY({ title: String(document.title || ''), html: '<!DOCTYPE html>' + (root ? root.outerHTML : '') }));
+      },
+      writable: false,
+      configurable: false,
+    });
+  } catch (e) {}
+
   function postSecure(msg) {
     const payload = IPC_TOKEN + "|" + msg;
     if (NATIVE_POST) {
@@ -456,7 +481,7 @@
     postSecure('STREAM:' + urlStr);
   }
 
-  window.__shunnoOnNativeStream = function(info) {
+  fixedFn('__shunnoOnNativeStream', function(info) {
     if (!info || !info.url || !String(info.url).startsWith('http')) return;
     const urlStr = String(info.url);
     if (capturedStreams.some(s => s.url === urlStr)) return;
@@ -465,9 +490,9 @@
     if (info.size_label) probedSizes.set(urlStr, info.size_label);
     capturedStreams.unshift({ url: urlStr, ext: ext, name: name });
     if (capturedStreams.length > 24) capturedStreams.pop();
-  };
+  });
 
-  window.__shunnoOnStreamProbed = function(info) {
+  fixedFn('__shunnoOnStreamProbed', function(info) {
     if (!info || !info.url) return;
     probedSizes.set(info.url, info.size_label || 'Stream');
     const item = capturedStreams.find(s => s.url === info.url);
@@ -477,7 +502,7 @@
     if (window.__shunnoRefreshFloatingPill) {
       window.__shunnoRefreshFloatingPill(info.url, info.size_label);
     }
-  };
+  });
 
   function inspectUrl(raw) {
     if (!raw) return false;
@@ -1432,6 +1457,9 @@
   // the user picks an account in the menu.
   (function passwordManager() {
     if (!/^https?:$/.test(location.protocol)) return;
+    // Top-level page only: the browser files a login under the tab's address, so a login typed
+    // into an embedded frame of another site must never be offered or filled here.
+    if (window.top !== window) return;
     const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
     const pwFieldsIn = (scope) => Array.from((scope || document).querySelectorAll('input[type=password]')).filter(shown);
     const isTextLike = (el) => el instanceof HTMLInputElement && /^(text|email|tel|)$/i.test(el.getAttribute('type') || '');
@@ -1450,7 +1478,7 @@
       // Sign-up and change-password forms: the last filled password field is the new one.
       const pw = filled[filled.length - 1];
       const u = userFieldFor(pw);
-      const payload = JSON.stringify({ u: u ? u.value.trim() : '', p: pw.value });
+      const payload = NATIVE_STRINGIFY({ u: u ? u.value.trim() : '', p: pw.value });
       if (payload === lastOffer) return;
       lastOffer = payload;
       postSecure('PW_OFFER:' + payload);
@@ -1509,8 +1537,7 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); }, true);
 
     function setValue(el, v) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      setter.call(el, v);
+      if (NATIVE_VALUE_SET) NATIVE_VALUE_SET.call(el, v); else el.value = v;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
@@ -1529,7 +1556,12 @@
         const k = document.createElement('span'); k.className = 'k'; k.textContent = '🔑';
         const u = document.createElement('span'); u.className = 'u'; u.textContent = a.u || '(no username)';
         i.appendChild(k); i.appendChild(u);
-        i.addEventListener('mousedown', (ev) => { ev.preventDefault(); postSecure('PW_FILL:' + a.id); closeMenu(); });
+        i.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          if (!ev.isTrusted) return; // only a real click fills
+          postSecure('PW_FILL:' + a.id);
+          closeMenu();
+        });
         m.appendChild(i);
       });
       root.replaceChildren(m);

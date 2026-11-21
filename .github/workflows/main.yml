@@ -11,25 +11,33 @@ on:
 permissions:
   contents: write
 
+# One release build at a time per branch: two pushes in a row must not publish out of order.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
     env:
-      # Optional secrets. Missing ones simply skip their step.
-      WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
-      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+      # Only whether the optional secrets exist; the secrets themselves are given to the single
+      # step that needs each one, never to tests, the build (crate build scripts) or other actions.
+      HAS_PFX: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
     steps:
+      # Third-party actions are pinned to commits so a moved tag cannot change what runs.
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install Stable Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - name: Run Tests
-        run: cargo test --release
+        run: cargo test --release --locked
 
       - name: Build Native Release EXE
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Prepare Release EXE
         run: |
@@ -37,7 +45,7 @@ jobs:
           copy target\release\ShunnoBrowser.exe release-exe\ShunnoBrowser.exe
 
       - name: Upload ShunnoBrowser Windows EXE Artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: ShunnoBrowser-Rust-Windows-EXE
           path: release-exe/ShunnoBrowser.exe
@@ -45,9 +53,10 @@ jobs:
       # Authenticode code signing removes the SmartScreen "unknown publisher" warning.
       # Needs a code-signing certificate (secrets WINDOWS_PFX_BASE64 + WINDOWS_PFX_PASSWORD).
       - name: Sign EXE (Authenticode)
-        if: github.event_name != 'pull_request' && env.WINDOWS_PFX_BASE64 != ''
+        if: github.event_name != 'pull_request' && env.HAS_PFX == 'true'
         shell: pwsh
         env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
@@ -59,26 +68,29 @@ jobs:
           if ($code -ne 0) { throw "signtool failed" }
 
       # Signed update manifest (after Authenticode, because signing changes the EXE hash).
-      # Unsigned (notify-only) when UPDATE_SIGNING_KEY is not set.
+      # Unsigned (notify-only) when UPDATE_SIGNING_KEY is not set. The signer is this crate's own
+      # src/bin/sign_update.rs, already compiled above from Cargo.lock: no package is downloaded
+      # or run while the signing key is in the environment.
       - name: Build update manifest
         if: github.event_name != 'pull_request'
         shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          python -m pip install --quiet cryptography
           $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          python scripts/sign_update.py manifest release-exe/ShunnoBrowser.exe $ver https://github.com/asanaim/ShunnoBrowser/releases/download/latest/ShunnoBrowser.exe release-exe/latest.json
+          & target\release\sign_update.exe manifest release-exe/ShunnoBrowser.exe $ver https://github.com/asanaim/ShunnoBrowser/releases/download/latest/ShunnoBrowser.exe release-exe/latest.json
           if ($LASTEXITCODE -ne 0) { throw "manifest failed" }
 
       - name: Publish 1-Click Direct Download Release
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: latest
-          name: "Shunno Browser (latest build: Native Rust + Edge WebView2 + 32-Thread Shunno Get)"
+          name: "Shunno Browser (latest build)"
           make_latest: true
           body: |
-            ### Direct 1-Click Download for Windows 10 & 11 (~6 MB)
-            Full Naked Browser Pro alternative built in pure Rust + Edge WebView2 with multi-tab Cupertino bar, background YouTube audio, AdBlock, SponsorBlock, Reader Mode, OLED Force-Dark, and integrated 32-thread Shunno Get Download Manager:
+            ### Direct 1-Click Download for Windows 10 & 11
+            Lightweight, private browser in Rust on Microsoft Edge WebView2: Spaces, tab groups, profiles, Peek, Reader, a built-in ad and tracker blocker, a password manager and a multi-connection download manager.
             - **[Download ShunnoBrowser.exe](https://github.com/${{ github.repository }}/releases/latest/download/ShunnoBrowser.exe)**
           files: |
             release-exe/ShunnoBrowser.exe

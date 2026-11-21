@@ -1032,9 +1032,16 @@ fn snap_window_to_fraction(window: &Window, x_f: i32, y_f: i32, w_f: i32, h_f: i
 #[cfg(not(windows))]
 fn snap_window_to_fraction(_window: &Window, _x_f: i32, _y_f: i32, _w_f: i32, _h_f: i32) {}
 
+/// Windows in full screen, with the placement to restore (also tells WM_NCCALCSIZE not to inset).
+#[cfg(windows)]
+static FULLSCREEN_WP: std::sync::Mutex<Vec<(isize, windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(windows)]
+fn is_fullscreen_hwnd(h: isize) -> bool {
+    FULLSCREEN_WP.lock().map(|g| g.iter().any(|(x, _)| *x == h)).unwrap_or(false)
+}
+
 #[cfg(windows)]
 fn apply_native_fullscreen(window: &Window, enable: bool) {
-    use std::sync::{Mutex, OnceLock};
     use tao::platform::windows::WindowExtWindows;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -1043,8 +1050,6 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
         SWP_NOOWNERZORDER, WINDOWPLACEMENT,
     };
 
-    static SAVED_WP: OnceLock<Mutex<Option<WINDOWPLACEMENT>>> = OnceLock::new();
-    let wp_lock = SAVED_WP.get_or_init(|| Mutex::new(None));
     let hwnd = HWND(window.hwnd() as isize);
 
     unsafe {
@@ -1054,9 +1059,10 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 ..Default::default()
             };
             if GetWindowPlacement(hwnd, &mut wp).is_ok() {
-                if let Ok(mut g) = wp_lock.lock() {
-                    *g = Some(wp);
-                }
+                // Per window: several windows can be full screen and each restores its own placement.
+                let mut g = FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner());
+                g.retain(|(h, _)| *h != hwnd.0);
+                g.push((hwnd.0, wp));
             }
             let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
@@ -1076,7 +1082,11 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 );
             }
         } else {
-            let saved = wp_lock.lock().ok().and_then(|mut g| g.take());
+            let saved = {
+                let mut g = FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner());
+                let at = g.iter().position(|(h, _)| *h == hwnd.0);
+                at.map(|i| g.remove(i).1)
+            };
             if let Some(wp) = saved {
                 let _ = SetWindowPlacement(hwnd, &wp);
                 let _ = SetWindowPos(
@@ -2366,8 +2376,7 @@ fn create_tab_webview(
 ) -> wry::Result<WebView> {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
     let content_h = (size.height - CHROME_BAR_HEIGHT).max(100.0);
-    let host = extract_host(url);
-    let user_js = load_approved_user_scripts(&host, &global.approved_script_hashes);
+    let user_js = load_approved_user_scripts(&global.approved_script_hashes);
     let init_script = build_content_init_script(policy, global, ipc_token, &user_js);
 
     let ipc_proxy = proxy.clone();
@@ -2549,6 +2558,9 @@ struct MaxButton {
     pressed: bool,
     active: bool,
 }
+/// Each subclassed window's previous window procedure (HWND, procedure).
+static ORIG_WNDPROCS: std::sync::Mutex<Vec<(isize, isize)>> = std::sync::Mutex::new(Vec::new());
+
 /// Per browser window (keyed by its HWND): the native maximize button and the toolbar web view's
 /// host window (wry's container HWND).
 static MAX_BUTTONS: std::sync::Mutex<Vec<(isize, MaxButton, isize)>> = std::sync::Mutex::new(Vec::new());
@@ -2571,6 +2583,10 @@ fn set_chrome_host(main: isize, host: isize) {
 }
 fn forget_window_native(main: isize) {
     MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.0 != main);
+    #[cfg(windows)]
+    FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| *h != main);
+    // A later window may get the same handle value: it must be subclassed afresh.
+    ORIG_WNDPROCS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| *h != main);
 }
 
 /// Parse "#RRGGBB" to COLORREF (0x00BBGGRR).
@@ -2736,6 +2752,9 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use wry::WebViewExtWindows;
 
     static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+    fn orig_wndproc_for(h: isize) -> Option<isize> {
+        ORIG_WNDPROCS.lock().ok()?.iter().find(|(x, _)| *x == h).map(|(_, p)| *p)
+    }
     let hwnd = HWND(window.hwnd() as isize);
 
     unsafe {
@@ -2796,9 +2815,20 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             for (metric, class_slot, which) in [(SM_CXICON, GCLP_HICON, ICON_BIG), (SM_CXSMICON, GCLP_HICONSM, ICON_SMALL)] {
                 let want = GetSystemMetricsForDpi(metric, dpi).max(16);
                 if let Some((_, bytes)) = pick(want) {
-                    if let Ok(hicon) = CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR) {
-                        SetClassLongPtrW(hwnd, class_slot, hicon.0);
-                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(hicon.0));
+                    // One icon per size for the whole process: every window (Ctrl+N) reuses it, so
+                    // no HICON is created per window and none leaks.
+                    static ICONS: std::sync::Mutex<Vec<(i32, isize)>> = std::sync::Mutex::new(Vec::new());
+                    let mut cache = ICONS.lock().unwrap_or_else(|e| e.into_inner());
+                    let hicon = match cache.iter().find(|(w, _)| *w == want) {
+                        Some((_, h)) => Some(*h),
+                        None => CreateIconFromResourceEx(bytes, true, 0x00030000, want, want, LR_DEFAULTCOLOR).ok().map(|h| {
+                            cache.push((want, h.0));
+                            h.0
+                        }),
+                    };
+                    if let Some(h) = hicon {
+                        SetClassLongPtrW(hwnd, class_slot, h);
+                        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(h));
                     }
                 }
             }
@@ -2914,7 +2944,9 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                         // Client area = whole window (custom frame). When maximized, Windows places a
                         // WS_THICKFRAME window ~8 px beyond every monitor edge; inset by the real frame size
                         // for this window's DPI, or the top of the tab strip and the window buttons are clipped.
-                        if IsZoomed(hwnd).as_bool() {
+                        // Not in full screen: there the window must cover the monitor exactly, even if it
+                        // was maximized when F11 was pressed.
+                        if IsZoomed(hwnd).as_bool() && !is_fullscreen_hwnd(hwnd.0) {
                             use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
                             use windows::Win32::UI::WindowsAndMessaging::{
                                 NCCALCSIZE_PARAMS, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
@@ -2974,8 +3006,8 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 }
                 _ => {}
             }
-            let prev_ptr = ORIG_WNDPROC.load(Ordering::Relaxed);
-            if prev_ptr != 0 {
+            let prev_ptr = orig_wndproc_for(hwnd.0).unwrap_or_else(|| ORIG_WNDPROC.load(Ordering::Relaxed));
+            if prev_ptr != 0 && prev_ptr != borderless_resize_wndproc as *const () as usize as isize {
                 let prev_fn: WNDPROC = std::mem::transmute(prev_ptr);
                 CallWindowProcW(prev_fn, hwnd, msg, wparam, lparam)
             } else {
@@ -2983,9 +3015,15 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             }
         }
 
-        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, borderless_resize_wndproc as *const () as usize as isize);
-        if prev != 0 {
-            ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+        // Subclass once per window, and remember each window's own previous procedure (never our
+        // own: chaining to ourselves would recurse forever).
+        let ours = borderless_resize_wndproc as *const () as usize as isize;
+        if orig_wndproc_for(hwnd.0).is_none() {
+            let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
+            if prev != 0 && prev != ours {
+                ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+                ORIG_WNDPROCS.lock().unwrap_or_else(|e| e.into_inner()).push((hwnd.0, prev));
+            }
         }
     }
 }
@@ -6606,11 +6644,8 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "SAVE_OFFLINE_HTML" {
                     if let Some(tab) = tabs.get(active_tab_idx) {
                         pending_offline_saves.insert(tab.id);
-                        let js = format!(
-                            "if (window.ipc) window.ipc.postMessage('{}|OFFLINE_HTML:' + JSON.stringify({{ title: document.title, html: '<!DOCTYPE html>' + document.documentElement.outerHTML }}));",
-                            ipc_token
-                        );
-                        let _ = tab.webview.evaluate_script(&js);
+                        // content_guard posts the page itself; the IPC token never goes into evaluated script.
+                        let _ = tab.webview.evaluate_script("window.__shunnoSaveOffline && window.__shunnoSaveOffline()");
                     }
                 } else if cmd == "OPEN_SCRIPTS_FOLDER" {
                     let dir = user_scripts_dir();

@@ -65,6 +65,29 @@ fn test_userscript_match_and_sha256() {
 }
 
 #[test]
+fn userscript_match_is_exact_host_or_subdomain() {
+    // No substring matches (audit): a look-alike host never runs the script.
+    let pat = parse_match_header("// @match github.com\n");
+    assert!(host_matches_pattern("github.com", &pat));
+    assert!(host_matches_pattern("gist.github.com", &pat));
+    assert!(!host_matches_pattern("github.com.evil.tld", &pat));
+    assert!(!host_matches_pattern("notgithub.com", &pat));
+    // Standard headers: scheme, wildcard subdomain, path and port are understood.
+    let std = parse_match_header("// ==UserScript==\n// @match https://*.example.com/*\n// @match http://news.site.org:8080/a/*\n// @include *://intranet.test/*\n");
+    assert_eq!(std, "example.com,news.site.org,intranet.test");
+    assert!(host_matches_pattern("www.example.com", &std));
+    assert!(host_matches_pattern("news.site.org", &std));
+    assert!(!host_matches_pattern("site.org", &std));
+    assert_eq!(parse_match_header("// @match *://*/*"), "*");
+    assert_eq!(parse_match_header("console.log(1)"), "*");
+    assert_eq!(parse_match_header("// @matches nope.com"), "*");
+    // Every approved script is guarded by its patterns at page load, top-level only.
+    let js = userscripts::guarded_user_scripts(&[("example.com".into(), "window.__a = 1;".into())]);
+    assert!(js.contains("window.top !== window") && js.contains("[\"example.com\"]") && js.contains("window.__a = 1;"));
+    assert_eq!(userscripts::guarded_user_scripts(&[]), "");
+}
+
+#[test]
 fn test_filename_sanitization_and_reserved_names() {
     assert_eq!(sanitize_download_filename("../../evil/CON.txt"), "_CON.txt");
     assert_eq!(sanitize_download_filename("NUL"), "_NUL");
@@ -766,4 +789,59 @@ fn audit_local_files_and_odd_input() {
     let _ = sanitize_url("ফাইল:///খ.html", &cfg);
     let _ = sanitize_url("é", &cfg);
     let _ = sanitize_url("日本語のテキスト", &cfg);
+}
+
+#[test]
+fn history_import_reads_the_write_ahead_log() {
+    // Chrome/Edge open: recent visits are only in History-wal (fixture made with SQLite in WAL mode,
+    // 5 checkpointed rows, 300 committed rows in the WAL).
+    let db = std::fs::read(fixture("wal_history.sqlite")).unwrap();
+    let wal = std::fs::read(fixture("wal_history.sqlite-wal")).unwrap();
+    let main_only = importer::parse_chromium_history(&db, usize::MAX).unwrap();
+    assert_eq!(main_only.len(), 5);
+    let merged = importer::apply_wal(&db, &wal).expect("usable WAL");
+    let all = importer::parse_chromium_history(&merged, usize::MAX).unwrap();
+    assert_eq!(all.len(), 305);
+    assert_eq!(all[0].url, "https://new299.example.com/p");
+    assert!(all.iter().all(|h| !h.url.contains("uncommitted")));
+    // Garbage or truncated logs are ignored, never a panic.
+    assert!(importer::apply_wal(&db, b"not a wal").is_none());
+    assert!(importer::apply_wal(&db, &wal[..100]).is_none());
+    let mut bad = wal.clone();
+    for i in (32..bad.len()).step_by(41) {
+        bad[i] ^= 0x5a;
+    }
+    if let Some(m) = importer::apply_wal(&db, &bad) {
+        let _ = importer::parse_chromium_history(&m, 10);
+    }
+}
+
+#[test]
+fn amp_rewrite_only_for_google_and_real_sites() {
+    let cfg = GlobalSettings::default();
+    assert_eq!(sanitize_url("https://www.google.com/amp/s/example.com/story?id=7&utm_source=x", &cfg), "https://example.com/story?id=7");
+    assert_eq!(sanitize_url("https://www.google.co.uk/amp/s/news.example.org/a", &cfg), "https://news.example.org/a");
+    // Look-alike hosts are left alone.
+    assert_eq!(sanitize_url("https://mygoogle.evil.com/amp/s/bank.example/x", &cfg), "https://mygoogle.evil.com/amp/s/bank.example/x");
+    assert_eq!(sanitize_url("https://google.evil.com/amp/s/bank.example/x", &cfg), "https://google.evil.com/amp/s/bank.example/x");
+    // amp. subdomains: real sites only, never down to a public suffix.
+    assert_eq!(sanitize_url("https://amp.example.com/news", &cfg), "https://example.com/news");
+    assert_eq!(sanitize_url("https://amp.co.uk/page", &cfg), "https://amp.co.uk/page");
+    assert_eq!(sanitize_url("https://amp.com.bd/page", &cfg), "https://amp.com.bd/page");
+}
+
+#[test]
+fn public_address_check_covers_embedded_and_reserved_ranges() {
+    use sanitizer::{is_public_http_url, is_public_ip};
+    let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+    for bad in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.0.1", "169.254.169.254", "100.64.0.1", "0.1.2.3", "198.18.0.1", "240.0.0.1", "255.255.255.255",
+                "::1", "::", "fc00::1", "fe80::1", "fec0::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::127.0.0.1", "64:ff9b::a00:1", "2002:7f00:1::", "2001:db8::1"] {
+        assert!(!is_public_ip(ip(bad)), "{bad} must not count as public");
+    }
+    for good in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808"] {
+        assert!(is_public_ip(ip(good)), "{good} is public");
+    }
+    assert!(!is_public_http_url("http://[::ffff:7f00:1]/"));
+    assert!(!is_public_http_url("http://router.lan/"));
+    assert!(is_public_http_url("https://example.com/"));
 }

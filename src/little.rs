@@ -87,9 +87,10 @@ pub const LITTLE_PAYLOAD: &str = "shunno:little";
 /// running profile. True when that window took it.
 #[cfg(windows)]
 pub fn send_to_profile(profile: &str, payload: &str) -> bool {
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
     use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, IsWindow, SendMessageTimeoutW, ASFW_ANY, SMTO_ABORTIFHUNG, WM_COPYDATA};
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, GetWindowThreadProcessId, IsWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_COPYDATA};
     let file = crate::state::profile_dir_in(&crate::state::BrowserStorage::shared_data_dir(), profile).join("instance.hwnd");
     let Some(hwnd) = std::fs::read_to_string(file).ok().and_then(|s| s.trim().parse::<isize>().ok()) else {
         return false;
@@ -99,7 +100,23 @@ pub fn send_to_profile(profile: &str, payload: &str) -> bool {
         if !IsWindow(target).as_bool() {
             return false;
         }
-        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        // Window handles are reused: only talk to a window that belongs to a Shunno process
+        // (same EXE as this one), and let only that process take the foreground.
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(target, Some(&mut pid));
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let named = QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let _ = CloseHandle(proc);
+        let theirs = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
+        if !named || !same_program(&theirs) {
+            return false;
+        }
+        let _ = AllowSetForegroundWindow(pid);
         let data: Vec<u16> = payload.encode_utf16().collect();
         let cds = COPYDATASTRUCT { dwData: COPYDATA_TAG, cbData: (data.len() * 2) as u32, lpData: data.as_ptr() as *mut core::ffi::c_void };
         let mut result = 0usize;
@@ -109,6 +126,16 @@ pub fn send_to_profile(profile: &str, payload: &str) -> bool {
 #[cfg(not(windows))]
 pub fn send_to_profile(_profile: &str, _payload: &str) -> bool {
     false
+}
+
+/// Is `other` this program? Same folder, and a file name starting with ours, so an instance whose
+/// EXE was just renamed by an update (`ShunnoBrowser.old.exe`) still counts.
+pub fn same_program(other: &std::path::Path) -> bool {
+    let Ok(ours) = std::env::current_exe() else { return false };
+    let low = |p: Option<&std::ffi::OsStr>| p.map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let (Some(our_dir), Some(their_dir)) = (ours.parent(), other.parent()) else { return false };
+    let stem = low(ours.file_stem());
+    !stem.is_empty() && low(Some(our_dir.as_os_str())) == low(Some(their_dir.as_os_str())) && low(other.file_name()).starts_with(&stem)
 }
 
 /// If this profile is already running, give it `url` (or ask it to come forward) and return true:
@@ -127,7 +154,15 @@ pub fn hand_off_to_running_instance(url: Option<&str>) -> bool {
             return false;
         }
     }
-    send_to_profile(crate::state::profile_id(), url.unwrap_or(""))
+    // The running instance may still be starting (its window not published yet): wait for it
+    // rather than starting a second copy of the same profile, which would share its data folder.
+    for _ in 0..40 {
+        if send_to_profile(crate::state::profile_id(), url.unwrap_or("")) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    true
 }
 #[cfg(not(windows))]
 pub fn hand_off_to_running_instance(_url: Option<&str>) -> bool {
@@ -145,8 +180,13 @@ pub unsafe fn read_copydata(lparam: isize) -> Option<String> {
     if cds.cbData == 0 {
         return Some(String::new());
     }
-    let s = std::slice::from_raw_parts(cds.lpData as *const u16, (cds.cbData / 2) as usize);
-    Some(String::from_utf16_lossy(s))
+    if cds.lpData.is_null() {
+        return None;
+    }
+    // Read bytes (no alignment assumption) and decode UTF-16LE.
+    let bytes = std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize);
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    Some(String::from_utf16_lossy(&units))
 }
 
 /// Register Shunno as a browser for this user (no admin rights needed) and open the Windows

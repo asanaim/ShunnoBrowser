@@ -445,8 +445,49 @@ impl JobCtx {
     }
 }
 
+/// Redirect policy for every download request: at most 20 hops, and a request that started at a
+/// public address may not be redirected to a local one (router, localhost, intranet).
+pub fn guarded_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 20 {
+            return attempt.error("too many redirects");
+        }
+        let started_public = attempt.previous().first().map(|u| crate::sanitizer::is_public_http_url(u.as_str())).unwrap_or(true);
+        if started_public && !crate::sanitizer::is_public_http_url(attempt.url().as_str()) {
+            attempt.error("redirect to a local address refused")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+/// DNS for requests a page caused on its own (size probes): a public host name must resolve to
+/// public addresses only, so a name pointing at 127.0.0.1 or the LAN cannot reach local services.
+pub struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let found = tokio::task::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                (host.as_str(), 0u16).to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })??;
+            let public: Vec<std::net::SocketAddr> = found.into_iter().filter(|a| crate::sanitizer::is_public_ip(a.ip())).collect();
+            if public.is_empty() {
+                return Err("host resolves only to local addresses".into());
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 pub struct NativeDownloadEngine {
     client: Client,
+    /// For automatic probes of addresses a page supplied: public-only DNS and redirects.
+    probe_client: Client,
     pub tasks: Arc<Mutex<Vec<DownloadTask>>>,
     active_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     pub speed_limit_bps: Arc<AtomicU64>,
@@ -462,10 +503,17 @@ impl NativeDownloadEngine {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(25))
             .read_timeout(Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::limited(20))
+            .redirect(guarded_redirects())
             .pool_max_idle_per_host(64)
             .build()
             .unwrap_or_else(|_| Client::new());
+        let probe_client = Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(Duration::from_secs(30))
+            .redirect(guarded_redirects())
+            .dns_resolver(Arc::new(PublicOnlyResolver))
+            .build()
+            .unwrap_or_else(|_| client.clone());
 
         let mut loaded = Self::load_queue();
         // "Auto-clean finished": finished items stay visible for the session and are dropped at the next start.
@@ -474,6 +522,7 @@ impl NativeDownloadEngine {
         }
         Self {
             client,
+            probe_client,
             tasks: Arc::new(Mutex::new(loaded)),
             active_flags: Arc::new(Mutex::new(HashMap::new())),
             speed_limit_bps: Arc::new(AtomicU64::new(initial_speed_limit_bps)),
@@ -743,7 +792,10 @@ impl NativeDownloadEngine {
         let mut size_bytes: Option<u64> = None;
         let mut resolved_name: Option<String> = None;
 
-        let head = with_headers(self.client.head(&url), &ua, &referer, &cookie);
+        // A public address supplied by a page is probed with public-only DNS; a page may still probe
+        // its own local host (e.g. a router's page probing its own files) through the normal client.
+        let c = if crate::sanitizer::is_public_http_url(&url) { &self.probe_client } else { &self.client };
+        let head = with_headers(c.head(&url), &ua, &referer, &cookie);
         if let Ok(resp) = head.timeout(Duration::from_secs(20)).send().await {
             if resp.status().is_success() {
                 size_bytes = resp
@@ -759,7 +811,7 @@ impl NativeDownloadEngine {
         }
 
         if size_bytes.is_none() {
-            let rb = with_headers(self.client.get(&url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
+            let rb = with_headers(c.get(&url), &ua, &referer, &cookie).header(RANGE, "bytes=0-0");
             if let Ok(resp) = rb.timeout(Duration::from_secs(20)).send().await {
                 if resp.status() == StatusCode::PARTIAL_CONTENT {
                     size_bytes = resp
@@ -1853,15 +1905,18 @@ async fn ensure_ffmpeg(client: &Client, status: &Arc<Mutex<String>>) -> Result<P
         tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
             let out_exe = BrowserStorage::ffmpeg_bin_dir().join("ffmpeg.exe");
-            let tmp = out_exe.with_extension("exe.tmp");
+            let tmp = crate::state::unique_tmp(&out_exe);
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
                 let name = entry.name().replace('\\', "/");
                 if name.ends_with("/bin/ffmpeg.exe") || name.eq_ignore_ascii_case("ffmpeg.exe") {
-                    let mut out_f = File::create(&tmp).map_err(|e| e.to_string())?;
-                    std::io::copy(&mut entry, &mut out_f).map_err(|e| e.to_string())?;
-                    drop(out_f);
-                    fs::rename(&tmp, &out_exe).map_err(|e| e.to_string())?;
+                    let written = File::create(&tmp)
+                        .and_then(|mut out_f| std::io::copy(&mut entry, &mut out_f).map(|_| ()))
+                        .and_then(|_| fs::rename(&tmp, &out_exe));
+                    if let Err(e) = written {
+                        let _ = fs::remove_file(&tmp);
+                        return Err(e.to_string());
+                    }
                     return Ok(out_exe);
                 }
             }
@@ -1914,9 +1969,12 @@ async fn ensure_ytdlp(client: &Client, status: &Arc<Mutex<String>>) -> Result<Pa
             return Err("SHA-256 mismatch, download rejected".to_string());
         }
         let out_exe = BrowserStorage::ffmpeg_bin_dir().join("yt-dlp.exe");
-        let tmp = out_exe.with_extension("exe.tmp");
+        let tmp = crate::state::unique_tmp(&out_exe);
         fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &out_exe).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::rename(&tmp, &out_exe) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
         Ok(out_exe)
     }
     .await;
