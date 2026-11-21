@@ -198,9 +198,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .ext-ic { width: 30px; height: 30px; border: none; border-radius: 8px; background: transparent; cursor: pointer; display: inline-flex;
     align-items: center; justify-content: center; padding: 0; transition: background .15s var(--ease-fluid); }
   .ext-ic:hover { background: rgba(118,118,128,.14); }
-  .ext-ic img { width: 20px; height: 20px; border-radius: 5px; }
+  .ext-ic img { width: 20px; height: 20px; border-radius: 4px; object-fit: contain; }
+  /* Extension icons keep their own colours (no dimming like the glyph buttons), as in Chrome and Safari. */
+  .tb.ext-ic { opacity: 1; }
+  .tb.ext-ic#ext-puzzle { opacity: 0.78; }
+  .tb.ext-ic#ext-puzzle:hover { opacity: 1; }
   .ext-ic svg { width: 18px; height: 18px; }
-  .ph { width: 20px; height: 20px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 700;
+  .ph { width: 20px; height: 20px; border-radius: 5px; background: rgba(118,118,128,.22); color: var(--text); font-size: 11px; font-weight: 700;
     display: flex; align-items: center; justify-content: center; }
   .ext-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; }
   .ext-row:hover { background: rgba(118,118,128,.08); }
@@ -259,6 +263,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: background 0.16s ease, color 0.16s ease;
   }
   .tab-close:hover { background: rgba(255, 59, 48, 0.18); color: var(--red); }
+  /* Narrow tabs (many open): the close button sits where the icon is on the current tab, as in
+     Safari; on other narrow tabs a click selects the tab (middle-click still closes it). */
+  .tab[data-narrow] { position: relative; padding: 4px 6px; gap: 4px; justify-content: center; }
+  .tab[data-narrow] .tab-close { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 20px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px;
+    background: var(--surface-solid); color: var(--text); opacity: 0; pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-fluid); box-shadow: 0 0 0 1px var(--border); }
+  .tab[data-narrow].active .tab-close { opacity: 1; pointer-events: auto; }
+  .tab[data-narrow].active .tab-logo { visibility: hidden; }
+  .tab[data-narrow] .tab-logo ~ .tab-title { display: none; }
+  .tab[data-narrow].active .tab-title { visibility: hidden; }
 
   .tab-add {
     border: none; background: rgba(128, 128, 128, 0.14); color: var(--blue); font-weight: 700;
@@ -2013,20 +2028,40 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.audioKey = audioKey;
         el.dataset.tabIdx = String(idx);
         const isNewTab = t.url === 'shunno://newtab';
-        const anonSvg = `<span style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
+        const anonSvg = `<span class="tab-logo" style="display:inline-flex;align-items:center;flex-shrink:0;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
         const tabLogoHtml = t.incognito
           ? anonSvg
           : ((!hasAudio && (isNewTab || t.pinned))
-              ? `<span style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`
+              ? `<span class="tab-logo" style="display:inline-flex;align-items:center;flex-shrink:0;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`
               : '');
         const audioHtml = hasAudio
           ? `<span class="tab-audio" onclick="event.stopPropagation(); send('TOGGLE_MUTE_TAB:${idx}')" title="${t.muted ? 'Unmute' : 'Mute'}">${t.muted ? '🔇' : '🔊'}</span>`
           : '';
-        el.innerHTML = `${tabLogoHtml}${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')">✕</span>`;
+        el.innerHTML = `${tabLogoHtml}${audioHtml}<span class="tab-title">${escapeHtml(displayTitle)}</span><span class="tab-close" onclick="event.stopPropagation(); send('CLOSE_TAB:${idx}')" title="Close Tab">✕</span>`;
       }
     });
     syncTabGroups(tabs, inSpace);
+    markNarrowTabs();
   }
+
+  // Safari, many tabs: a narrow tab keeps its close button, shown in place of the icon on the
+  // current tab and on hover, instead of being pushed out of view.
+  function markNarrowTabs() {
+    document.querySelectorAll('#tabs-container .tab').forEach(el => {
+      const narrow = el.getBoundingClientRect().width < 90;
+      if (narrow !== (el.dataset.narrow === '1')) {
+        if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
+      }
+    });
+  }
+  (function watchTabWidths() {
+    const start = () => {
+      const tc = document.getElementById('tabs-container');
+      if (tc && window.ResizeObserver) new ResizeObserver(() => markNarrowTabs()).observe(tc);
+      window.addEventListener('resize', markNarrowTabs);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  })();
 
   // Tab groups: a label before each group's first tab; member tabs tinted; collapsed groups hide their tabs.
   function syncTabGroups(tabs, inSpace) {
@@ -2468,7 +2503,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
     if (hc) hc.classList.add('active');
-    document.getElementById('bookmarks-strip').style.display = '';
+    // The Favorites bar belongs to web pages; hide it now, not when the native side confirms.
+    document.getElementById('bookmarks-strip').style.display = 'none';
     window.__focusHomeSearch();
     send('NEW_TAB');
   }
@@ -2703,6 +2739,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
     if (hc) hc.classList.add('active');
+    document.getElementById('bookmarks-strip').style.display = 'none';
   };
 
   // Downloads list: also called directly by the filters, so they respond without a native round trip.

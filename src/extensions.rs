@@ -55,7 +55,23 @@ fn registry_path() -> PathBuf {
 }
 
 pub fn load_registry() -> BTreeMap<String, Meta> {
-    fs::read_to_string(registry_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let mut reg: BTreeMap<String, Meta> = fs::read_to_string(registry_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    // Entries saved by older versions (or with an icon too large then) get their icon now.
+    let mut changed = false;
+    for m in reg.values_mut() {
+        if m.icon.is_none() && !m.path.is_empty() {
+            if let Ok(fresh) = read_manifest(Path::new(&m.path)) {
+                if fresh.icon.is_some() {
+                    m.icon = fresh.icon;
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        save_registry(&reg);
+    }
+    reg
 }
 
 pub fn save_registry(r: &BTreeMap<String, Meta>) {
@@ -64,10 +80,13 @@ pub fn save_registry(r: &BTreeMap<String, Meta>) {
     }
 }
 
-/// Join WebView2's list (id, name, enabled) with what Shunno read from the manifests.
+/// Join WebView2's list (id, name, enabled) with what Shunno read from the manifests. Only the
+/// extensions the user added are listed: WebView2 also reports its own built-in components (the
+/// PDF viewer, the clipboard helper), which are part of the runtime, not something to manage.
 pub fn entries(installed: &[(String, String, bool)], reg: &BTreeMap<String, Meta>) -> Vec<Entry> {
     let mut v: Vec<Entry> = installed
         .iter()
+        .filter(|(id, _, _)| reg.contains_key(id))
         .map(|(id, name, enabled)| {
             let m = reg.get(id).cloned().unwrap_or_default();
             Entry {
@@ -151,7 +170,8 @@ pub fn read_manifest(dir: &Path) -> Result<Meta, String> {
     })
 }
 
-/// PNG icons from "icons" and the action's default_icon, closest to 32 px first (larger wins a tie).
+/// PNG icons from "icons" and the action's default_icon, closest to 48 px first (larger wins a tie):
+/// sharp at the toolbar's 20 px on high-DPI screens and at 36 px in the panel.
 fn icon_candidates(m: &serde_json::Value, action: Option<&serde_json::Value>) -> Vec<String> {
     let mut cands: Vec<(u32, String)> = Vec::new();
     for src in [m.get("icons"), action.and_then(|a| a.get("default_icon"))].into_iter().flatten() {
@@ -165,13 +185,13 @@ fn icon_candidates(m: &serde_json::Value, action: Option<&serde_json::Value>) ->
             cands.push((32, p.to_string()));
         }
     }
-    cands.sort_by_key(|(n, _)| ((*n as i64 - 32).abs(), -(*n as i64)));
+    cands.sort_by_key(|(n, _)| ((*n as i64 - 48).abs(), -(*n as i64)));
     cands.into_iter().map(|(_, p)| p).filter(|p| p.to_ascii_lowercase().ends_with(".png") && !p.contains("..")).collect()
 }
 
 fn icon_data_url(file: &Path) -> Option<String> {
     let bytes = fs::read(file).ok()?;
-    if bytes.len() > 48 * 1024 || !bytes.starts_with(b"\x89PNG") {
+    if bytes.len() > 128 * 1024 || !bytes.starts_with(b"\x89PNG") {
         return None;
     }
     Some(format!("data:image/png;base64,{}", base64(&bytes)))
