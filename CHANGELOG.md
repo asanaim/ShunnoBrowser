@@ -1,3 +1,12 @@
+## v2.24.0
+
+### Multiple windows
+* **Ctrl+N** opens a new window (also in the Menu and the command palette). Each window has its own tabs, active tab, split view, Space and Peek; settings, bookmarks, history, downloads and the profile are shared.
+* **Tear a tab off:** drag a tab out of the tab bar and drop it on the page area to give it its own window where you let go. Or right-click a tab: **Move Tab to New Window**, or **Move to Window** for another open window. The page moves live: no reload, nothing lost.
+* Closing a window keeps the others open; its tabs go to Recently Closed (Ctrl+Shift+T). Closing the last tab of a window closes that window. The last window quits as before.
+* **All windows are restored** with the session, each with its own tabs.
+* Links from other apps, Ctrl+Alt+N and new tabs go to the window you used last; light/dark changes apply to every window.
+
 ## v2.23.0
 
 ### Tab Groups

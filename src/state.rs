@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.23.0";
+pub const APP_VERSION: &str = "v2.24.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -96,6 +96,27 @@ pub struct SavedTab {
     /// Tab group id (see tab_groups.json), if the tab was in a group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u32>,
+    /// Window the tab was in (0 = first window).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub window: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// Split a saved session into windows, in window order (window 0 first). Empty windows are dropped.
+pub fn session_windows(tabs: Vec<SavedTab>) -> Vec<Vec<SavedTab>> {
+    let mut idx: Vec<u32> = tabs.iter().map(|t| t.window).collect();
+    idx.sort_unstable();
+    idx.dedup();
+    let mut out: Vec<Vec<SavedTab>> = idx.iter().map(|_| Vec::new()).collect();
+    for t in tabs {
+        if let Ok(k) = idx.binary_search(&t.window) {
+            out[k].push(t);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------

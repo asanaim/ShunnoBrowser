@@ -158,7 +158,8 @@ fn live_groups(tabs: &[BrowserTab]) -> Vec<state::TabGroup> {
     GROUPS.with(|g| {
         let mut g = g.borrow_mut();
         let before = g.len();
-        g.retain(|x| tabs.iter().any(|t| tab_group(t.id) == Some(x.id)));
+        let others = OTHER_TAB_IDS.with(|o| o.borrow().clone());
+        g.retain(|x| tabs.iter().map(|t| t.id).chain(others.iter().copied()).any(|id| tab_group(id) == Some(x.id)));
         if g.len() != before {
             BrowserStorage::save_tab_groups(&g);
         }
@@ -295,7 +296,11 @@ fn sweep_permissions(tabs: &[BrowserTab], extra_live: &[usize]) {
             .iter()
             .filter(|p| match tabs.iter().find(|t| t.id == p.tab_id) {
                 Some(t) => t.webview.url().ok().and_then(|u| passwords::origin_of(&u)).as_deref() != Some(p.origin.as_str()),
-                None => !extra_live.contains(&p.tab_id) && peek_id() != Some(p.tab_id),
+                None => {
+                    !extra_live.contains(&p.tab_id)
+                        && peek_id() != Some(p.tab_id)
+                        && !OTHER_TAB_IDS.with(|o| o.borrow().contains(&p.tab_id))
+                }
             })
             .map(|p| p.id)
             .collect()
@@ -406,6 +411,10 @@ enum AppEvent {
     SearchSelection(usize, String),
     ImportDone(Result<(String, Vec<BookmarkEntry>, Vec<HistoryEntry>), String>),
     ChromeIpc(String),
+    /// Toolbar message from a specific browser window (its key); handled as ChromeIpc there.
+    ChromeIpcW(u64, String),
+    /// Session restore: open another window with these tabs (url, space, group).
+    RestoreWindow(Vec<(String, u32, Option<u32>)>),
     ContentIpc(usize, String),
     DownloadIntercepted(String),
     NativeDownloadStarted {
@@ -478,6 +487,65 @@ struct BrowserTab {
     webview: WebView,
 }
 
+/// A browser window that is not the one the event loop is working on right now. The loop works on
+/// one window at a time (its locals: `window`, `chrome_wv`, `tabs`, ...); an event for another
+/// window swaps that window's state in first.
+struct ParkedWindow {
+    key: u64,
+    // Fields drop in this order: web views before the window that hosts them.
+    peek: Option<Peek>,
+    tabs: Vec<BrowserTab>,
+    chrome_wv: WebView,
+    window: Window,
+    active_tab_idx: usize,
+    split_tab_idx: Option<usize>,
+    drawer_open: bool,
+    engine_menu_open: bool,
+    palette_open: bool,
+    is_fullscreen: bool,
+    find_current: usize,
+    find_total: usize,
+    site_data_cleared: bool,
+    space: u32,
+    chrome_last_h: f64,
+    peek_rect: [f64; 4],
+}
+
+/// Which tab an event is about, if any (to route it to that tab's window).
+fn event_tab_id(e: &AppEvent) -> Option<usize> {
+    match e {
+        AppEvent::ContentIpc(t, _)
+        | AppEvent::NavigateTab(t, _)
+        | AppEvent::HttpsInterstitial(t, _)
+        | AppEvent::NewWindowBlockedOrOpened(t, _)
+        | AppEvent::NativeStreamCaptured(t, _, _, _)
+        | AppEvent::StreamSizeResolved(t, _)
+        | AppEvent::TabAudioChanged(t, _)
+        | AppEvent::TabTitleChanged(t, _)
+        | AppEvent::TabUrlChanged(t, _)
+        | AppEvent::TabZoomChanged(t, _)
+        | AppEvent::SearchSelection(t, _) => Some(*t),
+        AppEvent::NavigationDone(t, _, _) => Some(*t),
+        AppEvent::TakeoverCandidate { tab_id, .. } => Some(*tab_id),
+        #[cfg(windows)]
+        AppEvent::PermissionRequest(id) => PERM_PENDING.with(|q| q.borrow().iter().find(|p| p.id == *id).map(|p| p.tab_id)),
+        _ => None,
+    }
+}
+
+/// The other open windows, for the toolbar's "Move to Window" menu: (key, title).
+#[derive(Clone, Serialize)]
+struct WindowView {
+    key: u64,
+    title: String,
+}
+thread_local! {
+    static OTHER_WINDOWS: std::cell::RefCell<Vec<WindowView>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Tab ids living in the other windows (so groups and permission requests there stay alive).
+    static OTHER_TAB_IDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    static WINDOW_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
 #[derive(Clone, Serialize)]
 struct SniffedStreamItem {
     url: String,
@@ -526,6 +594,8 @@ struct ChromeSnapshot {
     profiles: Vec<ProfileView>,
     links_profile: String,
     tab_groups: Vec<state::TabGroup>,
+    window_key: u64,
+    other_windows: Vec<WindowView>,
     name_group: Option<u32>,
     permissions: Vec<permissions::Entry>,
     active_reader_available: bool,
@@ -1348,6 +1418,7 @@ fn page_shortcut_id(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<&'sta
         (0x4B, false) => "palette",       // Ctrl+K
         (0x4A, false) => "downloads",     // Ctrl+J
         (0x46, false) => "find",          // Ctrl+F
+        (0x4E, false) => "new-window",    // Ctrl+N
         _ => return None,
     })
 }
@@ -2303,11 +2374,29 @@ struct MaxButton {
     pressed: bool,
     active: bool,
 }
-static MAX_BUTTON: std::sync::Mutex<MaxButton> = std::sync::Mutex::new(MaxButton {
-    rect: (0, 0, 0, 0), bg: 0, fg: 0, hover_bg: 0, radius: 0, glyph_px: 10, hover: false, pressed: false, active: false,
-});
-/// The toolbar web view's host window (wry's container HWND).
-static CHROME_HOST_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// Per browser window (keyed by its HWND): the native maximize button and the toolbar web view's
+/// host window (wry's container HWND).
+static MAX_BUTTONS: std::sync::Mutex<Vec<(isize, MaxButton, isize)>> = std::sync::Mutex::new(Vec::new());
+fn with_max_button<R>(main: isize, f: impl FnOnce(&mut MaxButton) -> R) -> R {
+    let mut v = MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner());
+    if !v.iter().any(|e| e.0 == main) {
+        v.push((main, MaxButton { glyph_px: 10, ..Default::default() }, 0));
+    }
+    let e = v.iter_mut().find(|e| e.0 == main).expect("just inserted");
+    f(&mut e.1)
+}
+fn chrome_host_of(main: isize) -> isize {
+    MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == main).map(|e| e.2).unwrap_or(0)
+}
+fn set_chrome_host(main: isize, host: isize) {
+    with_max_button(main, |_| ());
+    if let Some(e) = MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|e| e.0 == main) {
+        e.2 = host;
+    }
+}
+fn forget_window_native(main: isize) {
+    MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.0 != main);
+}
 
 /// Parse "#RRGGBB" to COLORREF (0x00BBGGRR).
 fn colorref(hex: &str) -> Option<u32> {
@@ -2325,8 +2414,8 @@ fn colorref(hex: &str) -> Option<u32> {
 fn max_button_client_rect(main: windows::Win32::Foundation::HWND) -> Option<windows::Win32::Foundation::RECT> {
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::Graphics::Gdi::MapWindowPoints;
-    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
-    let host = CHROME_HOST_HWND.load(Ordering::Relaxed);
+    let b = with_max_button(main.0, |b| *b);
+    let host = chrome_host_of(main.0);
     if !b.active || host == 0 || !SNAP_NATIVE.load(Ordering::Relaxed) {
         return None;
     }
@@ -2356,7 +2445,7 @@ fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32:
     };
     use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
     let Some(mut r) = max_button_client_rect(main) else { return };
-    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+    let b = with_max_button(main.0, |b| *b);
     unsafe {
         let bg = CreateSolidBrush(COLORREF(b.bg));
         FillRect(hdc, &r, bg);
@@ -2397,11 +2486,11 @@ fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32:
 fn apply_max_button_hole(main_hwnd: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, InvalidateRect, SetWindowRgn, RGN_DIFF};
-    let host = CHROME_HOST_HWND.load(Ordering::Relaxed);
+    let host = chrome_host_of(main_hwnd);
     if host == 0 {
         return;
     }
-    let b = *MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+    let b = with_max_button(main_hwnd, |b| *b);
     unsafe {
         let all = CreateRectRgn(0, 0, 32000, 32000);
         if b.active && b.rect.2 > b.rect.0 && b.rect.3 > b.rect.1 {
@@ -2602,15 +2691,14 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                 // to the default handler so Windows can show Snap Layouts.
                 0x00A0 /* WM_NCMOUSEMOVE */ => {
                     let over = wparam.0 == HTMAXBUTTON as usize;
-                    let changed = {
-                        let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                    let changed = with_max_button(hwnd.0, |b| {
                         let c = b.hover != over;
                         b.hover = over;
                         if !over {
                             b.pressed = false;
                         }
                         c
-                    };
+                    });
                     if over {
                         use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
                         let mut t = TRACKMOUSEEVENT {
@@ -2626,20 +2714,19 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
                     }
                 }
                 0x02A2 /* WM_NCMOUSELEAVE */ => {
-                    {
-                        let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                    with_max_button(hwnd.0, |b| {
                         b.hover = false;
                         b.pressed = false;
-                    }
+                    });
                     invalidate_max_button(hwnd);
                 }
                 0x00A1 /* WM_NCLBUTTONDOWN */ | 0x00A3 /* WM_NCLBUTTONDBLCLK */ if wparam.0 == HTMAXBUTTON as usize => {
-                    MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner()).pressed = true;
+                    with_max_button(hwnd.0, |b| b.pressed = true);
                     invalidate_max_button(hwnd);
                     return LRESULT(0);
                 }
                 0x00A2 /* WM_NCLBUTTONUP */ if wparam.0 == HTMAXBUTTON as usize => {
-                    let was_pressed = std::mem::replace(&mut MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner()).pressed, false);
+                    let was_pressed = with_max_button(hwnd.0, |b| std::mem::replace(&mut b.pressed, false));
                     if was_pressed {
                         use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MAXIMIZE, SW_RESTORE};
                         let _ = ShowWindow(hwnd, if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE });
@@ -2971,7 +3058,7 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
+    let mut window = WindowBuilder::new()
         .with_title(window_title_for_profile(&refresh_profiles()))
         .with_decorations(false)
         .with_window_icon(load_embedded_window_icon())
@@ -2988,7 +3075,7 @@ fn main() -> wry::Result<()> {
         use wry::WebViewBuilderExtWindows;
         chrome_builder = chrome_builder.with_additional_browser_args(state::browser_args(global_settings.force_dark_pages));
     }
-    let chrome_wv = chrome_builder
+    let mut chrome_wv = chrome_builder
         .with_web_context(&mut web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
@@ -2997,7 +3084,7 @@ fn main() -> wry::Result<()> {
         .with_transparent(true)
         .with_html(ui_chrome::CHROME_HTML)
         .with_ipc_handler(move |req| {
-            let _ = chrome_proxy.send_event(AppEvent::ChromeIpc(req.body().clone()));
+            let _ = chrome_proxy.send_event(AppEvent::ChromeIpcW(1, req.body().clone()));
         })
         .build()?;
 
@@ -3018,7 +3105,8 @@ fn main() -> wry::Result<()> {
         use wry::WebViewExtWindows;
         let mut host = windows::Win32::Foundation::HWND::default();
         if chrome_wv.controller().ParentWindow(&mut host).is_ok() {
-            CHROME_HOST_HWND.store(host.0, Ordering::Relaxed);
+            use tao::platform::windows::WindowExtWindows;
+            set_chrome_host(window.hwnd() as isize, host.0);
         }
         if SNAP_NATIVE.load(Ordering::Relaxed) {
             // Windows only offers Snap Layouts for windows that have a maximize box.
@@ -3055,13 +3143,21 @@ fn main() -> wry::Result<()> {
     SPACES.with(|s| *s.borrow_mut() = BrowserStorage::load_spaces());
     let saved_session = BrowserStorage::load_session();
     GROUPS.with(|g| *g.borrow_mut() = BrowserStorage::load_tab_groups());
-    let initial: Vec<(String, u32, Option<u32>)> = if saved_session.is_empty() {
+    let resolve = |id: u32| SPACES.with(|s| s.borrow().resolve(id));
+    let known = |g: u32| GROUPS.with(|x| x.borrow().iter().any(|y| y.id == g));
+    let mut saved_windows: Vec<Vec<(String, u32, Option<u32>)>> = state::session_windows(saved_session)
+        .into_iter()
+        .map(|w| w.into_iter().map(|t| (t.url, resolve(t.space), t.group.filter(|&g| known(g)))).collect())
+        .collect();
+    let initial: Vec<(String, u32, Option<u32>)> = if saved_windows.is_empty() {
         vec![("shunno://newtab".to_string(), active_space(), None)]
     } else {
-        let resolve = |id: u32| SPACES.with(|s| s.borrow().resolve(id));
-        let known = |g: u32| GROUPS.with(|x| x.borrow().iter().any(|y| y.id == g));
-        saved_session.into_iter().map(|t| (t.url, resolve(t.space), t.group.filter(|&g| known(g)))).collect()
+        saved_windows.remove(0)
     };
+    // The other windows are rebuilt once the event loop runs.
+    for w in saved_windows {
+        let _ = proxy.send_event(AppEvent::RestoreWindow(w));
+    }
 
     for (u, restored_space, restored_group) in initial {
         let host = extract_host(&u);
@@ -3278,6 +3374,8 @@ fn main() -> wry::Result<()> {
             profiles: PROFILES.with(|p| p.borrow().clone()),
             links_profile: LINKS_PROFILE.with(|l| l.borrow().clone()),
             tab_groups: live_groups(tabs),
+            window_key: WINDOW_KEY.with(|k| k.get()),
+            other_windows: OTHER_WINDOWS.with(|w| w.borrow().clone()),
             name_group: NEW_GROUP_TO_NAME.with(|n| n.take()),
             active_reader_available: tabs.get(active_idx).map(|t| READER_AVAILABLE.with(|r| r.borrow().contains(&t.id))).unwrap_or(false),
             peek: PEEK.with(|p| {
@@ -3351,8 +3449,241 @@ fn main() -> wry::Result<()> {
 
     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
 
+    // ------------------------------------------------------------ Multiple windows
+    let mut parked: Vec<ParkedWindow> = Vec::new();
+    let mut current_key: u64 = 1;
+    let mut focused_key: u64 = 1;
+    let mut next_window_key: u64 = 2;
+
     event_loop.run(move |event, elwt, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // Swap another window's state into the loop's locals (and the current one out).
+        macro_rules! swap_window {
+            ($p:expr) => {{
+                let p: &mut ParkedWindow = $p;
+                std::mem::swap(&mut window, &mut p.window);
+                std::mem::swap(&mut chrome_wv, &mut p.chrome_wv);
+                std::mem::swap(&mut tabs, &mut p.tabs);
+                std::mem::swap(&mut active_tab_idx, &mut p.active_tab_idx);
+                std::mem::swap(&mut split_tab_idx, &mut p.split_tab_idx);
+                std::mem::swap(&mut drawer_open, &mut p.drawer_open);
+                std::mem::swap(&mut engine_menu_open, &mut p.engine_menu_open);
+                std::mem::swap(&mut palette_open, &mut p.palette_open);
+                std::mem::swap(&mut is_fullscreen, &mut p.is_fullscreen);
+                std::mem::swap(&mut find_current, &mut p.find_current);
+                std::mem::swap(&mut find_total, &mut p.find_total);
+                std::mem::swap(&mut site_data_cleared, &mut p.site_data_cleared);
+                std::mem::swap(&mut current_key, &mut p.key);
+                let sp = active_space();
+                SPACES.with(|s| s.borrow_mut().active = p.space);
+                p.space = sp;
+                p.chrome_last_h = CHROME_LAST_H.with(|c| c.replace(p.chrome_last_h));
+                PEEK.with(|k| std::mem::swap(&mut *k.borrow_mut(), &mut p.peek));
+                p.peek_rect = PEEK_RECT.with(|c| c.replace(p.peek_rect));
+            }};
+        }
+        macro_rules! switch_to {
+            ($k:expr) => {{
+                let k: u64 = $k;
+                if k != current_key {
+                    if let Some(i) = parked.iter().position(|p| p.key == k) {
+                        swap_window!(&mut parked[i]);
+                    }
+                }
+            }};
+        }
+        // Every non-incognito tab of every window, for the saved session (this window first).
+        macro_rules! session_tabs {
+            () => {{
+                let mut v: Vec<SavedTab> = Vec::new();
+                let all = std::iter::once(&tabs).chain(parked.iter().map(|p| &p.tabs));
+                for (w, ts) in all.enumerate() {
+                    for t in ts.iter().filter(|t| !t.incognito) {
+                        v.push(SavedTab { title: t.title.clone(), url: t.url.clone(), space: tab_space(t.id), group: tab_group(t.id), window: w as u32 });
+                    }
+                }
+                v
+            }};
+        }
+        // A new, empty browser window (made current; the caller adds tabs).
+        macro_rules! open_window {
+            ($pos:expr) => {{
+                let key = next_window_key;
+                next_window_key += 1;
+                let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+                let mut wb = WindowBuilder::new()
+                    .with_title(window_title_for_profile(&BrowserStorage::load_profiles()))
+                    .with_decorations(false)
+                    .with_window_icon(load_embedded_window_icon())
+                    .with_inner_size(LogicalSize::new(size.width.max(640.0), size.height.max(420.0)));
+                let pos: Option<(f64, f64)> = $pos;
+                match pos {
+                    Some((x, y)) => wb = wb.with_position(tao::dpi::PhysicalPosition::new(x, y)),
+                    None => {
+                        if let Ok(p) = window.outer_position() {
+                            wb = wb.with_position(tao::dpi::PhysicalPosition::new(p.x + 36, p.y + 36));
+                        }
+                    }
+                }
+                match wb.build(elwt) {
+                    Ok(nw) => {
+                        let cp = proxy.clone();
+                        #[allow(unused_mut)]
+                        let mut cb = WebViewBuilder::new_as_child(&nw);
+                        #[cfg(windows)]
+                        {
+                            use wry::WebViewBuilderExtWindows;
+                            cb = cb.with_additional_browser_args(state::browser_args(FORCE_DARK_AT_START.load(Ordering::Relaxed)));
+                        }
+                        let built = cb
+                            .with_web_context(&mut web_context)
+                            .with_bounds(Rect { position: LogicalPosition::new(0.0, 0.0).into(), size: LogicalSize::new(size.width, CHROME_BAR_HEIGHT).into() })
+                            .with_transparent(true)
+                            .with_html(ui_chrome::CHROME_HTML)
+                            .with_ipc_handler(move |req| {
+                                let _ = cp.send_event(AppEvent::ChromeIpcW(key, req.body().clone()));
+                            })
+                            .build();
+                        match built {
+                            Ok(nc) => {
+                                install_native_win32_window_features(&nw, &nc);
+                                set_frame_theme(&nw, global_settings.full_dark_mode);
+                                #[cfg(windows)]
+                                unsafe {
+                                    use tao::platform::windows::WindowExtWindows;
+                                    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_MAXIMIZEBOX};
+                                    use wry::WebViewExtWindows;
+                                    let mut host = windows::Win32::Foundation::HWND::default();
+                                    if nc.controller().ParentWindow(&mut host).is_ok() {
+                                        set_chrome_host(nw.hwnd() as isize, host.0);
+                                    }
+                                    if SNAP_NATIVE.load(Ordering::Relaxed) {
+                                        let h = windows::Win32::Foundation::HWND(nw.hwnd() as isize);
+                                        let st = GetWindowLongPtrW(h, GWL_STYLE);
+                                        SetWindowLongPtrW(h, GWL_STYLE, st | WS_MAXIMIZEBOX.0 as isize);
+                                    }
+                                }
+                                attach_f11_accelerator_hook(&nc, proxy.clone());
+                                parked.push(ParkedWindow {
+                                    key,
+                                    window: nw,
+                                    chrome_wv: nc,
+                                    tabs: Vec::new(),
+                                    active_tab_idx: 0,
+                                    split_tab_idx: None,
+                                    drawer_open: false,
+                                    engine_menu_open: false,
+                                    palette_open: false,
+                                    is_fullscreen: false,
+                                    find_current: 0,
+                                    find_total: 0,
+                                    site_data_cleared: false,
+                                    space: active_space(),
+                                    chrome_last_h: 0.0,
+                                    peek: None,
+                                    peek_rect: [0.0; 4],
+                                });
+                                switch_to!(key);
+                                focused_key = key;
+                                true
+                            }
+                            Err(_) => false,
+                        }
+                    }
+                    Err(_) => false,
+                }
+            }};
+        }
+        // Move a live tab's web view under the current window (no reload).
+        macro_rules! adopt_webview {
+            ($wv:expr) => {{
+                #[cfg(windows)]
+                unsafe {
+                    use tao::platform::windows::WindowExtWindows;
+                    use windows::Win32::UI::WindowsAndMessaging::SetParent;
+                    use wry::WebViewExtWindows;
+                    let mut host = windows::Win32::Foundation::HWND::default();
+                    if $wv.controller().ParentWindow(&mut host).is_ok() {
+                        let _ = SetParent(host, windows::Win32::Foundation::HWND(window.hwnd() as isize));
+                    }
+                }
+            }};
+        }
+        // Close the current window (others stay open): its tabs go to Recently Closed.
+        macro_rules! close_current_window {
+            () => {{
+                let _ = close_peek();
+                for t in tabs.drain(..) {
+                    if !t.incognito && t.url != "shunno://newtab" {
+                        closed_tabs.push(SavedTab { space: tab_space(t.id), title: t.title.clone(), url: t.url.clone(), group: None, window: 0 });
+                    }
+                    set_tab_group(t.id, None);
+                }
+                #[cfg(windows)]
+                {
+                    use tao::platform::windows::WindowExtWindows;
+                    forget_window_native(window.hwnd() as isize);
+                }
+                little::hotkey_owner_closed();
+                let mut next = parked.pop().expect("another window");
+                swap_window!(&mut next);
+                drop(next);
+                focused_key = current_key;
+                window.set_focus();
+                #[cfg(windows)]
+                {
+                    use tao::platform::windows::WindowExtWindows;
+                    little::publish_main_window(window.hwnd() as isize);
+                    little::register_hotkey(window.hwnd() as isize);
+                }
+                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }};
+        }
+
+        // Route the event to its window.
+        let event = match event {
+            Event::UserEvent(AppEvent::ChromeIpcW(k, m)) => {
+                switch_to!(k);
+                Event::UserEvent(AppEvent::ChromeIpc(m))
+            }
+            e => {
+                let target = match &e {
+                    Event::WindowEvent { window_id, .. } => {
+                        if *window_id == window.id() {
+                            Some(current_key)
+                        } else {
+                            parked.iter().find(|p| p.window.id() == *window_id).map(|p| p.key)
+                        }
+                    }
+                    Event::UserEvent(ue) => Some(
+                        event_tab_id(ue)
+                            .and_then(|t| {
+                                if tabs.iter().any(|x| x.id == t) {
+                                    Some(current_key)
+                                } else {
+                                    parked.iter().find(|p| p.tabs.iter().any(|x| x.id == t)).map(|p| p.key)
+                                }
+                            })
+                            .unwrap_or(focused_key),
+                    ),
+                    _ => None,
+                };
+                if let Some(k) = target {
+                    switch_to!(k);
+                }
+                e
+            }
+        };
+        WINDOW_KEY.with(|k| k.set(current_key));
+        OTHER_WINDOWS.with(|w| {
+            *w.borrow_mut() = parked
+                .iter()
+                .map(|p| WindowView { key: p.key, title: p.tabs.get(p.active_tab_idx).map(|t| t.title.clone()).unwrap_or_default() })
+                .collect()
+        });
+        OTHER_TAB_IDS.with(|o| *o.borrow_mut() = parked.iter().flat_map(|p| p.tabs.iter().map(|t| t.id)).collect());
 
         // Little Shunno's own window events never reach the main window's handlers.
         if let Event::WindowEvent { window_id, event: ref wev, .. } = event {
@@ -3409,10 +3740,19 @@ fn main() -> wry::Result<()> {
                 // Remember this profile as the one in use (links and Ctrl+Alt+N follow it),
                 // and take Ctrl+Alt+N if the window that held it has closed.
                 BrowserStorage::save_last_profile(state::profile_id());
+                // This window is now the one shortcuts, links and new tabs go to.
+                let changed = focused_key != current_key;
+                focused_key = current_key;
                 #[cfg(windows)]
                 {
                     use tao::platform::windows::WindowExtWindows;
                     little::register_hotkey(window.hwnd() as isize);
+                    if changed {
+                        little::publish_main_window(window.hwnd() as isize);
+                    }
+                }
+                if changed {
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
                 }
             }
 
@@ -3440,16 +3780,11 @@ fn main() -> wry::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                let to_save: Vec<SavedTab> = tabs
-                    .iter()
-                    .filter(|t| !t.incognito)
-                    .map(|t| SavedTab {
-                        title: t.title.clone(),
-                        url: t.url.clone(),
-                        space: tab_space(t.id),
-                        group: tab_group(t.id),
-                    })
-                    .collect();
+                if !parked.is_empty() {
+                    close_current_window!();
+                    return;
+                }
+                let to_save: Vec<SavedTab> = session_tabs!();
                 BrowserStorage::save_session(&to_save);
                 save_groups();
                 *control_flow = ControlFlow::Exit;
@@ -3512,7 +3847,7 @@ fn main() -> wry::Result<()> {
                     for idx in doomed {
                         let removed = tabs.remove(idx);
                         if removed.url != "shunno://newtab" {
-                            closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None });
+                            closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None, window: 0 });
                         }
                     }
                     active_tab_idx = active_id.and_then(|id| tabs.iter().position(|t| t.id == id)).unwrap_or(0);
@@ -4199,12 +4534,58 @@ fn main() -> wry::Result<()> {
                 return;
             }
 
+            Event::UserEvent(AppEvent::RestoreWindow(list)) => {
+                if open_window!(None) {
+                    for (u, sp, grp) in list {
+                        let host = extract_host(&u);
+                        let pol = site_policies.get(&host).cloned().unwrap_or_default();
+                        let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
+                        set_tab_space(tid, sp);
+                        set_tab_group(tid, grp);
+                        if let Ok(wv) = create_tab_webview(&window, &mut web_context, tid, &u, &pol, &global_settings, &ipc_token, proxy.clone(), false) {
+                            let title = if u == "shunno://newtab" { "New Tab".to_string() } else if host.is_empty() { u.clone() } else { host };
+                            tabs.push(BrowserTab {
+                                id: tid,
+                                title,
+                                url: u,
+                                cookie: None,
+                                incognito: false,
+                                pinned: false,
+                                playing_audio: false,
+                                muted: false,
+                                reader_active: false,
+                                sleeping: false,
+                                last_active_secs: now_epoch_secs(),
+                                zoom: pol.zoom,
+                                webview: wv,
+                            });
+                        }
+                    }
+                    if tabs.is_empty() {
+                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                    }
+                    if let Some(i) = state::pick_tab_for_space(&tab_space_pairs(&tabs), active_space(), None) {
+                        active_tab_idx = i;
+                    }
+                    for (i, t) in tabs.iter().enumerate() {
+                        if i != active_tab_idx {
+                            let _ = t.webview.set_visible(false);
+                        }
+                    }
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                }
+            }
+
             Event::UserEvent(AppEvent::SystemThemeChanged) => {
                 if global_settings.theme_mode == "system" {
                     let dark = system_prefers_dark();
                     if dark != global_settings.full_dark_mode {
                         global_settings.full_dark_mode = dark;
                         apply_theme(&window, &tabs, dark);
+                        for p in &parked {
+                            apply_theme(&p.window, &p.tabs, dark);
+                        }
                         let _ = proxy.send_event(AppEvent::RefreshChrome);
                     }
                 }
@@ -4787,16 +5168,11 @@ fn main() -> wry::Result<()> {
                 } else if cmd == "WIN_MAXIMIZE" {
                     window.set_maximized(!window.is_maximized());
                 } else if cmd == "WIN_CLOSE" {
-                    let to_save: Vec<SavedTab> = tabs
-                        .iter()
-                        .filter(|t| !t.incognito)
-                        .map(|t| SavedTab {
-                            title: t.title.clone(),
-                            url: t.url.clone(),
-                            space: tab_space(t.id),
-                            group: tab_group(t.id),
-                        })
-                        .collect();
+                    if !parked.is_empty() {
+                        close_current_window!();
+                        return;
+                    }
+                    let to_save: Vec<SavedTab> = session_tabs!();
                     BrowserStorage::save_session(&to_save);
                     save_groups();
                     *control_flow = ControlFlow::Exit;
@@ -5012,14 +5388,18 @@ fn main() -> wry::Result<()> {
                     return;
                 } else if let Some(idx_str) = cmd.strip_prefix("CLOSE_TAB:") {
                     if let Ok(idx) = idx_str.parse::<usize>() {
-                        if tabs.len() <= 1 {
+                        if tabs.len() <= 1 && !parked.is_empty() {
+                            // Last tab of one of several windows: close just that window.
+                            close_current_window!();
+                            return;
+                        } else if tabs.len() <= 1 {
                             BrowserStorage::save_session(&[]);
                             *control_flow = ControlFlow::Exit;
                             return;
                         } else if idx < tabs.len() {
                             let removed = tabs.remove(idx);
                             if !removed.incognito && removed.url != "shunno://newtab" {
-                                closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None });
+                                closed_tabs.push(SavedTab { space: tab_space(removed.id), title: removed.title, url: removed.url, group: None, window: 0 });
                             }
                             // Keep the same tab active when a tab to its left closes.
                             if idx < active_tab_idx {
@@ -5144,6 +5524,9 @@ fn main() -> wry::Result<()> {
                             global_settings.theme_mode = if global_settings.full_dark_mode { "light" } else { "dark" }.to_string();
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
                             apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                            for p in &parked {
+                                apply_theme(&p.window, &p.tabs, global_settings.full_dark_mode);
+                            }
                         }
                         "force_dark_pages" => {
                             global_settings.force_dark_pages = !global_settings.force_dark_pages;
@@ -5210,11 +5593,7 @@ fn main() -> wry::Result<()> {
                     let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(opener, updater::RELEASES_PAGE.to_string()));
                 } else if cmd == "RESTART_FOR_UPDATE" {
                     if matches!(updater::global().state(), updater::UpdateState::Ready { .. }) {
-                        let to_save: Vec<SavedTab> = tabs
-                            .iter()
-                            .filter(|t| !t.incognito)
-                            .map(|t| SavedTab { title: t.title.clone(), url: t.url.clone(), space: tab_space(t.id), group: tab_group(t.id) })
-                            .collect();
+                        let to_save: Vec<SavedTab> = session_tabs!();
                         BrowserStorage::save_session(&to_save);
                         save_groups();
                         engine.save_queue();
@@ -5438,8 +5817,8 @@ fn main() -> wry::Result<()> {
                         let f: Vec<&str> = arg.split('|').collect();
                         if f.len() == 9 {
                             let n = |i: usize| f[i].trim().parse::<f64>().map(|v| v.round() as i32).unwrap_or(0);
-                            {
-                                let mut b = MAX_BUTTON.lock().unwrap_or_else(|e| e.into_inner());
+                            #[cfg(windows)]
+                            with_max_button({ use tao::platform::windows::WindowExtWindows; window.hwnd() as isize }, |b| {
                                 b.rect = (n(0), n(1), n(0) + n(2), n(1) + n(3));
                                 b.bg = colorref(f[4]).unwrap_or(0x00FFFFFF);
                                 b.fg = colorref(f[5]).unwrap_or(0);
@@ -5447,7 +5826,7 @@ fn main() -> wry::Result<()> {
                                 b.radius = n(7);
                                 b.glyph_px = n(8).max(8);
                                 b.active = n(2) > 0 && n(3) > 0;
-                            }
+                            });
                             #[cfg(windows)]
                             {
                                 use tao::platform::windows::WindowExtWindows;
@@ -5549,7 +5928,7 @@ fn main() -> wry::Result<()> {
                                 if tab_space(tabs[i].id) == id && tabs.len() > 1 {
                                     let removed = tabs.remove(i);
                                     if !removed.incognito && removed.url != "shunno://newtab" {
-                                        closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url, group: None });
+                                        closed_tabs.push(SavedTab { space: target, title: removed.title, url: removed.url, group: None, window: 0 });
                                     }
                                 } else {
                                     i += 1;
@@ -5571,6 +5950,90 @@ fn main() -> wry::Result<()> {
                                 }
                             }
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        }
+                    }
+                } else if cmd == "NEW_WINDOW" {
+                    if open_window!(None) {
+                        window.set_focus();
+                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("MOVE_TAB_NEW_WINDOW:") {
+                    // MOVE_TAB_NEW_WINDOW:<tab index>[|<screen x>|<screen y>]: the live tab gets its own window.
+                    let f: Vec<&str> = arg.split('|').collect();
+                    if let Ok(i) = f[0].parse::<usize>() {
+                        if i < tabs.len() && tabs.len() > 1 {
+                            let pos = if f.len() == 3 {
+                                match (f[1].parse::<f64>(), f[2].parse::<f64>()) {
+                                    (Ok(x), Ok(y)) => Some((x - 120.0, y - 18.0)),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+                            let t = tabs.remove(i);
+                            set_tab_group(t.id, None);
+                            if split_tab_idx == Some(i) {
+                                split_tab_idx = None;
+                            }
+                            if active_tab_idx >= i && active_tab_idx > 0 {
+                                active_tab_idx -= 1;
+                            }
+                            split_tab_idx = split_tab_idx.map(|k| if k > i { k - 1 } else { k });
+                            layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            let _ = proxy.send_event(AppEvent::RefreshChrome);
+                            let space = tab_space(t.id);
+                            let mut t = Some(t);
+                            if open_window!(pos) {
+                                let t = t.take().expect("tab");
+                                SPACES.with(|s| s.borrow_mut().active = space);
+                                adopt_webview!(t.webview);
+                                tabs.push(t);
+                                active_tab_idx = 0;
+                                let _ = tabs[0].webview.set_visible(true);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                                window.set_focus();
+                                let _ = proxy.send_event(AppEvent::RefreshChrome);
+                            } else if let Some(t) = t.take() {
+                                tabs.insert(i.min(tabs.len()), t);
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                            }
+                        }
+                    }
+                } else if let Some(arg) = cmd.strip_prefix("MOVE_TAB_TO_WINDOW:") {
+                    // MOVE_TAB_TO_WINDOW:<tab index>|<window key>
+                    if let Some((i, k)) = arg.split_once('|') {
+                        if let (Ok(i), Ok(k)) = (i.parse::<usize>(), k.parse::<u64>()) {
+                            if i < tabs.len() && k != current_key && parked.iter().any(|p| p.key == k) {
+                                let from_key = current_key;
+                                let t = tabs.remove(i);
+                                set_tab_group(t.id, None);
+                                split_tab_idx = None;
+                                if active_tab_idx >= i && active_tab_idx > 0 {
+                                    active_tab_idx -= 1;
+                                }
+                                let emptied = tabs.is_empty();
+                                if !emptied {
+                                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                                }
+                                switch_to!(k);
+                                // The tab takes the target window's Space.
+                                set_tab_space(t.id, active_space());
+                                adopt_webview!(t.webview);
+                                tabs.push(t);
+                                active_tab_idx = tabs.len() - 1;
+                                focused_key = current_key;
+                                window.set_focus();
+                                layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                                let _ = proxy.send_event(AppEvent::RefreshChrome);
+                                if emptied {
+                                    // Its last tab left: close the old window.
+                                    switch_to!(from_key);
+                                    close_current_window!();
+                                    switch_to!(k);
+                                    focused_key = k;
+                                }
+                            }
                         }
                     }
                 } else if let Some(i) = cmd.strip_prefix("TAB_GROUP_NEW:") {
@@ -5771,6 +6234,9 @@ fn main() -> wry::Result<()> {
                         global_settings.theme_mode = mode.to_string();
                         global_settings.full_dark_mode = state::effective_dark(mode, system_prefers_dark());
                         apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                            for p in &parked {
+                                apply_theme(&p.window, &p.tabs, global_settings.full_dark_mode);
+                            }
                         BrowserStorage::save_global_settings(&global_settings);
                     }
                 } else if let Some(h) = cmd.strip_prefix("SET_AUTO_ARCHIVE:") {
