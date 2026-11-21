@@ -171,16 +171,16 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   /* Extensions: Safari-style toolbar icons for extensions with a popup, plus a puzzle button. */
   .ext-bar { display: none; align-items: center; gap: 2px; }
   .ext-bar.on { display: inline-flex; }
-  .ext-ic { width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent; cursor: pointer; display: inline-flex;
+  .ext-ic { width: 30px; height: 30px; border: none; border-radius: 9px; background: transparent; cursor: pointer; display: inline-flex;
     align-items: center; justify-content: center; padding: 0; transition: background .15s var(--ease-fluid); }
   .ext-ic:hover { background: rgba(118,118,128,.14); }
-  .ext-ic img { width: 18px; height: 18px; border-radius: 4px; }
-  .ph { width: 18px; height: 18px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 10px; font-weight: 700;
+  .ext-ic img { width: 22px; height: 22px; border-radius: 5px; }
+  .ph { width: 22px; height: 22px; border-radius: 5px; background: var(--blue); color: #fff; font-size: 11px; font-weight: 700;
     display: flex; align-items: center; justify-content: center; }
   .ext-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; }
   .ext-row:hover { background: rgba(118,118,128,.08); }
-  .ext-row .ic { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(118,118,128,.12); }
-  .ext-row .ic img { width: 24px; height: 24px; }
+  .ext-row .ic { width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(118,118,128,.12); }
+  .ext-row .ic img { width: 36px; height: 36px; }
   .ext-row .tx { flex: 1; min-width: 0; }
   .ext-row .nm { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ext-row .ds { font-size: 11px; color: var(--text-dim, #8E8E93); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -476,6 +476,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .switch.on { background: var(--blue); }
 
   /* Reader button in the address bar: shown only when the page is an article (Safari-style). */
+  .ext-stores { display: flex; gap: 8px; margin: 2px 0 10px; }
+  .ext-stores button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; height: 32px; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--input-bg); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
+  .ext-stores button:hover { background: rgba(118,118,128,.18); }
+  .ext-stores .st-ic { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; }
+  .store-add { border: none; background: var(--blue); color: #fff; height: 22px; padding: 0 10px; border-radius: 11px; font-size: 11.5px;
+    font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; margin-right: 4px; transition: transform var(--dur-fast) var(--ease-fluid); }
+  .store-add:active { transform: scale(0.95); }
   .reader-btn { border: none; background: transparent; color: var(--muted); width: 28px; height: 24px; border-radius: 7px;
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
     animation: popoverIn var(--dur) var(--ease-fluid) both; transition: background .16s var(--ease-fluid), color .16s var(--ease-fluid); }
@@ -549,6 +557,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .dl-group { border-radius: 12px; background: rgba(118,118,128,0.07); overflow: hidden; }
   body.dark .dl-group { background: rgba(255,255,255,0.05); }
   .dl-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; position: relative; }
+  .dl-row.done .dl-icon, .dl-row.done .dl-name { cursor: pointer; }
+  .dl-row.done .dl-name:hover { text-decoration: underline; }
   .dl-row + .dl-row::before { content: ""; position: absolute; top: 0; left: 52px; right: 0; border-top: 1px solid var(--border); }
   .dl-icon {
     width: 32px; height: 38px; flex-shrink: 0; border-radius: 5px; position: relative;
@@ -755,6 +765,30 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .snap-zone:hover {
     background: var(--blue); border-color: var(--blue); transform: scale(1.03);
   }
+  /* In-window sheet for questions (replaces prompt/confirm: those are drawn inside the toolbar's
+     own strip and end up hidden under the page). Apple-style: dimmed backdrop, centred card that
+     settles in with a short scale and fade. */
+  #ask-scrim { position: fixed; inset: 0; z-index: 10000; display: none; align-items: flex-start; justify-content: center;
+    padding-top: 96px; background: rgba(0,0,0,0); transition: background var(--dur) var(--ease-fluid); }
+  #ask-scrim.show { display: flex; }
+  #ask-scrim.in { background: rgba(0,0,0,0.22); }
+  #ask-card { width: 340px; max-width: calc(100vw - 32px); background: var(--glass); color: var(--text);
+    backdrop-filter: saturate(180%) blur(24px); -webkit-backdrop-filter: saturate(180%) blur(24px);
+    border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+    padding: 18px 18px 14px; opacity: 0; transform: translateY(-6px) scale(0.97);
+    transition: opacity var(--dur) var(--ease-fluid), transform var(--dur) var(--ease-fluid); user-select: text; }
+  #ask-scrim.in #ask-card { opacity: 1; transform: none; }
+  #ask-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  #ask-card p { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-bottom: 10px; white-space: pre-wrap; }
+  #ask-card label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 4px; }
+  #ask-card input { width: 100%; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--input-bg);
+    color: var(--text); padding: 0 10px; font-size: 13px; outline: none; user-select: text; }
+  #ask-card input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+  #ask-card .ask-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  #ask-card button { height: 28px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 12.5px; cursor: pointer; }
+  #ask-card button.ok { background: var(--blue); border-color: transparent; color: #fff; font-weight: 600; }
+  #ask-card button.ok.danger { background: var(--red); }
 </style>
 </head>
 <body>
@@ -809,6 +843,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
                onmouseup="if(this.dataset.justFocused==='1'){ event.preventDefault(); this.dataset.justFocused='0'; }"
                onkeydown="if(event.key==='Enter'){ event.preventDefault(); navigateFromBar(); }" />
         <span class="zoom-pill" id="zoom-badge" style="display:none" onclick="send('ZOOM_RESET')" title="Click to reset zoom">100%</span>
+        <button class="store-add" id="store-add" style="display:none" onclick="storeAdd()" title="Install this extension in Shunno">Add to Shunno</button>
         <button class="reader-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
           <svg width="16" height="14" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
         </button>
@@ -1102,7 +1137,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="pill-btn pill-red" id="pw-del-csv" style="display:none;margin-top:6px;" onclick="send('PW_DELETE_CSV')">Delete the imported CSV file</button>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Stored only on this PC, encrypted with your Windows account. Showing or copying a password asks for Windows Hello.
-          <a href="#" onclick="event.preventDefault(); if (confirm('Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.')) send('CLEAR_PASSWORDS');" style="color:var(--blue);">Clear old built-in passwords</a>
+          <a href="#" onclick="event.preventDefault(); askConfirm('Clear old passwords?', 'Delete passwords kept by the old built-in saver (before v2.17)? Your Shunno passwords are not affected.', 'Delete').then(ok => { if (ok) send('CLEAR_PASSWORDS'); });" style="color:var(--blue);">Clear old built-in passwords</a>
         </div>
       </div>
 
@@ -1114,11 +1149,18 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="text-btn" onclick="send('EXT_ADD_FOLDER')" title="An unpacked extension folder with manifest.json">Add Folder…</button>
           </div>
         </div>
+        <div class="ext-stores">
+          <button onclick="send('NAV_NEW_TAB:https://chromewebstore.google.com/category/extensions')" title="Chrome Web Store (the store Brave uses too)">
+            <span class="st-ic" style="background:linear-gradient(135deg,#34A853,#4285F4)"></span>Chrome Web Store</button>
+          <button onclick="send('NAV_NEW_TAB:https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home')" title="Microsoft Edge Add-ons">
+            <span class="st-ic" style="background:linear-gradient(135deg,#0C59A4,#33C481)"></span>Edge Add-ons</button>
+        </div>
         <div class="ext-notice" id="ext-notice"></div>
         <div id="ext-list"></div>
         <div class="meta" style="margin-top:8px;line-height:1.45;">
           Add a Chrome or Edge extension as a <b>.crx</b> or <b>.zip</b> file or an unpacked folder; Shunno keeps its own copy.
-          The Chrome Web Store cannot install into Shunno directly. Extensions run in normal tabs, not private ones, and some that depend on Chrome only features may not work.
+          From the Chrome Web Store or Edge Add-ons: open an extension's page and press <b>Add to Shunno</b> in the address bar.
+          Extensions run in normal tabs, not private ones, and some that depend on Chrome only features may not work.
         </div>
       </div>
 
@@ -1296,16 +1338,69 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   const SVG_PAUSE = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="2" y="1.5" width="2" height="7" rx="0.6" fill="currentColor"/><rect x="6" y="1.5" width="2" height="7" rx="0.6" fill="currentColor"/></svg>';
   const SVG_RESUME = '<svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6a4 4 0 1 1-1.2-2.85"/><path d="M9.2 1.4v2.2H7"/></svg>';
+  const SVG_OPEN = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7"/><path d="M13.5 2.5L7.5 8.5"/><path d="M12 9.5v3.2a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8V4.8a.8.8 0 0 1 .8-.8h3.2"/></svg>';
   const SVG_REVEAL = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14"/></svg>';
   const SVG_LINK = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M7.3 4.3l1-1a2.8 2.8 0 0 1 4 4l-1 1"/><path d="M8.7 11.7l-1 1a2.8 2.8 0 0 1-4-4l1-1"/></svg>';
   const SVG_X = '<svg width="9" height="9" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
   const speedHistory = new Array(36).fill(0);
   let peakSpeedBps = 0;
 
+  // ---------------------------------------------------------------- Ask sheet
+  // askSheet({title, message, fields:[{label, value, list}], ok, danger}) resolves to the field
+  // values (array), true for a plain question, or null when cancelled. While it is open the
+  // toolbar is laid out over the page (SHEET:1), so the sheet is never hidden behind the page.
+  let askResolve = null;
+  function askSheet(o) {
+    if (askResolve) askClose(null);
+    let scrim = document.getElementById('ask-scrim');
+    if (!scrim) {
+      scrim = document.createElement('div');
+      scrim.id = 'ask-scrim';
+      scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) askClose(null); });
+      document.body.appendChild(scrim);
+    }
+    const fields = o.fields || [];
+    scrim.innerHTML = `<div id="ask-card" role="dialog" aria-modal="true">
+      <h3>${escapeHtml(o.title || '')}</h3>${o.message ? `<p>${escapeHtml(o.message)}</p>` : ''}
+      ${fields.map((f, i) => `${f.label ? `<label for="ask-f${i}">${escapeHtml(f.label)}</label>` : ''}
+        <input id="ask-f${i}" value="${escapeHtml(f.value || '')}" placeholder="${escapeHtml(f.placeholder || '')}"${f.list ? ` list="ask-l${i}"` : ''} spellcheck="false">
+        ${f.list ? `<datalist id="ask-l${i}">${f.list.map(v => `<option value="${escapeHtml(v)}">`).join('')}</datalist>` : ''}`).join('')}
+      <div class="ask-btns"><button class="cancel">Cancel</button><button class="ok${o.danger ? ' danger' : ''}">${escapeHtml(o.ok || 'OK')}</button></div></div>`;
+    const card = scrim.querySelector('#ask-card');
+    const done = () => askClose(fields.length ? fields.map((_, i) => card.querySelector('#ask-f' + i).value) : true);
+    card.querySelector('.cancel').onclick = () => askClose(null);
+    card.querySelector('.ok').onclick = done;
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); askClose(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(); }
+    });
+    send('SHEET:1');
+    scrim.classList.add('show');
+    requestAnimationFrame(() => requestAnimationFrame(() => scrim.classList.add('in')));
+    setTimeout(() => { const f = card.querySelector('input') || card.querySelector('.ok'); f.focus(); if (f.select) f.select(); }, 30);
+    return new Promise(r => { askResolve = r; });
+  }
+  function askClose(value) {
+    const scrim = document.getElementById('ask-scrim');
+    const r = askResolve; askResolve = null;
+    if (scrim) {
+      scrim.classList.remove('in');
+      setTimeout(() => { if (!askResolve) { scrim.classList.remove('show'); send('SHEET:0'); } }, 200);
+    }
+    if (r) r(value);
+  }
+  window.askText = (title, value, ok) => askSheet({ title, fields: [{ value: value || '' }], ok: ok || 'OK' }).then(v => v ? v[0] : null);
+  window.askNotice = (title, message) => askSheet({ title, message, ok: 'OK' });
+  window.askConfirm = (title, message, ok, danger) => askSheet({ title, message, ok: ok || 'OK', danger: danger !== false }).then(v => v === true);
+
   function promptSaveBookmarkWithFolder() {
-    const folder = prompt('Save bookmark to folder:', activeBookmarkFolder === 'All' ? 'General' : activeBookmarkFolder);
-    if (folder === null) return;
-    send('ADD_BOOKMARK:' + (folder.trim() || 'General'));
+    const folders = Array.from(new Set(((lastState && lastState.bookmarks) || []).map(b => b.folder || 'General')));
+    if (!folders.includes('General')) folders.unshift('General');
+    askSheet({
+      title: 'Add Bookmark',
+      fields: [{ label: 'Folder', value: activeBookmarkFolder === 'All' ? 'General' : activeBookmarkFolder, list: folders }],
+      ok: 'Add',
+    }).then(v => { if (v) send('ADD_BOOKMARK:' + (v[0].trim() || 'General')); });
   }
 
   let snapHoverTimer = null;
@@ -1567,11 +1662,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   function promptAddShortcut() {
-    const title = prompt('Shortcut Name (e.g. Gmail):');
-    if (!title || !title.trim()) return;
-    const url = prompt('Website URL (e.g. https://mail.google.com):');
-    if (!url || !url.trim()) return;
-    send('ADD_SHORTCUT:' + title.trim() + '|' + url.trim());
+    askSheet({
+      title: 'Add Shortcut',
+      fields: [{ label: 'Name', placeholder: 'Gmail' }, { label: 'Website', placeholder: 'https://mail.google.com' }],
+      ok: 'Add',
+    }).then(v => {
+      if (!v || !v[0].trim() || !v[1].trim()) return;
+      send('ADD_SHORTCUT:' + v[0].trim() + '|' + v[1].trim());
+    });
   }
 
   function fmtBytes(b) {
@@ -2100,7 +2198,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="icon-btn" onclick="send('PW_COPY:${c.id}')" title="Copy password">${COPY}</button>
             <button class="icon-btn ${shown !== undefined ? 'primary' : ''}" onclick="${shown !== undefined ? `pwRevealed.delete(${c.id}); renderPasswords(lastState)` : `send('PW_REVEAL:${c.id}')`}" title="${shown !== undefined ? 'Hide' : 'Show password'}">${EYE}</button>
             <button class="icon-btn" onclick="pwEditing = ${editing ? 'null' : c.id}; renderPasswords(lastState)" title="Edit">${EDIT}</button>
-            <button class="icon-btn" onclick="if (confirm('Delete the saved password for ${encodeAttr(c.username || host)} on ${encodeAttr(host)}?')) send('PW_DELETE:${c.id}')" title="Delete">${SVG_X}</button>
+            <button class="icon-btn" onclick="askConfirm('Delete password?', 'Delete the saved password for ${encodeAttr(c.username || host)} on ${encodeAttr(host)}?', 'Delete').then(ok => { if (ok) send('PW_DELETE:${c.id}'); })" title="Delete">${SVG_X}</button>
           </div>
         </div>
         ${editing ? `<div class="pw-edit">
@@ -2159,7 +2257,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     }
     const el = document.getElementById('ext-list');
     const html = list.length ? list.map(e => `<div class="ext-row ${e.enabled ? '' : 'off'}">
-        <div class="ic">${extIcon(e, 24)}</div>
+        <div class="ic">${extIcon(e, 36)}</div>
         <div class="tx">
           <div class="nm" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}${e.version ? ` <span class="ds" style="display:inline">${escapeHtml(e.version)}</span>` : ''}</div>
           ${e.description ? `<div class="ds" title="${escapeHtml(e.description)}">${escapeHtml(e.description)}</div>` : ''}
@@ -2174,9 +2272,30 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       </div>`).join('') : '<div class="meta" style="text-align:center;padding:18px 8px;">No extensions yet.</div>';
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
   }
+  // Mirrors extensions::store_extension: a Chrome Web Store / Edge Add-ons detail page.
+  function storeExtension(url) {
+    let u; try { u = new URL(url); } catch (e) { return null; }
+    if (u.protocol !== 'https:') return null;
+    const seg = u.pathname.split('/').filter(Boolean);
+    const h = u.hostname.toLowerCase();
+    let rest = null;
+    if (h === 'chromewebstore.google.com' && seg[0] === 'detail') rest = seg.slice(1);
+    else if (h === 'chrome.google.com' && seg[0] === 'webstore' && seg[1] === 'detail') rest = seg.slice(2);
+    else if (h === 'microsoftedge.microsoft.com' && seg[0] === 'addons' && seg[1] === 'detail') rest = seg.slice(2);
+    if (!rest) return null;
+    return rest.slice().reverse().find(x => /^[a-p]{32}$/.test(x)) || null;
+  }
+  function storeAdd() {
+    const url = document.getElementById('store-add').dataset.url;
+    if (!url) return;
+    const installed = (lastState.extensions || []).some(e => e.id === storeExtension(url));
+    if (installed) { askNotice('Already added', 'This extension is already in Shunno. Manage it from the Extensions panel.'); return; }
+    askConfirm('Add this extension to Shunno?', 'Shunno downloads it from the store and installs it. It can read and change the sites it lists in its permissions.', 'Add Extension', false)
+      .then(ok => { if (ok) send('EXT_STORE:' + url); });
+  }
   function extRemove(id) {
     const e = (lastState.extensions || []).find(x => x.id === id);
-    if (e && confirm(`Remove "${e.name}"? Its settings and data are deleted.`)) send('EXT_SET:' + id + '|remove');
+    if (e) askConfirm('Remove extension?', `Remove "${e.name}"? Its settings and data are deleted.`, 'Remove').then(ok => { if (ok) send('EXT_SET:' + id + '|remove'); });
   }
 
   // ---------------------------------------------------------------- Profiles
@@ -2244,10 +2363,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function profileDelete() {
     if (profileEditing === null) return;
     const p = lastState.profiles.find(x => x.id === profileEditing);
-    if (p && confirm(`Delete the profile "${p.name}"? Its cookies, sign-ins, history, bookmarks and saved passwords are erased from this PC. This cannot be undone.`)) {
-      send('PROFILE_DELETE:' + profileEditing);
+    if (!p) return;
+    const id = profileEditing;
+    askConfirm('Delete profile?', `Delete the profile "${p.name}"? Its cookies, sign-ins, history, bookmarks and saved passwords are erased from this PC. This cannot be undone.`, 'Delete').then(ok => {
+      if (!ok) return;
+      send('PROFILE_DELETE:' + id);
       document.getElementById('profile-form').style.display = 'none';
-    }
+    });
   }
 
   // ---------------------------------------------------------------- Spaces
@@ -2303,10 +2425,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function spaceDelete() {
     if (spaceEditing === null) return;
     const x = lastState.spaces.list.find(s => s.id === spaceEditing);
-    if (x && confirm(`Delete the Space "${x.name}"? Its tabs close (you can reopen them with Ctrl+Shift+T).`)) {
-      send('SPACE_DELETE:' + spaceEditing);
+    if (!x) return;
+    const id = spaceEditing;
+    askConfirm('Delete Space?', `Delete the Space "${x.name}"? Its tabs close (you can reopen them with Ctrl+Shift+T).`, 'Delete').then(ok => {
+      if (!ok) return;
+      send('SPACE_DELETE:' + id);
       document.getElementById('space-form').style.display = 'none';
-    }
+    });
   }
 
   // One place for browser shortcuts: the toolbar's keydown and pages (via the native hook) both land here.
@@ -2390,15 +2515,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             ? `<button class="icon-btn" onclick="send('DL_PAUSE:${d.id}')" title="Pause">${SVG_PAUSE}</button>`
           : d.status === 'PAUSED' || d.status === 'FAILED'
             ? `<button class="icon-btn primary" onclick="send('DL_RESUME:${d.id}')" title="${d.status === 'FAILED' ? 'Retry' : 'Resume'}">${SVG_RESUME}</button>
-               <button class="icon-btn" onclick="const u=prompt('Paste a fresh link for this file:','${encodeAttr(d.url)}'); if(u) send('DL_FIX:${d.id}|'+u);" title="Use a new link">${SVG_LINK}</button>`
+               <button class="icon-btn" onclick="askText('Paste a fresh link for this file', '${encodeAttr(d.url)}', 'Use Link').then(u => { if (u && u.trim()) send('DL_FIX:${d.id}|' + u.trim()); })" title="Use a new link">${SVG_LINK}</button>`
           : d.status === 'COMPLETED'
-            ? `<button class="icon-btn primary" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')" title="Show in folder">${SVG_REVEAL}</button>`
+            ? `<button class="icon-btn primary" onclick="send('DL_OPEN:${encodeAttr(d.saved_path || '')}')" title="Open">${SVG_OPEN}</button>
+               <button class="icon-btn" onclick="send('DL_SHOW:${encodeAttr(d.saved_path || '')}')" title="Show in folder">${SVG_REVEAL}</button>`
             : '';
+        // A finished file opens from its icon or name, as in Safari's and Chrome's download lists.
+        const openAttr = d.status === 'COMPLETED' && d.saved_path
+          ? ` role="button" tabindex="0" onclick="send('DL_OPEN:${encodeAttr(d.saved_path)}')" onkeydown="if(event.key==='Enter')this.click()"` : '';
         return `
-          <div class="dl-row" title="${escapeHtml(tip)}">
-            <div class="dl-icon ${dlIconClass(d.category)}"><b>${escapeHtml(ext)}</b></div>
+          <div class="dl-row${openAttr ? ' done' : ''}" title="${escapeHtml(tip)}">
+            <div class="dl-icon ${dlIconClass(d.category)}"${openAttr}><b>${escapeHtml(ext)}</b></div>
             <div class="dl-main">
-              <div class="dl-name">${escapeHtml(d.file_name)}</div>
+              <div class="dl-name"${openAttr}>${escapeHtml(d.file_name)}</div>
               ${bar}
               <div class="dl-sub ${subCls}">${escapeHtml(sub)}</div>
             </div>
@@ -2551,7 +2680,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
               title="Filter folder: ${escapeHtml(f)}">📁 ${escapeHtml(f)}</button>
     `).join('') + visibleBarBms.slice(0, 12).map(({ b, i }) => `
       <button class="bm-chip" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}')"
-              oncontextmenu="event.preventDefault(); const nt=prompt('Rename bookmark (leave empty to remove):','${encodeAttr(b.title)}'); if(nt===null) return; if(nt.trim()===''){send('DEL_BOOKMARK:${i}');}else{send('RENAME_BOOKMARK:${i}|'+nt.trim());}"
+              oncontextmenu="event.preventDefault(); askText('Rename bookmark (leave empty to remove)', '${encodeAttr(b.title)}', 'Save').then(nt => { if (nt === null) return; if (nt.trim() === '') send('DEL_BOOKMARK:${i}'); else send('RENAME_BOOKMARK:${i}|' + nt.trim()); })"
               title="[${escapeHtml(b.folder || 'General')}] ${escapeHtml(b.url)} (Right-click to rename/remove)">⭐ ${escapeHtml(b.title)}</button>
     `).join('');
 
@@ -2597,13 +2726,13 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       dupBanner.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           <div>
-            <div style="font-size:12.5px;font-weight:700;color:var(--orange);">⚠️ Duplicate File / URL Detected</div>
+            <div style="font-size:12.5px;font-weight:700;color:var(--orange);">You already downloaded this link</div>
             <div class="meta">${escapeHtml(state.duplicate_alert.file_name)}</div>
           </div>
           <div style="display:flex;gap:5px;">
             <button class="pill-btn pill-soft" onclick="send('DISMISS_DUP');">Skip</button>
-            <button class="pill-btn pill-blue" onclick="send('DUP_RENAME:${encodeAttr(state.duplicate_alert.url)}');">Rename</button>
-            <button class="pill-btn pill-orange" onclick="send('DUP_OVERWRITE:${encodeAttr(state.duplicate_alert.url)}');">Overwrite</button>
+            <button class="pill-btn pill-blue" onclick="send('DUP_RENAME:${encodeAttr(state.duplicate_alert.url)}');" title="Download again as a second copy, name (1)">Keep Both</button>
+            <button class="pill-btn pill-orange" onclick="send('DUP_OVERWRITE:${encodeAttr(state.duplicate_alert.url)}');">Replace</button>
           </div>
         </div>
       `;
@@ -2711,6 +2840,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     renderImport(state);
     renderSpaces(state);
     renderPeek(state);
+    const sb = document.getElementById('store-add');
+    const storeId = storeExtension(state.active_url || '');
+    sb.style.display = storeId ? '' : 'none';
+    sb.dataset.url = storeId ? state.active_url : '';
     const rb = document.getElementById('reader-btn');
     const showReader = !!(state.active_reader_available || state.active_reader);
     rb.style.display = showReader ? '' : 'none';
@@ -2746,8 +2879,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0;">
               <button class="pill-btn pill-soft" onclick="send('NAV_NEW_TAB:${encodeAttr(b.url)}'); closeDrawer();" title="Open in new tab">Open</button>
-              <button class="pill-btn pill-soft" onclick="const nf=prompt('Move to folder:','${encodeAttr(b.folder || 'General')}'); if(nf && nf.trim()) send('SET_BOOKMARK_FOLDER:${i}|'+nf.trim());" title="Move Folder">📁</button>
-              <button class="pill-btn pill-soft" onclick="const nt=prompt('Rename bookmark:','${encodeAttr(b.title)}'); if(nt && nt.trim()) send('RENAME_BOOKMARK:${i}|'+nt.trim());" title="Rename">✎</button>
+              <button class="pill-btn pill-soft" onclick="askText('Move to folder', '${encodeAttr(b.folder || 'General')}', 'Move').then(nf => { if (nf && nf.trim()) send('SET_BOOKMARK_FOLDER:${i}|' + nf.trim()); })" title="Move Folder">📁</button>
+              <button class="pill-btn pill-soft" onclick="askText('Rename bookmark', '${encodeAttr(b.title)}', 'Save').then(nt => { if (nt && nt.trim()) send('RENAME_BOOKMARK:${i}|' + nt.trim()); })" title="Rename">✎</button>
               <button class="pill-btn pill-red" onclick="send('DEL_BOOKMARK:${i}')" title="Remove">✕</button>
             </div>
           </div>

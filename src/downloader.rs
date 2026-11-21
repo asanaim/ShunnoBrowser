@@ -37,10 +37,6 @@ pub const YTDLP_PREFIX: &str = "ytdlp:";
 pub const YTDLP_AUDIO_PREFIX: &str = "ytdlp-audio:";
 pub const YTDLP_FLAC_PREFIX: &str = "ytdlp-flac:";
 
-fn is_ytdlp_kind(kind: &str) -> bool {
-    kind == KIND_YTDLP || kind == KIND_YTDLP_AUDIO || kind == KIND_YTDLP_FLAC
-}
-
 /// Split a routing prefix off a queued URL: (kind forced by the prefix, bare URL).
 pub fn split_route_prefix(raw: &str) -> (Option<&'static str>, &str) {
     for (prefix, kind) in [(YTDLP_AUDIO_PREFIX, KIND_YTDLP_AUDIO), (YTDLP_FLAC_PREFIX, KIND_YTDLP_FLAC), (YTDLP_PREFIX, KIND_YTDLP)] {
@@ -1047,8 +1043,9 @@ impl NativeDownloadEngine {
             if let Ok(list) = self.tasks.lock() {
                 if let Some(existing) = list.iter().find(|t| {
                     // Video and audio of the same page are different downloads.
-                    let same = (t.url == normalized_url && t.kind == kind)
-                        || (!is_ytdlp_kind(kind) && !is_ytdlp_kind(&t.kind) && t.file_name.eq_ignore_ascii_case(&raw_name));
+                    // Only the same link counts as a duplicate. Another file that happens to share
+                    // the name is simply saved as "name (1).ext" when it finishes, as browsers do.
+                    let same = t.url == normalized_url && t.kind == kind;
                     same && (t.status == "DOWNLOADING"
                         || t.status == "QUEUED"
                         || t.status == "MUXING"
@@ -1058,29 +1055,6 @@ impl NativeDownloadEngine {
                 }) {
                     return EnqueueOutcome::DuplicateDetected(existing.clone());
                 }
-            }
-            if !is_ytdlp_kind(kind) && dest_candidate.exists() {
-                return EnqueueOutcome::DuplicateDetected(DownloadTask {
-                    id: 0,
-                    url: normalized_url,
-                    file_name: raw_name,
-                    total_bytes: fs::metadata(&dest_candidate).map(|m| m.len() as i64).unwrap_or(-1),
-                    downloaded_bytes: 0,
-                    status: "COMPLETED".to_string(),
-                    speed_bps: 0,
-                    threads: threads.clamp(1, 32),
-                    category,
-                    supports_ranges: true,
-                    referer,
-                    cookie,
-                    sha256: None,
-                    saved_path: Some(dest_candidate.to_string_lossy().to_string()),
-                    error_message: None,
-                    segment_map: String::new(),
-                    scheduled_start_epoch: None,
-                    kind: kind.to_string(),
-                    audio_url: None,
-                });
             }
         } else if dup_mode == "OVERWRITE" {
             if dest_candidate.exists() {
@@ -1094,11 +1068,8 @@ impl NativeDownloadEngine {
             for id in stale {
                 self.delete(id);
             }
-        } else if dup_mode == "RENAME" && !is_ytdlp_kind(kind) {
-            let stem = Path::new(&raw_name).file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
-            let ext = Path::new(&raw_name).extension().and_then(|s| s.to_str()).unwrap_or("bin").to_string();
-            raw_name = format!("{}_{}.{}", stem, now_secs() % 100_000, ext);
         }
+        // "RENAME" (Keep Both) needs no work here: the finished file takes "name (1).ext" if the name is taken.
 
         let sched_epoch = delay_secs.filter(|&d| d > 0).map(|d| now_secs() + d);
         let id = new_task_id();
@@ -1300,11 +1271,20 @@ struct ProbeInfo {
     supports_range: bool,
     /// A live 200 response when the server ignored `Range`; reused to avoid a second request.
     full_response: Option<Response>,
+    /// Identifies this version of the file: a strong ETag, else Last-Modified. Sent as If-Range so
+    /// a file changed on the server is never stitched onto parts of the old one.
+    validator: Option<String>,
+}
+
+/// A strong ETag or a Last-Modified date from response headers (weak ETags cannot be used with If-Range).
+fn resume_validator(h: &reqwest::header::HeaderMap) -> Option<String> {
+    let get = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !s.contains(['\r', '\n']));
+    get("etag").filter(|e| !e.starts_with("W/")).or_else(|| get("last-modified"))
 }
 
 async fn probe_target(ctx: &JobCtx, task: &DownloadTask, url: &str, rename_from_headers: bool) -> ProbeInfo {
     let rb = with_headers(ctx.client.get(url), &ctx.ua, &task.referer, &task.cookie).header(RANGE, "bytes=0-0");
-    let mut info = ProbeInfo { total: 0, supports_range: false, full_response: None };
+    let mut info = ProbeInfo { total: 0, supports_range: false, full_response: None, validator: None };
     let Ok(resp) = rb.send().await else {
         return info;
     };
@@ -1337,6 +1317,7 @@ async fn probe_target(ctx: &JobCtx, task: &DownloadTask, url: &str, rename_from_
         });
     }
 
+    info.validator = resume_validator(resp.headers());
     if status == StatusCode::PARTIAL_CONTENT {
         if let Some((0, _, Some(total))) = resp
             .headers()
@@ -1369,6 +1350,35 @@ fn single_offset_path(key: &str) -> PathBuf {
     NativeDownloadEngine::parts_dir().join(format!("{}_s.offset", key))
 }
 
+fn validator_path(key: &str) -> PathBuf {
+    // Not ".offset": a fallback to one connection clears offsets but the file identity still holds.
+    NativeDownloadEngine::parts_dir().join(format!("{}_v.ident", key))
+}
+
+/// Data first, then the offset that claims it: after a power cut the saved offset is never ahead
+/// of what is really on disk (a resumed file has no zero-filled gap).
+fn save_offset(file: &File, path: &Path, offset: u64) {
+    let _ = file.sync_data();
+    let _ = fs::write(path, offset.to_string());
+}
+
+/// Saved parts may be resumed only if the server still has the same file: same size and same
+/// validator. Otherwise they are discarded. Returns the validator to send as If-Range.
+fn check_resume_identity(key: &str, part_path: &Path, total: u64, validator: Option<&str>) -> Option<String> {
+    let identity = format!("{}\n{}", total, validator.unwrap_or(""));
+    let saved = fs::read_to_string(validator_path(key)).ok();
+    if saved.as_deref() != Some(identity.as_str()) {
+        // A different file (or parts from a version without this record): start over.
+        if saved.is_some() || validator.is_some() {
+            clear_offsets(key);
+            let _ = fs::remove_file(part_path);
+        }
+        let _ = fs::create_dir_all(NativeDownloadEngine::parts_dir());
+        let _ = fs::write(validator_path(key), &identity);
+    }
+    validator.map(|v| v.to_string())
+}
+
 fn clear_offsets(key: &str) {
     let prefix = format!("{}_", key);
     if let Ok(entries) = fs::read_dir(NativeDownloadEngine::parts_dir()) {
@@ -1393,6 +1403,7 @@ async fn download_http(
 ) -> Result<(), String> {
     let probe = probe_target(ctx, task, url, rename_from_headers).await;
     let total = probe.total;
+    let if_range = if probe.supports_range { check_resume_identity(key, part_path, total, probe.validator.as_deref()) } else { None };
     let threads = if probe.supports_range && total > 512 * 1024 { task.threads.clamp(1, 32) } else { 1 };
 
     update_task(&ctx.tasks, task.id, |t| {
@@ -1402,12 +1413,12 @@ async fn download_http(
     });
 
     if threads > 1 {
-        let mut result = download_segmented(ctx, task, url, part_path, key, total, threads).await;
+        let mut result = download_segmented(ctx, task, url, part_path, key, total, threads, if_range.clone()).await;
         if matches!(&result, Err(e) if e != "Paused") && ctx.is_running() {
             // One more pass: offsets are persisted, so only the missing ranges are fetched again.
             tokio::time::sleep(Duration::from_secs(3)).await;
             if ctx.is_running() {
-                result = download_segmented(ctx, task, url, part_path, key, total, threads).await;
+                result = download_segmented(ctx, task, url, part_path, key, total, threads, if_range.clone()).await;
             }
         }
         match result {
@@ -1422,13 +1433,14 @@ async fn download_http(
                     t.segment_map = format!("[1T Fallback: {}]", e);
                 });
                 let _ = fs::remove_file(part_path);
-                return download_single(ctx, task, url, part_path, key, total, false, None).await;
+                return download_single(ctx, task, url, part_path, key, total, false, None, None).await;
             }
         }
     }
-    download_single(ctx, task, url, part_path, key, total, probe.supports_range, probe.full_response).await
+    download_single(ctx, task, url, part_path, key, total, probe.supports_range, probe.full_response, if_range).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_segmented(
     ctx: &JobCtx,
     task: &DownloadTask,
@@ -1437,6 +1449,7 @@ async fn download_segmented(
     key: &str,
     total: u64,
     threads: usize,
+    if_range: Option<String>,
 ) -> Result<(), String> {
     // Saved offsets are only valid if the preallocated part file still has the expected size.
     let part_ok = fs::metadata(part_path).map(|m| m.len() == total).unwrap_or(false);
@@ -1514,24 +1527,29 @@ async fn download_segmented(
         let f = shared_file.clone();
         let prog = progress.clone();
         let off_path = offset_path(key, i);
+        let if_range = if_range.clone();
 
         workers.push(tokio::spawn(async move {
             let mut last_err = String::new();
             for attempt in 0..4u32 {
                 if offset > end {
-                    let _ = fs::write(&off_path, offset.to_string());
+                    save_offset(&f, &off_path, offset);
                     return Ok::<(), String>(());
                 }
                 if !ctx.is_running() {
-                    let _ = fs::write(&off_path, offset.to_string());
+                    save_offset(&f, &off_path, offset);
                     return Err("Paused".to_string());
                 }
                 if attempt > 0 {
                     tokio::time::sleep(Duration::from_secs(1u64 << attempt)).await;
                 }
 
-                let rb = with_headers(ctx.client.get(&url), &ctx.ua, &referer, &cookie)
+                let mut rb = with_headers(ctx.client.get(&url), &ctx.ua, &referer, &cookie)
                     .header(RANGE, format!("bytes={}-{}", offset, end));
+                if let Some(v) = &if_range {
+                    // Changed on the server: it answers 200 with the new file instead of a range.
+                    rb = rb.header("If-Range", v.as_str());
+                }
                 let resp = match rb.send().await {
                     Ok(r) => r,
                     Err(e) => {
@@ -1547,7 +1565,7 @@ async fn download_segmented(
                         last_err = msg;
                         continue;
                     }
-                    let _ = fs::write(&off_path, offset.to_string());
+                    save_offset(&f, &off_path, offset);
                     return Err(msg);
                 }
                 let range_ok = resp
@@ -1558,7 +1576,7 @@ async fn download_segmented(
                     .map(|(s, _, _)| s == offset)
                     .unwrap_or(false);
                 if !range_ok {
-                    let _ = fs::write(&off_path, offset.to_string());
+                    save_offset(&f, &off_path, offset);
                     return Err("Server returned a mismatched Content-Range".to_string());
                 }
 
@@ -1567,7 +1585,7 @@ async fn download_segmented(
                 let mut stream_err: Option<String> = None;
                 while let Some(chunk_res) = stream.next().await {
                     if !ctx.is_running() {
-                        let _ = fs::write(&off_path, offset.to_string());
+                        save_offset(&f, &off_path, offset);
                         return Err("Paused".to_string());
                     }
                     match chunk_res {
@@ -1579,8 +1597,8 @@ async fn download_segmented(
                             offset += slice.len() as u64;
                             prog[i].fetch_add(slice.len() as u64, Ordering::Relaxed);
                             since_save += slice.len();
-                            if since_save >= 256 * 1024 {
-                                let _ = fs::write(&off_path, offset.to_string());
+                            if since_save >= 4 * 1024 * 1024 {
+                                save_offset(&f, &off_path, offset);
                                 since_save = 0;
                             }
                             throttle(&ctx.speed_limit, slice.len(), threads as u64).await;
@@ -1594,7 +1612,7 @@ async fn download_segmented(
                         }
                     }
                 }
-                let _ = fs::write(&off_path, offset.to_string());
+                save_offset(&f, &off_path, offset);
                 if let Some(err_msg) = stream_err {
                     last_err = err_msg;
                     continue;
@@ -1631,6 +1649,7 @@ async fn download_segmented(
         None => {
             // Only a fully successful transfer discards resume data.
             clear_offsets(key);
+            let _ = fs::remove_file(validator_path(key));
             update_task(&ctx.tasks, task.id, |t| {
                 t.downloaded_bytes = total;
                 t.speed_bps = 0;
@@ -1651,6 +1670,7 @@ async fn download_single(
     total: u64,
     supports_range: bool,
     reuse: Option<Response>,
+    if_range: Option<String>,
 ) -> Result<(), String> {
     let side = single_offset_path(key);
     let mut resume_from: u64 = 0;
@@ -1665,8 +1685,11 @@ async fn download_single(
     }
 
     let (resp, mut written) = if resume_from > 0 {
-        let rb = with_headers(ctx.client.get(url), &ctx.ua, &task.referer, &task.cookie)
+        let mut rb = with_headers(ctx.client.get(url), &ctx.ua, &task.referer, &task.cookie)
             .header(RANGE, format!("bytes={}-", resume_from));
+        if let Some(v) = &if_range {
+            rb = rb.header("If-Range", v.as_str());
+        }
         let r = rb.send().await.map_err(|e| e.to_string())?;
         let ok = r.status() == StatusCode::PARTIAL_CONTENT
             && r.headers()
@@ -1721,7 +1744,7 @@ async fn download_single(
         if !ctx.is_running() {
             let _ = out.flush();
             if supports_range {
-                let _ = fs::write(&side, written.to_string());
+                save_offset(&out, &side, written);
             }
             return Err("Paused".to_string());
         }
@@ -1730,7 +1753,7 @@ async fn download_single(
             Err(e) => {
                 let _ = out.flush();
                 if supports_range {
-                    let _ = fs::write(&side, written.to_string());
+                    save_offset(&out, &side, written);
                 }
                 return Err(format!("{} (resumable)", e));
             }
@@ -1739,9 +1762,9 @@ async fn download_single(
         written += bytes.len() as u64;
         bytes_tick += bytes.len() as u64;
         since_save += bytes.len() as u64;
-        if supports_range && since_save >= 1024 * 1024 {
+        if supports_range && since_save >= 4 * 1024 * 1024 {
             let _ = out.flush();
-            let _ = fs::write(&side, written.to_string());
+            save_offset(&out, &side, written);
             since_save = 0;
         }
         throttle(&ctx.speed_limit, bytes.len(), 1).await;
@@ -1757,12 +1780,12 @@ async fn download_single(
         }
     }
     out.flush().map_err(|e| e.to_string())?;
+    if expected_total > 0 && written < expected_total && supports_range {
+        save_offset(&out, &side, written);
+    }
     drop(out);
 
     if expected_total > 0 && written < expected_total {
-        if supports_range {
-            let _ = fs::write(&side, written.to_string());
-        }
         return Err(format!(
             "Connection closed early ({} of {})",
             format_human_size(written),
@@ -1770,6 +1793,7 @@ async fn download_single(
         ));
     }
     let _ = fs::remove_file(&side);
+    let _ = fs::remove_file(validator_path(key));
     update_task(&ctx.tasks, task.id, |t| {
         t.downloaded_bytes = written;
         t.speed_bps = 0;
@@ -1903,6 +1927,35 @@ fn tool_busy(status: &Arc<Mutex<String>>) -> bool {
 
 async fn find_tool_async(f: fn() -> Option<PathBuf>) -> Option<PathBuf> {
     tokio::task::spawn_blocking(f).await.ok().flatten()
+}
+
+impl NativeDownloadEngine {
+    /// A web store package (.crx), at most `cap` bytes, through the engine's client (its proxy and
+    /// redirect rules).
+    pub async fn fetch_store_package(&self, url: &str, cap: usize) -> Result<Vec<u8>, String> {
+        let mut resp = self
+            .client
+            .get(url)
+            .header(USER_AGENT, DEFAULT_UA)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status().as_u16() == 204 || resp.status().as_u16() == 404 {
+            return Err("The store has no package of this extension for Shunno's engine (it may be unlisted, paid, or for an older Chrome).".into());
+        }
+        if !resp.status().is_success() {
+            return Err(format!("The store answered HTTP {}.", resp.status()));
+        }
+        let mut out = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+            out.extend_from_slice(&chunk);
+            if out.len() > cap {
+                return Err("The extension package is too large.".into());
+            }
+        }
+        Ok(out)
+    }
 }
 
 async fn fetch_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
@@ -2091,12 +2144,83 @@ fn end_with_browser(child: &std::process::Child) {
 #[cfg(not(windows))]
 fn end_with_browser(_child: &std::process::Child) {}
 
+/// Resume every thread of a process started with CREATE_SUSPENDED.
+#[cfg(windows)]
+fn resume_process(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return false };
+        let mut e = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+        let mut resumed = false;
+        let mut ok = Thread32First(snap, &mut e).is_ok();
+        while ok {
+            if e.th32OwnerProcessID == pid {
+                if let Ok(t) = OpenThread(THREAD_SUSPEND_RESUME, false, e.th32ThreadID) {
+                    if ResumeThread(t) != u32::MAX {
+                        resumed = true;
+                    }
+                    let _ = CloseHandle(t);
+                }
+            }
+            ok = Thread32Next(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+        resumed
+    }
+}
+#[cfg(not(windows))]
+fn resume_process(_pid: u32) -> bool {
+    true
+}
+
+/// Process ids of FFmpeg / yt-dlp runs still going.
+fn live_tools() -> &'static Mutex<std::collections::HashSet<u32>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashSet<u32>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// On exit: end every running tool with its whole process tree (the job object also does this
+/// when Shunno's process ends; this covers a process that left the job).
+pub fn end_all_tools() {
+    let pids: Vec<u32> = live_tools().lock().map(|s| s.iter().copied().collect()).unwrap_or_default();
+    #[cfg(windows)]
+    for pid in pids {
+        let _ = hidden_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    #[cfg(not(windows))]
+    let _ = pids;
+}
+
 /// Runs a tool without a console window, feeding each stdout line to `on_line`.
 /// Clearing `running` kills the process tree.
 fn run_tool_blocking<F: FnMut(&str)>(mut cmd: Command, running: Arc<AtomicBool>, mut on_line: F) -> Result<ToolOutcome, String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Started suspended and put in the job before it runs one instruction: yt-dlp.exe starts a
+    // second process (and that one starts FFmpeg) almost at once, and a process started before its
+    // parent joined the job would not belong to it, so it would outlive Shunno.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    }
     let mut child = cmd.spawn().map_err(|e| format!("Could not start tool: {}", e))?;
     end_with_browser(&child);
+    if !resume_process(child.id()) {
+        let _ = child.kill();
+        return Err("Could not start tool: it did not resume".into());
+    }
+    live_tools().lock().unwrap_or_else(|e| e.into_inner()).insert(child.id());
+    struct Forget(u32);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            live_tools().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+        }
+    }
+    let _forget = Forget(child.id());
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let child = Arc::new(Mutex::new(child));

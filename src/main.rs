@@ -102,6 +102,10 @@ fn tab_origin(tabs: &[BrowserTab], tab_id: usize) -> Option<(String, bool)> {
 }
 
 thread_local! {
+    /// A question sheet (Add Bookmark, Rename, Delete?) is open in the focused window's toolbar.
+    static SHEET_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+thread_local! {
     /// One-line note shown at the top of the Menu (e.g. after "Set as Default Browser").
     static MENU_NOTE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
@@ -590,6 +594,8 @@ enum AppEvent {
     ExtensionsListed(Vec<(String, String, bool)>),
     /// A line for the Extensions panel (added, removed, or why it failed).
     ExtensionNotice(String),
+    /// A web store extension was downloaded and unpacked: install it (UI thread).
+    ExtStoreReady(Result<(std::path::PathBuf, extensions::Meta), String>),
     /// Session restore: open another window with these tabs (url, space, group).
     RestoreWindow(Vec<(String, u32, Option<u32>)>),
     ContentIpc(usize, String),
@@ -804,6 +810,20 @@ struct ChromeSnapshot {
     duplicate_alert: Option<DownloadTask>,
     downloads: Vec<DownloadTask>,
 }
+
+/// Open a file the way double-clicking it in Explorer does.
+#[cfg(windows)]
+fn open_with_default_app(path: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let dir = std::path::Path::new(path).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    unsafe {
+        ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(path), None, &HSTRING::from(dir), SW_SHOWNORMAL);
+    }
+}
+#[cfg(not(windows))]
+fn open_with_default_app(_path: &str) {}
 
 /// Save history so that the newest snapshot always wins: background saves can finish out of order,
 /// and an older one landing after "Clear history" would restore what the user deleted.
@@ -1106,10 +1126,11 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
                 ..Default::default()
             };
-            if GetWindowPlacement(hwnd, &mut wp).is_ok() {
-                // Per window: several windows can be full screen and each restores its own placement.
+            // Per window: several windows can be full screen and each restores its own placement.
+            // fullscreen_motion() may have saved it already, before the window grew.
+            let have = is_fullscreen_hwnd(hwnd.0);
+            if !have && GetWindowPlacement(hwnd, &mut wp).is_ok() {
                 let mut g = FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner());
-                g.retain(|(h, _)| *h != hwnd.0);
                 g.push((hwnd.0, wp));
             }
             let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -1153,6 +1174,67 @@ fn apply_native_fullscreen(window: &Window, enable: bool) {
                 window.set_fullscreen(None);
             }
         }
+    }
+}
+
+/// The window's on-screen rectangle now and where full screen (or leaving it) puts it, for the
+/// transition. Entering saves the placement to restore. None when Windows animations are off
+/// (Settings > Accessibility > Animation effects) or there is nothing to animate.
+#[cfg(windows)]
+fn fullscreen_motion(window: &Window, enable: bool) -> Option<(windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT)> {
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::{BOOL, HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, GetWindowRect, SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SW_SHOWMAXIMIZED,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOWPLACEMENT,
+    };
+    let hwnd = HWND(window.hwnd() as isize);
+    unsafe {
+        let mut wp = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+        if enable && !is_fullscreen_hwnd(hwnd.0) && GetWindowPlacement(hwnd, &mut wp).is_ok() {
+            FULLSCREEN_WP.lock().unwrap_or_else(|e| e.into_inner()).push((hwnd.0, wp));
+        }
+        let mut anim = BOOL(1);
+        let _ = SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut anim as *mut BOOL as *mut core::ffi::c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+        if !anim.as_bool() {
+            return None;
+        }
+        let mut from = RECT::default();
+        GetWindowRect(hwnd, &mut from).ok()?;
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            return None;
+        }
+        let to = if enable {
+            mi.rcMonitor
+        } else {
+            let saved = FULLSCREEN_WP.lock().ok()?.iter().find(|(h, _)| *h == hwnd.0).map(|(_, w)| *w)?;
+            if saved.showCmd == SW_SHOWMAXIMIZED.0 as u32 {
+                mi.rcWork
+            } else {
+                // rcNormalPosition is in work-area coordinates.
+                let r = saved.rcNormalPosition;
+                let (dx, dy) = (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top);
+                RECT { left: r.left + dx, top: r.top + dy, right: r.right + dx, bottom: r.bottom + dy }
+            }
+        };
+        (from != to && to.right > to.left && to.bottom > to.top).then_some((from, to))
+    }
+}
+
+/// One frame of the transition: the window at the eased point between `from` and `to`.
+/// Curve: fast start, long soft landing, no overshoot (the toolbar's --ease-fluid feel).
+#[cfg(windows)]
+fn fullscreen_frame(window: &Window, from: windows::Win32::Foundation::RECT, to: windows::Win32::Foundation::RECT, t: f64) {
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOOWNERZORDER};
+    let e = 1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(4);
+    let lerp = |a: i32, b: i32| (a as f64 + (b - a) as f64 * e).round() as i32;
+    let (l, tp, r, b) = (lerp(from.left, to.left), lerp(from.top, to.top), lerp(from.right, to.right), lerp(from.bottom, to.bottom));
+    unsafe {
+        let _ = SetWindowPos(HWND(window.hwnd() as isize), HWND_TOP, l, tp, r - l, b - tp, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
 }
 
@@ -2497,10 +2579,9 @@ fn create_tab_webview(
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
             size: LogicalSize::new(size.width.max(400.0), content_h).into(),
         })
-        .with_url(if url == "shunno://newtab" { "about:blank" } else { url })
+        // No URL here: the page script is installed first (below), then the first page is opened.
         // Private tabs get a separate in-memory WebView2 InPrivate session: no shared cookies, storage, cache or passwords.
         .with_incognito(incognito)
-        .with_initialization_script(&init_script)
         .with_document_title_changed_handler(move |new_title| {
             let _ = title_proxy.send_event(AppEvent::TabTitleChanged(tab_id, new_title));
         })
@@ -2551,8 +2632,91 @@ fn create_tab_webview(
     if (policy.zoom - 1.0).abs() > f64::EPSILON {
         apply_tab_zoom(&wv, policy.zoom);
     }
+    let first = if url == "shunno://newtab" { "about:blank" } else { url };
+    install_content_guard(&wv, tab_id, &init_script, Some(first.to_string()));
     let _ = wv.set_visible(true);
     Ok(wv)
+}
+
+thread_local! {
+    /// Per tab: (install sequence, id of the page script currently installed in it).
+    static GUARD_IDS: std::cell::RefCell<HashMap<usize, (u64, Option<String>)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Install (or replace) the content script that runs at the start of every document of a tab.
+/// Installed by Shunno rather than by wry so it can be removed and re-added: a change of a site
+/// setting or of a browser setting then reaches tabs that are already open, from their next page
+/// load on. `then_open`: the tab's first page, opened once the script is registered (so that page
+/// has the script too), unless the tab has navigated meanwhile.
+#[cfg(windows)]
+fn install_content_guard(wv: &WebView, tab_id: usize, script: &str, then_open: Option<String>) {
+    use webview2_com::AddScriptToExecuteOnDocumentCreatedCompletedHandler;
+    use wry::WebViewExtWindows;
+    let Ok(core) = (unsafe { wv.controller().CoreWebView2() }) else { return };
+    let seq = GUARD_IDS.with(|g| {
+        let mut g = g.borrow_mut();
+        let e = g.entry(tab_id).or_insert((0, None));
+        if let Some(old) = e.1.take() {
+            unsafe {
+                let _ = core.RemoveScriptToExecuteOnDocumentCreated(&windows::core::HSTRING::from(old));
+            }
+        }
+        e.0 += 1;
+        e.0
+    });
+    let core2 = core.clone();
+    let fallback = then_open.clone();
+    // Asynchronous on purpose: a sleeping (suspended) tab answers when it wakes.
+    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |res, id| {
+        if res.is_err() {
+            // Without the script the page still has to open (it just lacks Shunno's page features).
+            if let Some(u) = then_open {
+                if MAIN_NAV.with(|m| !m.borrow().contains_key(&tab_id)) {
+                    unsafe {
+                        let _ = core2.Navigate(&windows::core::HSTRING::from(u));
+                    }
+                }
+            }
+            return Ok(());
+        }
+        let current = GUARD_IDS.with(|g| {
+            let mut g = g.borrow_mut();
+            match g.get_mut(&tab_id) {
+                Some(e) if e.0 == seq => {
+                    e.1 = Some(id.clone());
+                    true
+                }
+                _ => false,
+            }
+        });
+        unsafe {
+            if !current {
+                // A newer script was asked for meanwhile: this one must not run as well.
+                let _ = core2.RemoveScriptToExecuteOnDocumentCreated(&windows::core::HSTRING::from(id));
+                return Ok(());
+            }
+            if let Some(u) = then_open {
+                if MAIN_NAV.with(|m| !m.borrow().contains_key(&tab_id)) {
+                    let _ = core2.Navigate(&windows::core::HSTRING::from(u));
+                }
+            }
+        }
+        Ok(())
+    }));
+    unsafe {
+        if core.AddScriptToExecuteOnDocumentCreated(&windows::core::HSTRING::from(script), &handler).is_err() {
+            if let Some(u) = fallback {
+                let _ = core.Navigate(&windows::core::HSTRING::from(u));
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn install_content_guard(wv: &WebView, _tab_id: usize, _script: &str, then_open: Option<String>) {
+    if let Some(u) = then_open {
+        let _ = wv.load_url(&u);
+    }
 }
 
 /// Non-Overlapping Split Layout:
@@ -3207,7 +3371,7 @@ fn layout_webviews(
             .map(|t| t.url == "shunno://newtab")
             .unwrap_or(true);
 
-    let overlay_active = drawer_open || engine_menu_open || palette_open || (peek_open() && !is_fs);
+    let overlay_active = drawer_open || engine_menu_open || palette_open || SHEET_OPEN.with(|c| c.get()) || (peek_open() && !is_fs);
     let chrome_h = if is_fs {
         if is_home { inner_h } else { 0.0 }
     } else if overlay_active || is_home {
@@ -3792,8 +3956,40 @@ fn main() -> wry::Result<()> {
     let mut focused_key: u64 = 1;
     let mut next_window_key: u64 = 2;
 
+    let mut seen_guard_gen = state::guard_generation();
     event_loop.run(move |event, elwt, control_flow| {
         *control_flow = ControlFlow::Wait;
+        if let Event::LoopDestroyed = event {
+            // Shunno is quitting: FFmpeg / yt-dlp runs end now, not after the process is gone.
+            downloader::end_all_tools();
+            return;
+        }
+
+        // A site or browser setting changed: give every open tab (all windows, Little Shunno, Peek)
+        // the new page script. It applies from each tab's next page load.
+        if state::guard_generation() != seen_guard_gen {
+            seen_guard_gen = state::guard_generation();
+            let user_js = load_approved_user_scripts(&global_settings.approved_script_hashes);
+            let script = build_content_init_script(&SitePolicy::default(), &global_settings, &ipc_token, &user_js);
+            let mut views: Vec<(&WebView, usize)> = Vec::new();
+            for t in tabs.iter().chain(parked.iter().flat_map(|p| p.tabs.iter())) {
+                views.push((&t.webview, t.id));
+            }
+            for p in parked.iter().filter_map(|p| p.peek.as_ref()) {
+                views.push((&p.webview, p.id));
+            }
+            if let Some(l) = little.as_ref() {
+                views.push((&l.content, l.id));
+            }
+            for (wv, id) in views {
+                install_content_guard(wv, id, &script, None);
+            }
+            PEEK.with(|p| {
+                if let Some(p) = p.borrow().as_ref() {
+                    install_content_guard(&p.webview, p.id, &script, None);
+                }
+            });
+        }
 
         // Swap another window's state into the loop's locals (and the current one out).
         macro_rules! swap_window {
@@ -4259,6 +4455,23 @@ fn main() -> wry::Result<()> {
                 }
                 last_fs_toggle = std::time::Instant::now();
                 is_fullscreen = !is_fullscreen;
+                // Smooth transition: the window glides to its new frame in about a quarter second,
+                // the pages re-laid out with it every frame (no jump, no blank strip), then the
+                // final frame is set exactly. Skipped when Windows animation effects are off.
+                #[cfg(windows)]
+                if let Some((from, to)) = fullscreen_motion(&window, is_fullscreen) {
+                    const DURATION: f64 = 0.26;
+                    let started = std::time::Instant::now();
+                    loop {
+                        let t = (started.elapsed().as_secs_f64() / DURATION).min(1.0);
+                        fullscreen_frame(&window, from, to, t);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        if t >= 1.0 {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(8));
+                    }
+                }
                 apply_native_fullscreen(&window, is_fullscreen);
                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 if is_fullscreen {
@@ -4909,6 +5122,15 @@ fn main() -> wry::Result<()> {
                 let reg = extensions::load_registry();
                 EXTENSIONS.with(|e| *e.borrow_mut() = extensions::entries(&list, &reg));
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::ExtStoreReady(res)) => {
+                match res {
+                    Ok((dir, meta)) => ext_install(&chrome_wv, proxy.clone(), dir, meta),
+                    Err(e) => {
+                        let _ = proxy.send_event(AppEvent::ExtensionNotice(e));
+                    }
+                }
             }
 
             Event::UserEvent(AppEvent::ExtensionNotice(text)) => {
@@ -6184,6 +6406,10 @@ fn main() -> wry::Result<()> {
                 } else if let Some(em_flag) = cmd.strip_prefix("ENGINE_MENU:") {
                     engine_menu_open = em_flag == "1";
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                } else if let Some(s_flag) = cmd.strip_prefix("SHEET:") {
+                    // A question sheet is open in the toolbar: lay the toolbar over the page.
+                    SHEET_OPEN.with(|c| c.set(s_flag == "1"));
+                    layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if let Some(p_flag) = cmd.strip_prefix("PALETTE:") {
                     palette_open = p_flag == "1";
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
@@ -6368,6 +6594,36 @@ fn main() -> wry::Result<()> {
                     }
                 } else if cmd == "EXT_REFRESH" {
                     ext_refresh(&chrome_wv, proxy.clone());
+                } else if let Some(page) = cmd.strip_prefix("EXT_STORE:") {
+                    // "Add to Shunno" on a Chrome Web Store or Edge Add-ons page: fetch the package
+                    // the store serves to Chromium browsers, unpack it, install it like a .crx file.
+                    if let Some((store, id)) = extensions::store_extension(page) {
+                        let ver = DESKTOP_UA.get().and_then(|ua| extensions::chrome_version_from_ua(ua)).unwrap_or_else(|| "131.0.0.0".into());
+                        let crx_url = extensions::store_crx_url(store, &id, &ver);
+                        let eng = engine.clone();
+                        let p = proxy.clone();
+                        let _ = proxy.send_event(AppEvent::ExtensionNotice("Downloading the extension from the store…".into()));
+                        rt_handle.spawn(async move {
+                            let res = async {
+                                let bytes = eng.fetch_store_package(&crx_url, 200 * 1024 * 1024).await?;
+                                let file = extensions::root_dir().join(format!("{id}.crx"));
+                                let _ = fs::create_dir_all(extensions::root_dir());
+                                fs::write(&file, &bytes).map_err(|e| format!("Could not save the package: {e}"))?;
+                                let dir = extensions::unpack_archive(&file);
+                                let _ = fs::remove_file(&file);
+                                let dir = dir?;
+                                match extensions::read_manifest(&dir) {
+                                    Ok(m) => Ok((dir, m)),
+                                    Err(e) => {
+                                        extensions::delete_copy(&dir.to_string_lossy());
+                                        Err(e)
+                                    }
+                                }
+                            }
+                            .await;
+                            let _ = p.send_event(AppEvent::ExtStoreReady(res));
+                        });
+                    }
                 } else if cmd == "EXT_ADD_FOLDER" || cmd == "EXT_ADD_FILE" {
                     // Pick, copy into the profile's extensions folder, read the manifest, install.
                     #[cfg(windows)]
@@ -7059,6 +7315,19 @@ fn main() -> wry::Result<()> {
                     if let Ok(id) = id_str.parse::<u64>() {
                         native_op_call(id, "cancel");
                         engine.delete(id);
+                    }
+                } else if let Some(path) = cmd.strip_prefix("DL_OPEN:") {
+                    // Open a finished download with its default app. Only files of a known, finished
+                    // download; Windows still shows its Internet-file warning for marked files.
+                    let known = engine
+                        .tasks
+                        .lock()
+                        .map(|l| l.iter().any(|t| t.status == "COMPLETED" && t.saved_path.as_deref() == Some(path)))
+                        .unwrap_or(false);
+                    if known && std::path::Path::new(path).is_file() {
+                        open_with_default_app(path);
+                    } else if known {
+                        let _ = chrome_wv.evaluate_script("window.askNotice && window.askNotice('File not found', 'That file is no longer where it was saved. It may have been moved or deleted.')");
                     }
                 } else if let Some(path) = cmd.strip_prefix("DL_SHOW:") {
                     // Only reveal files that belong to a known download.

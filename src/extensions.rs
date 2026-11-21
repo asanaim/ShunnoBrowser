@@ -292,6 +292,54 @@ pub fn unpack_archive(file: &Path) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
+/// Web stores whose extensions WebView2 can run (Chromium extensions): the Chrome Web Store (which
+/// Brave also uses) and Microsoft Edge Add-ons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    Chrome,
+    Edge,
+}
+
+fn is_extension_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| (b'a'..=b'p').contains(&b))
+}
+
+/// The store and extension id of a store detail page, e.g.
+/// https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh
+pub fn store_extension(url: &str) -> Option<(Store, String)> {
+    let u = url::Url::parse(url).ok()?;
+    if u.scheme() != "https" {
+        return None;
+    }
+    let host = u.host_str()?.to_ascii_lowercase();
+    let segs: Vec<&str> = u.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let (store, rest): (Store, &[&str]) = match host.as_str() {
+        "chromewebstore.google.com" if segs.first() == Some(&"detail") => (Store::Chrome, &segs[1..]),
+        "chrome.google.com" if segs.len() > 2 && segs[0] == "webstore" && segs[1] == "detail" => (Store::Chrome, &segs[2..]),
+        "microsoftedge.microsoft.com" if segs.len() > 2 && segs[0] == "addons" && segs[1] == "detail" => (Store::Edge, &segs[2..]),
+        _ => return None,
+    };
+    // The id is the last 32-letter (a to p) segment: /detail/<name>/<id> or /detail/<id>.
+    rest.iter().rev().find(|s| is_extension_id(s)).map(|id| (store, id.to_string()))
+}
+
+/// Where the store serves the packaged extension (.crx) for `id`. `chrome_version` is the engine's
+/// Chromium version; the Chrome Web Store needs it to pick a compatible package.
+pub fn store_crx_url(store: Store, id: &str, chrome_version: &str) -> String {
+    match store {
+        Store::Chrome => format!(
+            "https://clients2.google.com/service/update2/crx?response=redirect&prodversion={chrome_version}&acceptformat=crx2,crx3&x=id%3D{id}%26uc"
+        ),
+        Store::Edge => format!("https://edge.microsoft.com/extensionwebstorebase/v1/crx?response=redirect&x=id%3D{id}%26installsource%3Dondemand%26uc"),
+    }
+}
+
+/// The Chromium version in a User-Agent string ("Chrome/131.0.6778.86" gives "131.0.6778.86").
+pub fn chrome_version_from_ua(ua: &str) -> Option<String> {
+    let v = ua.split("Chrome/").nth(1)?.split_whitespace().next()?;
+    (!v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| v.to_string())
+}
+
 /// Copy an unpacked extension folder (skipping .git and node_modules) into the extensions folder.
 pub fn copy_folder(src: &Path) -> Result<PathBuf, String> {
     let meta = read_manifest(src)?;
