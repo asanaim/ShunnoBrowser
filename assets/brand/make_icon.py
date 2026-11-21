@@ -29,7 +29,7 @@ def vgrad(S, top, bottom):
 def render(size, simple=False):
     SS = 8 if size <= 64 else 4
     S = size*SS
-    pad = S*(0.06 if size >= 32 else 0.02)
+    pad = S*(0.015 if size >= 64 else 0.0)
     tile = vgrad(S, (72, 178, 255), (0, 98, 235))
     mask = squircle_mask(S, 5.0, pad)
     out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
@@ -43,8 +43,8 @@ def render(size, simple=False):
     out.paste(white, (0, 0), hl)
     d = ImageDraw.Draw(out)
     c = S/2
-    R = S*(0.245 if not simple else 0.27)          # ring centre radius
-    w = S*(0.1 if not simple else 0.15)         # ring stroke
+    R = S*(0.275 if not simple else 0.29)          # ring centre radius
+    w = S*(0.118 if not simple else 0.16)         # ring stroke
     gap_mid = -45                                  # opening at top-right (degrees, PIL: 0=3 o'clock, clockwise)
     gap = 0 if simple else 64
     box = (c-R-w/2, c-R-w/2, c+R+w/2, c+R+w/2)
@@ -56,7 +56,7 @@ def render(size, simple=False):
             x, y = c+R*math.cos(a), c+R*math.sin(a)
             d.ellipse((x-w/2, y-w/2, x+w/2, y+w/2), fill=(255, 255, 255, 255))
         # orbiting dot in the opening, slightly outside the ring
-        a = math.radians(gap_mid); rd = w*0.55; Rd = R
+        a = math.radians(gap_mid); rd = w*0.6; Rd = R
         x, y = c+Rd*math.cos(a), c+Rd*math.sin(a)
         d.ellipse((x-rd, y-rd, x+rd, y+rd), fill=(255, 196, 61, 255))
     else:

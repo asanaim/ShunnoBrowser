@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.17.0";
+pub const APP_VERSION: &str = "v2.17.1";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -136,6 +136,12 @@ pub struct GlobalSettings {
     /// Shift+click a link opens it in a floating Peek preview (Arc-style).
     #[serde(default = "default_true")]
     pub peek_links: bool,
+    /// "system" (follow Windows), "light" or "dark".
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
+    /// Chromium auto dark mode for sites without a dark theme (applies at next start).
+    #[serde(default)]
+    pub force_dark_pages: bool,
     #[serde(default)]
     pub approved_script_hashes: Vec<String>,
     #[serde(default)]
@@ -169,6 +175,8 @@ impl Default for GlobalSettings {
             strict_tracking: false,
             auto_archive_hours: 0,
             peek_links: true,
+            theme_mode: default_theme_mode(),
+            force_dark_pages: false,
             approved_script_hashes: Vec::new(),
             quick_shortcuts: vec![
                 QuickShortcut { title: "DuckDuckGo".to_string(), url: "https://duckduckgo.com".to_string() },
@@ -469,4 +477,28 @@ pub fn tabs_to_archive(now: u64, hours: u32, tabs: &[ArchiveProbe]) -> Vec<usize
     }
     out.reverse();
     out
+}
+
+fn default_theme_mode() -> String {
+    "system".to_string()
+}
+
+/// Whether the UI should be dark for a theme mode, given the Windows app mode.
+pub fn effective_dark(theme_mode: &str, system_dark: bool) -> bool {
+    match theme_mode {
+        "dark" => true,
+        "light" => false,
+        _ => system_dark,
+    }
+}
+
+/// WebView2 browser arguments. Every web view in a session must use the same string
+/// (they share one environment), so this depends only on settings read at startup.
+pub fn browser_args(force_dark_pages: bool) -> String {
+    let mut a = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    if force_dark_pages {
+        // Chromium auto dark mode: perceptual (CIELAB) inversion, photos left alone.
+        a.push_str(" --enable-features=WebContentsForceDark:inversion_method/cielab_based/image_behavior/selective_image_inversion");
+    }
+    a
 }

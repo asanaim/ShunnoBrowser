@@ -224,55 +224,9 @@
 
   // 2. (Mobile site is now a real HTTP User-Agent set natively; no JS spoofing here.)
 
-  // 3. Smooth macOS-Style Ambient Cross-Dissolve Dark Mode (Zero grey/rainbow flicker!)
-  window.__shunnoSetDarkMode = function(enabled, instant) {
-    const root = document.head || document.documentElement;
-    if (!root) return;
-    const applyTheme = () => {
-      let st = document.getElementById('shunno-full-dark');
-      if (enabled) {
-        if (!st) {
-          st = document.createElement('style');
-          st.id = 'shunno-full-dark';
-          st.textContent = 'html { color-scheme: dark; filter: invert(0.92) hue-rotate(180deg) !important; background: #111 !important; } img, video, picture, canvas, svg, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }';
-          root.appendChild(st);
-        }
-      } else if (st) {
-        st.remove();
-      }
-    };
-    if (instant || !document.body) {
-      applyTheme();
-      return;
-    }
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (document.startViewTransition && !reduce) {
-      try { document.startViewTransition(applyTheme); return; } catch (e) {}
-    }
-    const oldVeil = document.getElementById('shunno-theme-veil');
-    if (oldVeil) oldVeil.remove();
-    const veil = document.createElement('div');
-    veil.id = 'shunno-theme-veil';
-    veil.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:' + (enabled ? '#111114' : '#F5F5F7') + ';opacity:0;transition:opacity 0.18s cubic-bezier(0.22,1,0.36,1);will-change:opacity;';
-    document.documentElement.appendChild(veil);
-    requestAnimationFrame(() => {
-      veil.style.opacity = '0.98';
-      setTimeout(() => {
-        applyTheme();
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            veil.style.transition = 'opacity 0.28s cubic-bezier(0.22,1,0.36,1)';
-            veil.style.opacity = '0';
-            setTimeout(() => veil.remove(), 300);
-          });
-        });
-      }, 185);
-    });
-  };
-  if (FULL_DARK_ON) {
-    if (document.documentElement) window.__shunnoSetDarkMode(true, true);
-    else window.addEventListener('DOMContentLoaded', () => window.__shunnoSetDarkMode(true, true), { once: true });
-  }
+  // 3. Dark mode: no CSS filters. The browser sets the page's preferred colour scheme natively
+  //    (prefers-color-scheme), so sites with a real dark theme use it with their true colours;
+  //    "Darken All Sites" uses Chromium's built-in auto dark mode, which keeps images intact.
 
   // 4. Image Blocker
   if (IMAGES_DISABLED) {

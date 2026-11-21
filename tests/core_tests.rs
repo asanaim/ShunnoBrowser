@@ -449,3 +449,22 @@ empty,https://e.com/,x,,\n";
     assert!(v.import_csv("just,some,columns\n1,2,3\n").is_err());
     assert!(v.import_csv("").is_err());
 }
+
+#[test]
+fn test_theme_mode_and_browser_args() {
+    use state::{browser_args, effective_dark};
+    assert!(effective_dark("system", true));
+    assert!(!effective_dark("system", false));
+    assert!(effective_dark("dark", false));
+    assert!(!effective_dark("light", true));
+    assert!(effective_dark("unknown", true)); // falls back to following Windows
+    let off = browser_args(false);
+    let on = browser_args(true);
+    assert!(off.starts_with("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    assert!(!off.contains("WebContentsForceDark"));
+    assert!(on.starts_with(&off) && on.contains("--enable-features=WebContentsForceDark"));
+    // Default settings follow the system theme and leave pages undarkened.
+    let g = state::GlobalSettings::default();
+    assert_eq!(g.theme_mode, "system");
+    assert!(!g.force_dark_pages);
+}

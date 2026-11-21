@@ -49,6 +49,7 @@ struct Peek {
     incognito: bool,
 }
 thread_local! {
+    static CHROME_LAST_H: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
     static PEEK: std::cell::RefCell<Option<Peek>> = const { std::cell::RefCell::new(None) };
     /// Last laid-out Peek rectangle (x, y, w, h) in logical px, for the chrome UI's frame.
     static PEEK_RECT: std::cell::Cell<[f64; 4]> = const { std::cell::Cell::new([0.0; 4]) };
@@ -104,6 +105,8 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// Windows switched between light and dark app mode.
+    SystemThemeChanged,
     /// Windows Hello answer for a Passwords panel action: (action, credential id, verified, hello unavailable).
     PwAuthorized(&'static str, u64, bool, bool),
     /// Right-click → Search <engine> for the selected text (source tab id, raw selection).
@@ -219,6 +222,7 @@ struct ChromeSnapshot {
     passwords: Vec<passwords::CredentialView>,
     pw_status: String,
     pw_csv_pending: bool,
+    force_dark_active: bool,
     import_status: String,
     has_closed_tabs: bool,
     find_current: usize,
@@ -1672,7 +1676,18 @@ fn create_tab_webview(
     let title_proxy = proxy.clone();
     let nav_proxy = proxy.clone();
 
-    let mut builder = WebViewBuilder::new_as_child(window);
+    let mut builder = WebViewBuilder::new_as_child(window)
+        // Painted in the theme colour until the page draws (no white flash on new tabs in dark mode),
+        // and hidden until layout_webviews places it.
+        .with_background_color(page_background(global.full_dark_mode))
+        .with_visible(false);
+    #[cfg(windows)]
+    {
+        use wry::WebViewBuilderExtWindows;
+        builder = builder
+            .with_additional_browser_args(state::browser_args(global.force_dark_pages))
+            .with_theme(page_theme(global.full_dark_mode));
+    }
     if policy.mobile_ua {
         // Real HTTP User-Agent (and navigator.userAgent), so servers send their mobile site.
         builder = builder.with_user_agent(MOBILE_UA);
@@ -1764,6 +1779,66 @@ fn set_frame_theme(window: &Window, dark: bool) {
 }
 #[cfg(not(windows))]
 fn set_frame_theme(_window: &Window, _dark: bool) {}
+
+/// Windows "app mode" (Settings > Personalization > Colors): true when apps should be dark.
+#[cfg(windows)]
+fn system_prefers_dark() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut v: u32 = 1;
+    let mut sz = std::mem::size_of::<u32>() as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            windows::core::w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut v as *mut u32 as *mut core::ffi::c_void),
+            Some(&mut sz),
+        )
+    };
+    r.is_ok() && v == 0
+}
+#[cfg(not(windows))]
+fn system_prefers_dark() -> bool {
+    false
+}
+
+/// Proxy for the window procedure to report WM_SETTINGCHANGE("ImmersiveColorSet").
+/// "Darken All Sites" as it was when the browser started (the setting applies at next start).
+static FORCE_DARK_AT_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+static THEME_PROXY: std::sync::OnceLock<std::sync::Mutex<EventLoopProxy<AppEvent>>> = std::sync::OnceLock::new();
+
+fn page_theme(dark: bool) -> wry::Theme {
+    if dark { wry::Theme::Dark } else { wry::Theme::Light }
+}
+
+/// Apply light/dark everywhere: window frame, pages' preferred colour scheme, pre-paint background.
+fn apply_theme(window: &Window, tabs: &[BrowserTab], dark: bool) {
+    set_frame_theme(window, dark);
+    #[cfg(windows)]
+    {
+        use wry::WebViewExtWindows;
+        let each = |wv: &WebView| {
+            let _ = wv.set_theme(page_theme(dark));
+            let _ = wv.set_background_color(page_background(dark));
+        };
+        for t in tabs {
+            each(&t.webview);
+        }
+        PEEK.with(|p| {
+            if let Some(k) = p.borrow().as_ref() {
+                each(&k.webview);
+            }
+        });
+    }
+}
+
+/// Default background shown before a page paints (no white flash in dark mode).
+fn page_background(dark: bool) -> (u8, u8, u8, u8) {
+    if dark { (0x1C, 0x1C, 0x1E, 255) } else { (255, 255, 255, 255) }
+}
 
 fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
     use std::sync::atomic::{AtomicIsize, Ordering};
@@ -1869,6 +1944,16 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
             match msg {
                 // Paint the grip strips in the theme colour (the window class has no background brush).
                 0x0014 /* WM_ERASEBKGND */ => return LRESULT(1),
+                0x001A /* WM_SETTINGCHANGE */ => {
+                    if lparam.0 != 0 {
+                        let s = windows::core::PCWSTR(lparam.0 as *const u16).to_string().unwrap_or_default();
+                        if s == "ImmersiveColorSet" {
+                            if let Some(p) = THEME_PROXY.get().and_then(|m| m.lock().ok()) {
+                                let _ = p.send_event(AppEvent::SystemThemeChanged);
+                            }
+                        }
+                    }
+                }
                 0x000F /* WM_PAINT */ => {
                     use windows::Win32::Graphics::Gdi::{BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT};
                     use windows::Win32::Foundation::COLORREF;
@@ -2044,11 +2129,20 @@ fn layout_webviews(
         top_bar_h
     };
 
-    let _ = chrome_wv.set_visible(!is_fs || is_home);
-    let _ = chrome_wv.set_bounds(Rect {
-        position: LogicalPosition::new(grip, 0.0).into(),
-        size: LogicalSize::new(inner_w, chrome_h).into(),
-    });
+    // Order matters to avoid a flash of the bare window: when the chrome grows (New Tab page, popovers),
+    // cover the page first and hide it after; when it shrinks, show the page first and shrink after.
+    let apply_chrome = || {
+        let _ = chrome_wv.set_visible(!is_fs || is_home);
+        let _ = chrome_wv.set_bounds(Rect {
+            position: LogicalPosition::new(grip, 0.0).into(),
+            size: LogicalSize::new(inner_w, chrome_h).into(),
+        });
+    };
+    let last_h = CHROME_LAST_H.with(|c| c.replace(chrome_h));
+    let chrome_grows = chrome_h >= last_h;
+    if chrome_grows {
+        apply_chrome();
+    }
 
     // Full-width webpage (zero splitting): Menu & Downloads float over the live webpage at 10% transparency.
     let web_w = inner_w;
@@ -2079,6 +2173,9 @@ fn layout_webviews(
         });
         let show_web = idx == active_idx && tab.url != "shunno://newtab";
         let _ = tab.webview.set_visible(show_web);
+    }
+    if !chrome_grows {
+        apply_chrome();
     }
 
     if !is_fs {
@@ -2148,6 +2245,8 @@ fn main() -> wry::Result<()> {
 
     let ipc_token = generate_ipc_token();
     let mut global_settings = BrowserStorage::load_global_settings();
+    // full_dark_mode is the effective theme for this run (System follows Windows).
+    global_settings.full_dark_mode = state::effective_dark(&global_settings.theme_mode, system_prefers_dark());
     https_guard::global().set_enabled(global_settings.https_only);
     let mut site_policies = BrowserStorage::load_site_policies();
     let mut bookmarks = BrowserStorage::load_bookmarks();
@@ -2170,7 +2269,15 @@ fn main() -> wry::Result<()> {
         .unwrap();
 
     let chrome_proxy = proxy.clone();
-    let chrome_wv = WebViewBuilder::new_as_child(&window)
+    #[allow(unused_mut)]
+    let mut chrome_builder = WebViewBuilder::new_as_child(&window);
+    #[cfg(windows)]
+    {
+        // Must match the tab web views' arguments: they share one WebView2 environment.
+        use wry::WebViewBuilderExtWindows;
+        chrome_builder = chrome_builder.with_additional_browser_args(state::browser_args(global_settings.force_dark_pages));
+    }
+    let chrome_wv = chrome_builder
         .with_web_context(&mut web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
@@ -2185,6 +2292,8 @@ fn main() -> wry::Result<()> {
 
     install_native_win32_window_features(&window, &chrome_wv);
     set_frame_theme(&window, global_settings.full_dark_mode);
+    let _ = THEME_PROXY.set(std::sync::Mutex::new(proxy.clone()));
+    FORCE_DARK_AT_START.store(global_settings.force_dark_pages, Ordering::Relaxed);
     attach_f11_accelerator_hook(&chrome_wv, proxy.clone());
 
     let next_tab_id = Arc::new(AtomicUsize::new(1));
@@ -2380,6 +2489,7 @@ fn main() -> wry::Result<()> {
             passwords: passwords::global().with(|v| (v.views(), false)),
             pw_status: passwords::global().status.lock().map(|s| s.clone()).unwrap_or_default(),
             pw_csv_pending: passwords::global().csv_pending.load(std::sync::atomic::Ordering::Relaxed),
+            force_dark_active: FORCE_DARK_AT_START.load(Ordering::Relaxed),
             peek: PEEK.with(|p| {
                 p.borrow().as_ref().map(|k| PeekView {
                     url: k.webview.url().unwrap_or_default(),
@@ -3002,6 +3112,17 @@ fn main() -> wry::Result<()> {
                     }
                 }
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
+            }
+
+            Event::UserEvent(AppEvent::SystemThemeChanged) => {
+                if global_settings.theme_mode == "system" {
+                    let dark = system_prefers_dark();
+                    if dark != global_settings.full_dark_mode {
+                        global_settings.full_dark_mode = dark;
+                        apply_theme(&window, &tabs, dark);
+                        let _ = proxy.send_event(AppEvent::RefreshChrome);
+                    }
+                }
             }
 
             Event::UserEvent(AppEvent::AdBlocked) => {
@@ -3679,6 +3800,8 @@ fn main() -> wry::Result<()> {
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                 } else if cmd == "NEW_TAB" || cmd == "NEW_INCOGNITO" {
                     let is_incog = cmd == "NEW_INCOGNITO";
+                    // Draw the start page before the toolbar grows over the old page.
+                    let _ = chrome_wv.evaluate_script("window.__showHomeNow && window.__showHomeNow()");
                     let start = "shunno://newtab".to_string();
                     let pol = SitePolicy::default();
                     let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);
@@ -3879,17 +4002,13 @@ fn main() -> wry::Result<()> {
                 } else if let Some(gkey) = cmd.strip_prefix("TOGGLE_GLOBAL:") {
                     match gkey {
                         "full_dark" => {
+                            // Legacy toggle (command palette): flip to an explicit light/dark.
+                            global_settings.theme_mode = if global_settings.full_dark_mode { "light" } else { "dark" }.to_string();
                             global_settings.full_dark_mode = !global_settings.full_dark_mode;
-                            set_frame_theme(&window, global_settings.full_dark_mode);
-                            let js = format!(
-                                "if (window.__shunnoSetDarkMode) window.__shunnoSetDarkMode({});",
-                                global_settings.full_dark_mode
-                            );
-                            for t in &tabs {
-                                if t.url != "shunno://newtab" {
-                                    let _ = t.webview.evaluate_script(&js);
-                                }
-                            }
+                            apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                        }
+                        "force_dark_pages" => {
+                            global_settings.force_dark_pages = !global_settings.force_dark_pages;
                         }
                         "drop_basket" => {
                             global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
@@ -4171,6 +4290,13 @@ fn main() -> wry::Result<()> {
                     engine.install_ffmpeg_bundle(&rt_handle);
                 } else if cmd == "INSTALL_YTDLP" {
                     engine.install_ytdlp_bundle(&rt_handle);
+                } else if let Some(mode) = cmd.strip_prefix("SET_THEME:") {
+                    if matches!(mode, "system" | "light" | "dark") {
+                        global_settings.theme_mode = mode.to_string();
+                        global_settings.full_dark_mode = state::effective_dark(mode, system_prefers_dark());
+                        apply_theme(&window, &tabs, global_settings.full_dark_mode);
+                        BrowserStorage::save_global_settings(&global_settings);
+                    }
                 } else if let Some(h) = cmd.strip_prefix("SET_AUTO_ARCHIVE:") {
                     if let Ok(h) = h.trim().parse::<u32>() {
                         global_settings.auto_archive_hours = h.min(24 * 30);

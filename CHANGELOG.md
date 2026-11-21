@@ -1,3 +1,19 @@
+## v2.17.1
+
+### Appearance
+* **Follows Windows**: Menu, Appearance: System / Light / Dark (default System). With System, switching Windows between light and dark mode updates Shunno immediately.
+* **True colours in dark mode.** The old page dark mode inverted every page with a CSS filter, which distorted colours. Pages are now told the preferred colour scheme natively, so sites with their own dark theme (YouTube, GitHub, Wikipedia, Google...) use it with their real colours; other sites stay as designed.
+* **Darken All Sites** (optional, after restart): Chromium's built-in auto dark mode for sites without a dark theme. It uses perceptual colour inversion and leaves photos alone.
+
+### Smoothness
+* New tabs no longer flash: the start page is drawn before the toolbar grows, new web views stay hidden until placed, and they are painted in the theme colour before the page draws (no white flash in dark mode).
+* Showing or hiding the start page, Menu, Downloads and Peek now reorders native steps so the bare window is never visible in between.
+* Download filters (All, Downloading, Downloaded, Paused, Failed, file types) respond instantly; they no longer wait for a round trip to the browser core.
+* Colour transitions shortened from 0.36 s to 0.18 s.
+
+### Icon
+* Larger taskbar icon: the tile now fills the icon area like other browsers' icons, with a bolder ring.
+
 ## v2.17.0
 
 ### Password manager
