@@ -1,4 +1,4 @@
-# Shunno Browser (`v2.30.0`)
+# Shunno Browser (`v2.31.0`)
 
 **Shunno Browser** is a fast, lightweight, privacy-first Windows desktop web browser built in **Rust** (`tao` + `wry` / Microsoft Edge WebView2 + `tokio` + `reqwest`) with an integrated **16-segment multi-threaded download accelerator**, **live media stream sniffer**, **floating media download pill**, and **optional FFmpeg DASH HD muxer**.
 
@@ -18,6 +18,8 @@
 
 ### 2. Privacy Shields, Ad Blocking & YouTube Ad Stripper
 * **Network-Level Ad & Tracker Shield:** Blocks ad networks and tracking endpoints directly in WebView2 `WebResourceRequested` before requests leave your PC.
+* **Content Blocker (Site Controls, Content Blocker):** Choose filter lists from a fixed catalog (EasyList and EasyPrivacy on by default; uBlock filters, Peter Lowe's list, uBlock Privacy and Badware, EasyList Cookie, Fanboy Social and Annoyance, IndianList, uBlock Unbreak), update them automatically every 1, 4, 7 or 14 days or with Update Now, and keep your own rules in **My Filters** (Adblock Plus / uBlock syntax, with Import and Export as `.txt`).
+* **Element Picker:** Right click a page and choose **Hide Element on Page…**, or use **Hide an Element on This Page** in the Content Blocker. Point, click, widen with Broader or Narrower, then **Hide Once** or **Hide Always** (saved as `site##selector` in My Filters).
 * **YouTube Pre-Roll Ad Stripper:** Hooks `window.ytInitialPlayerResponse` and `JSON.parse` at document start to strip `adPlacements`, `playerAds`, `adSlots`, and `adBreakHeartbeatParams` before playback begins, paired with a fast 150ms fallback skip trigger.
 * **Per-Site Permission Matrix (`site_permissions.json`):** Customize JavaScript, Cookies, Images, Ad Shield, Desktop User-Agent, Reader Mode, and Page Zoom independently per domain.
 * **Private / Incognito Tabs (`Ctrl + Shift + N`):** Browse without saving history or session tabs, plus one-click **Clear Site Data** (`localStorage`, `sessionStorage`, and site cookies).
