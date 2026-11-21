@@ -1,4 +1,4 @@
-# Shunno Browser (`v2.31.0`)
+# Shunno Browser (`v2.31.1`)
 
 **Shunno Browser** is a fast, lightweight, privacy-first Windows desktop web browser built in **Rust** (`tao` + `wry` / Microsoft Edge WebView2 + `tokio` + `reqwest`) with an integrated **16-segment multi-threaded download accelerator**, **live media stream sniffer**, **floating media download pill**, and **optional FFmpeg DASH HD muxer**.
 

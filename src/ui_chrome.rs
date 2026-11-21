@@ -123,15 +123,20 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   .tab {
     position: relative; display: flex; align-items: center; justify-content: center; gap: 6px;
-    height: 28px; box-sizing: border-box; padding: 0 26px; border-radius: 9px;
+    height: 28px; box-sizing: border-box; padding: 0 6px; border-radius: 9px;
     background: transparent; color: var(--text); font-size: 12px; cursor: default; user-select: none;
     flex: 1 1 0; min-width: 36px; max-width: 240px; overflow: hidden;
-    transition: flex 0.24s var(--ease-fluid), min-width 0.24s var(--ease-fluid), max-width 0.24s var(--ease-fluid),
-      padding 0.24s var(--ease-fluid), opacity 0.18s ease, background 0.2s var(--ease-fluid), box-shadow 0.2s var(--ease-fluid), color 0.18s ease;
+    /* Switching tabs changes no sizes and animates nothing but colour: no reflow, no flicker. */
+    transition: background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
   }
   .tab.is-new { animation: tabEnter 0.26s var(--ease-fluid); }
   .tab.closing { flex: 0 0 0 !important; min-width: 0 !important; max-width: 0 !important; padding: 0 !important;
-    margin-right: -4px; opacity: 0; pointer-events: none; }
+    margin-right: -4px; opacity: 0; pointer-events: none;
+    transition: flex 0.22s var(--ease-fluid), min-width 0.22s var(--ease-fluid), max-width 0.22s var(--ease-fluid),
+      padding 0.22s var(--ease-fluid), margin 0.22s var(--ease-fluid), opacity 0.16s ease; }
+  /* After closing tabs with the mouse, the others ease back to their natural width. */
+  #tabs-container.tabs-relax .tab { transition: flex 0.24s var(--ease-fluid), min-width 0.24s var(--ease-fluid), max-width 0.24s var(--ease-fluid),
+      background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease; }
   /* Hairline between two plain tabs, as in Safari. */
   .tab:not(.active):not(:hover) + .tab:not(.active):not(:hover)::before {
     content: ""; position: absolute; left: -2.5px; top: 7px; bottom: 7px; width: 1px; background: var(--border);
@@ -165,8 +170,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab.active {
     background: var(--surface-solid); color: var(--text); font-weight: 600;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
-    flex-grow: 1.4; min-width: min(170px, 46%);
   }
+  /* Only when tabs are crowded does the current tab keep room for its title. */
+  #tabs-container.crowded .tab.active { min-width: min(170px, 46%); }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
   /* Spaces: the active Space's colour marks the current tab and the Space button. */
   .tab.active:not(.incognito) { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12), inset 0 -2px 0 var(--space-accent, transparent); }
@@ -275,7 +281,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: background 0.18s ease, color 0.18s ease;
   }
   .tab-audio:hover { background: var(--blue); color: #fff; }
-  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+  /* Padding stays the same on every tab (so all tabs get the same share of the strip); the title
+     leaves room at both ends for the close button. */
+  .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; max-width: calc(100% - 66px); }
   /* Close button at the left edge, as in Safari: on the current tab always, on others while hovered. */
   .tab-close {
     position: absolute; left: 5px; top: 50%; transform: translateY(-50%);
@@ -289,7 +297,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab-close:active { background: rgba(128, 128, 128, 0.34); }
   /* Narrow tabs (many open) show only their icon. A click selects the tab (middle-click closes
      it); on the current narrow tab the close button takes the icon's place. */
-  .tab[data-narrow] { padding: 0 4px; gap: 0; }
+  .tab[data-narrow] { gap: 0; }
   .tab[data-narrow] .tab-title, .tab[data-narrow] .tab-audio { display: none; }
   .tab[data-narrow] .tab-close { left: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; background: var(--surface-solid); }
   .tab[data-narrow].active .tab-close { opacity: 1; pointer-events: auto; }
@@ -1796,36 +1804,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (!snapNative || maxBtnFade) return;
     sendMaxButton(maxButtonColors());
   }
-  function sendMaxButton(cols) {
+  function sendMaxButton(cols, fadeMs) {
     const b = document.getElementById('btn-max');
     if (!b || !cols) return;
     const r = b.getBoundingClientRect();
     const d = window.devicePixelRatio || 1;
     const msg = `MAXBTN:${r.left * d}|${r.top * d}|${r.width * d}|${r.height * d}|${hex(cols[0])}|${hex(cols[1])}|${hex(cols[2])}|${7 * d}|${10 * d}`;
-    if (msg !== lastMaxBtn) { lastMaxBtn = msg; send(msg); }
+    if (msg !== lastMaxBtn) { lastMaxBtn = msg; send(fadeMs ? msg + '|' + fadeMs : msg); }
   }
-  // cubic-bezier(0.32, 0.72, 0, 1), the curve of the theme cross-fade.
-  function easeFluid(x) {
-    const bz = (t, a, b) => 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
-    let lo = 0, hi = 1, t = x;
-    for (let i = 0; i < 24; i++) { t = (lo + hi) / 2; if (bz(t, 0.32, 0) < x) lo = t; else hi = t; }
-    return bz(t, 0.72, 1);
-  }
-  function fadeMaxButton(from, to, ms) {
-    if (!snapNative || !from || !to) { maxBtnFade = null; reportMaxButton(); return; }
+  // The native button fades itself (one message, timed by the window on the page's curve), so it
+  // stays in step with the cross-fade without a message per frame.
+  function fadeMaxButton(to, ms) {
+    if (!snapNative || !to) { maxBtnFade = null; reportMaxButton(); return; }
     const id = {};
     maxBtnFade = id;
-    const t0 = performance.now();
-    const mix = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k));
-    const step = (now) => {
-      if (maxBtnFade !== id) return;
-      const x = Math.min(1, (now - t0) / ms);
-      const k = easeFluid(x);
-      sendMaxButton([mix(from[0], to[0], k), mix(from[1], to[1], k), mix(from[2], to[2], k)]);
-      if (x < 1) requestAnimationFrame(step);
-      else { maxBtnFade = null; reportMaxButton(); }
-    };
-    requestAnimationFrame(step);
+    lastMaxBtn = '';
+    sendMaxButton(to, ms);
+    setTimeout(() => { if (maxBtnFade === id) { maxBtnFade = null; reportMaxButton(); } }, ms + 40);
   }
   window.addEventListener('resize', () => requestAnimationFrame(reportMaxButton));
   function cancelSnapHover() {
@@ -1946,7 +1941,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   function applyTheme(dark) {
     if (document.body.classList.contains('dark') === dark) return;
-    const from = maxButtonColors();
     let to = null;
     const flip = () => {
       document.body.classList.add('theme-switching');
@@ -1958,7 +1952,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (document.startViewTransition && !reduce) {
       maxBtnFade = {};  // hold the old colours until the cross-fade starts
       const vt = document.startViewTransition(flip);
-      const go = () => fadeMaxButton(from, to || maxButtonColors(), 380);
+      const go = () => fadeMaxButton(to || maxButtonColors(), 380);
       vt.ready.then(go, go);
     } else {
       flip();
@@ -2194,6 +2188,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function unlockTabWidths() {
     if (!tabWidthsLocked) return;
     tabWidthsLocked = false;
+    const tcr = document.getElementById('tabs-container');
+    tcr.classList.add('tabs-relax');
+    setTimeout(() => tcr.classList.remove('tabs-relax'), 300);
     document.querySelectorAll('#tabs-container .tab').forEach(el => {
       if (el.classList.contains('closing')) return;
       el.style.flex = el.style.minWidth = el.style.maxWidth = '';
@@ -2266,9 +2263,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // Safari, many tabs: a narrow tab keeps its close button, shown in place of the icon on the
   // current tab and on hover, instead of being pushed out of view.
   function markNarrowTabs() {
+    const tc = document.getElementById('tabs-container');
+    if (tc && !tabWidthsLocked) {
+      const live = tc.querySelectorAll('.tab:not(.closing):not(.pinned):not(.tg-hidden)').length;
+      tc.classList.toggle('crowded', live > 0 && tc.clientWidth / live < 150);
+    }
     document.querySelectorAll('#tabs-container .tab:not(.closing)').forEach(el => {
       if (tabWidthsLocked || el.classList.contains('is-new')) return;
-      const narrow = el.getBoundingClientRect().width < 78;
+      const narrow = el.getBoundingClientRect().width < 100;
       if (narrow !== (el.dataset.narrow === '1')) {
         if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
       }
@@ -3251,14 +3253,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
 
 
-    // Downloads (Safari): the button appears once there are downloads; while some run, a ring shows
+    // Downloads: always in the toolbar; while some run, a ring shows
     // their combined progress and the badge counts them.
     const dlBtn = document.getElementById('btn-downloads');
     const running = state.downloads.filter(d => d.status === 'DOWNLOADING' || d.status === 'QUEUED' || d.status === 'MUXING');
     const dlCount = document.getElementById('dl-count');
     const dlN = running.length ? String(running.length) : '';
     if (dlCount.textContent !== dlN) dlCount.textContent = dlN;
-    dlBtn.style.display = state.downloads.length || activeDrawer === 'downloads' ? '' : 'none';
+    // Always shown: the download manager is one of Shunno's main tools.
     dlBtn.classList.toggle('active', running.length > 0);
     const tot = running.reduce((a, d) => a + (d.total_bytes > 0 ? d.total_bytes : 0), 0);
     const got = running.reduce((a, d) => a + (d.total_bytes > 0 ? Math.min(d.downloaded_bytes, d.total_bytes) : 0), 0);
