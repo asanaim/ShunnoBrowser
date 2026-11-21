@@ -3756,6 +3756,53 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::LittleIpc(msg)) => {
+                if msg == "OPEN" {
+                    // Move the live page into the main window as a tab: no reload, so scroll position,
+                    // half-filled forms, playing media and sign-ins carry over. Then close Little Shunno.
+                    let Some(Little { window: lw, bar, content, id }) = little.take() else { return };
+                    let u = content.url().unwrap_or_default();
+                    if u.starts_with("http") {
+                        #[cfg(windows)]
+                        unsafe {
+                            use tao::platform::windows::WindowExtWindows;
+                            use windows::Win32::UI::WindowsAndMessaging::SetParent;
+                            use wry::WebViewExtWindows;
+                            let mut host = windows::Win32::Foundation::HWND::default();
+                            if content.controller().ParentWindow(&mut host).is_ok() {
+                                let _ = SetParent(host, windows::Win32::Foundation::HWND(window.hwnd() as isize));
+                            }
+                        }
+                        set_tab_space(id, active_space());
+                        tabs.push(BrowserTab {
+                            id,
+                            title: extract_host(&u),
+                            url: u,
+                            cookie: None,
+                            incognito: false,
+                            pinned: false,
+                            playing_audio: false,
+                            muted: false,
+                            reader_active: false,
+                            sleeping: false,
+                            last_active_secs: now_epoch_secs(),
+                            zoom: 1.0,
+                            webview: content,
+                        });
+                        active_tab_idx = tabs.len() - 1;
+                        drop(bar);
+                        drop(lw);
+                        layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                    } else {
+                        drop(content);
+                        drop(bar);
+                        drop(lw);
+                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
+                    }
+                    window.set_minimized(false);
+                    window.set_focus();
+                    let _ = proxy.send_event(AppEvent::RefreshChrome);
+                    return;
+                }
                 let Some(l) = little.as_ref() else { return };
                 if let Some(text) = msg.strip_prefix("NAV:") {
                     if !text.trim().is_empty() {
@@ -3767,17 +3814,6 @@ fn main() -> wry::Result<()> {
                     let _ = l.content.evaluate_script("history.back()");
                 } else if msg == "CLOSE" {
                     little = None;
-                } else if msg == "OPEN" {
-                    // Move the page into the main window as a tab, then close Little Shunno.
-                    let u = l.content.url().unwrap_or_default();
-                    little = None;
-                    window.set_minimized(false);
-                    window.set_focus();
-                    if u.starts_with("http") {
-                        let _ = proxy.send_event(AppEvent::NewWindowBlockedOrOpened(0, u));
-                    } else {
-                        let _ = proxy.send_event(AppEvent::ChromeIpc("NEW_TAB".into()));
-                    }
                 }
                 return;
             }
