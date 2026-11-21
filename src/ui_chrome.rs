@@ -1705,13 +1705,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function over(top, base) { const a = top[3]; return [0, 1, 2].map(i => top[i] * a + base[i] * (1 - a)); }
   function hex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
   let lastMaxBtn = '';
-  function reportMaxButton() {
-    if (!snapNative) return;
+  // Colours of the native maximize button, as painted: [bg, fg, hover] (RGB arrays).
+  function maxButtonColors() {
     const b = document.getElementById('btn-max');
-    if (!b) return;
-    const r = b.getBoundingClientRect();
-    const d = window.devicePixelRatio || 1;
-    // Composite the backgrounds behind the button over the window's own frame colour.
+    if (!b) return null;
     const chain = [];
     for (let el = b.parentElement; el; el = el.parentElement) chain.push(el);
     let col = document.body.classList.contains('dark') ? [0x1C, 0x1C, 0x1E] : [255, 255, 255];
@@ -1720,9 +1717,45 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       if (c && c[3] > 0) col = over(c, col);
     }
     const fg = parseRgba(getComputedStyle(b).color) || [0, 0, 0, 1];
-    const hov = over([128, 128, 128, 0.18], col);
-    const msg = `MAXBTN:${r.left * d}|${r.top * d}|${r.width * d}|${r.height * d}|${hex(col)}|${hex(over(fg, col))}|${hex(hov)}|${7 * d}|${10 * d}`;
+    return [col, over(fg, col), over([128, 128, 128, 0.18], col)];
+  }
+  // During a theme cross-fade the native button is not part of the page snapshot, so it is
+  // faded by hand on the same curve; ordinary reports wait until the fade ends.
+  let maxBtnFade = null;
+  function reportMaxButton() {
+    if (!snapNative || maxBtnFade) return;
+    sendMaxButton(maxButtonColors());
+  }
+  function sendMaxButton(cols) {
+    const b = document.getElementById('btn-max');
+    if (!b || !cols) return;
+    const r = b.getBoundingClientRect();
+    const d = window.devicePixelRatio || 1;
+    const msg = `MAXBTN:${r.left * d}|${r.top * d}|${r.width * d}|${r.height * d}|${hex(cols[0])}|${hex(cols[1])}|${hex(cols[2])}|${7 * d}|${10 * d}`;
     if (msg !== lastMaxBtn) { lastMaxBtn = msg; send(msg); }
+  }
+  // cubic-bezier(0.32, 0.72, 0, 1), the curve of the theme cross-fade.
+  function easeFluid(x) {
+    const bz = (t, a, b) => 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
+    let lo = 0, hi = 1, t = x;
+    for (let i = 0; i < 24; i++) { t = (lo + hi) / 2; if (bz(t, 0.32, 0) < x) lo = t; else hi = t; }
+    return bz(t, 0.72, 1);
+  }
+  function fadeMaxButton(from, to, ms) {
+    if (!snapNative || !from || !to) { maxBtnFade = null; reportMaxButton(); return; }
+    const id = {};
+    maxBtnFade = id;
+    const t0 = performance.now();
+    const mix = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k));
+    const step = (now) => {
+      if (maxBtnFade !== id) return;
+      const x = Math.min(1, (now - t0) / ms);
+      const k = easeFluid(x);
+      sendMaxButton([mix(from[0], to[0], k), mix(from[1], to[1], k), mix(from[2], to[2], k)]);
+      if (x < 1) requestAnimationFrame(step);
+      else { maxBtnFade = null; reportMaxButton(); }
+    };
+    requestAnimationFrame(step);
   }
   window.addEventListener('resize', () => requestAnimationFrame(reportMaxButton));
   function cancelSnapHover() {
@@ -1841,14 +1874,26 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 
   function applyTheme(dark) {
+    if (document.body.classList.contains('dark') === dark) return;
+    const from = maxButtonColors();
+    let to = null;
     const flip = () => {
       document.body.classList.add('theme-switching');
       document.body.classList.toggle('dark', dark);
+      to = maxButtonColors();
       requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove('theme-switching')));
     };
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (document.startViewTransition && !reduce) document.startViewTransition(flip);
-    else flip();
+    if (document.startViewTransition && !reduce) {
+      maxBtnFade = {};  // hold the old colours until the cross-fade starts
+      const vt = document.startViewTransition(flip);
+      const go = () => fadeMaxButton(from, to || maxButtonColors(), 380);
+      vt.ready.then(go, go);
+    } else {
+      flip();
+      maxBtnFade = null;
+      reportMaxButton();
+    }
   }
 
   const ICON_MAX = '<span class="cap-glyph">&#xE922;</span>';
@@ -2503,8 +2548,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
     if (hc) hc.classList.add('active');
-    // The Favorites bar belongs to web pages; hide it now, not when the native side confirms.
-    document.getElementById('bookmarks-strip').style.display = 'none';
+    // Keep the Favorites bar as the setting has it, so it neither flashes nor vanishes.
+    document.getElementById('bookmarks-strip').style.display = favoritesBarOn(lastState) ? '' : 'none';
     window.__focusHomeSearch();
     send('NEW_TAB');
   }
@@ -2739,8 +2784,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     pendingHomeUntil = Date.now() + 700;
     const hc = document.getElementById('home-canvas');
     if (hc) hc.classList.add('active');
-    document.getElementById('bookmarks-strip').style.display = 'none';
+    document.getElementById('bookmarks-strip').style.display = favoritesBarOn(lastState) ? '' : 'none';
   };
+  function favoritesBarOn(state) {
+    if (!state || !state.global || !state.global.show_favorites_bar) return false;
+    return (state.bookmarks || []).some(b => (b.folder || FAV) === FAV);
+  }
 
   // Downloads list: also called directly by the filters, so they respond without a native round trip.
   function renderDownloadsList(state) {
@@ -2920,11 +2969,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     // Home page canvas visibility when on shunno://newtab
     // Until the native side confirms, keep showing the New Tab page we opened optimistically.
     const isHome = state.active_url === 'shunno://newtab' || Date.now() < pendingHomeUntil;
-    // Safari: the New Tab page shows Favorites as tiles; the Favorites bar (off unless turned on in
-    // the sidebar) shows them on web pages. No bar and no empty strip otherwise.
+    // The Favorites bar (off unless turned on in the Library) shows on every page, New Tab included,
+    // as Safari does; it never shows as an empty strip.
     const favs = (state.bookmarks || []).filter(b => (b.folder || FAV) === FAV);
     const bmStrip = document.getElementById('bookmarks-strip');
-    const barOn = !isHome && !!state.global.show_favorites_bar && favs.length > 0;
+    const barOn = favoritesBarOn(state);
     bmStrip.style.display = barOn ? '' : 'none';
     const barHtml = barOn ? favs.slice(0, 30).map(b => `
       <button class="bm-chip" onclick="send('NAV:${encodeAttr(b.url)}')" onauxclick="if(event.button===1) send('NAV_NEW_TAB:${encodeAttr(b.url)}')"

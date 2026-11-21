@@ -1013,3 +1013,18 @@ fn runtime_components_are_not_listed_as_extensions() {
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].name, "Mine");
 }
+
+#[test]
+fn max_button_glyph_is_grayscale_and_fades_with_the_theme() {
+    let main = include_str!("../src/main.rs");
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(!main.contains("CLEARTYPE_QUALITY"), "ClearType fringes the native glyph");
+    assert!(ui.contains("fadeMaxButton(from"), "theme change must fade the native button");
+}
+
+#[test]
+fn favorites_bar_follows_the_setting_on_new_tab() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("const barOn = favoritesBarOn(state);"));
+    assert!(!ui.contains("!isHome && !!state.global.show_favorites_bar"));
+}

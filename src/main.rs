@@ -2891,7 +2891,7 @@ fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32:
     use windows::Win32::Foundation::COLORREF;
     use windows::Win32::Graphics::Gdi::{
         CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, FillRgn, SelectObject, SetBkMode,
-        SetTextColor, CLEARTYPE_QUALITY, DT_CENTER, DT_NOCLIP, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, TRANSPARENT,
+        SetTextColor, ANTIALIASED_QUALITY, DT_CENTER, DT_NOCLIP, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, TRANSPARENT,
     };
     use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
     let Some(mut r) = max_button_client_rect(main) else { return };
@@ -2916,10 +2916,10 @@ fn paint_max_button(main: windows::Win32::Foundation::HWND, hdc: windows::Win32:
             let _ = DeleteObject(hb);
         }
         let mut face: Vec<u16> = "Segoe Fluent Icons".encode_utf16().chain(Some(0)).collect();
-        let mut font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, CLEARTYPE_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
+        let mut font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, ANTIALIASED_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
         if font.is_invalid() {
             face = "Segoe MDL2 Assets".encode_utf16().chain(Some(0)).collect();
-            font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, CLEARTYPE_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
+            font = CreateFontW(-b.glyph_px, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 0, 0, 0, ANTIALIASED_QUALITY.0 as u32, 0, windows::core::PCWSTR(face.as_ptr()));
         }
         let old = SelectObject(hdc, font);
         SetBkMode(hdc, TRANSPARENT);
@@ -6451,19 +6451,32 @@ fn main() -> wry::Result<()> {
                         if f.len() == 9 {
                             let n = |i: usize| f[i].trim().parse::<f64>().map(|v| v.round() as i32).unwrap_or(0);
                             #[cfg(windows)]
-                            with_max_button({ use tao::platform::windows::WindowExtWindows; window.hwnd() as isize }, |b| {
-                                b.rect = (n(0), n(1), n(0) + n(2), n(1) + n(3));
+                            let moved = with_max_button({ use tao::platform::windows::WindowExtWindows; window.hwnd() as isize }, |b| {
+                                let rect = (n(0), n(1), n(0) + n(2), n(1) + n(3));
+                                let active = n(2) > 0 && n(3) > 0;
+                                let moved = b.rect != rect || b.active != active;
+                                b.rect = rect;
                                 b.bg = colorref(f[4]).unwrap_or(0x00FFFFFF);
                                 b.fg = colorref(f[5]).unwrap_or(0);
                                 b.hover_bg = colorref(f[6]).unwrap_or(b.bg);
                                 b.radius = n(7);
                                 b.glyph_px = n(8).max(8);
-                                b.active = n(2) > 0 && n(3) > 0;
+                                b.active = active;
+                                moved
                             });
                             #[cfg(windows)]
                             {
                                 use tao::platform::windows::WindowExtWindows;
-                                apply_max_button_hole(window.hwnd() as isize);
+                                if moved {
+                                    apply_max_button_hole(window.hwnd() as isize);
+                                } else {
+                                    // Colours only (theme cross-fade frames): repaint the button, nothing else.
+                                    if let Some(r) = max_button_client_rect(windows::Win32::Foundation::HWND(window.hwnd() as isize)) {
+                                        unsafe {
+                                            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(windows::Win32::Foundation::HWND(window.hwnd() as isize), Some(&r), false);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
