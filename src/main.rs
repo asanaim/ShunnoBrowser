@@ -105,6 +105,8 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
 
 enum AppEvent {
+    /// A browser shortcut pressed while a page had focus (see page_shortcut_id).
+    PageShortcut(&'static str),
     /// Windows switched between light and dark app mode.
     SystemThemeChanged,
     /// Windows Hello answer for a Passwords panel action: (action, credential id, verified, hello unavailable).
@@ -966,7 +968,36 @@ fn clear_httponly_cookies_for_url(webview: &WebView, url: &str) {
 fn clear_httponly_cookies_for_url(_webview: &WebView, _url: &str) {}
 
 #[cfg(windows)]
+/// Browser shortcut pressed inside a page, as the id the toolbar's shortcut handler understands.
+/// Pages get their keystrokes first; WebView2 reports these here so they work whichever web view
+/// has focus. (In the toolbar web view itself, its own keydown handler deals with them.)
+fn page_shortcut_id(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<&'static str> {
+    if !ctrl || alt {
+        return None;
+    }
+    Some(match (vk, shift) {
+        (0x54, false) => "new-tab",       // Ctrl+T
+        (0x54, true) => "reopen-tab",     // Ctrl+Shift+T
+        (0x57, false) => "close-tab",     // Ctrl+W
+        (0x09, false) => "next-tab",      // Ctrl+Tab
+        (0x09, true) => "prev-tab",       // Ctrl+Shift+Tab
+        (0x4C, false) => "focus-url",     // Ctrl+L
+        (0x4B, false) => "palette",       // Ctrl+K
+        (0x4A, false) => "downloads",     // Ctrl+J
+        (0x46, false) => "find",          // Ctrl+F
+        _ => return None,
+    })
+}
+
 fn attach_f11_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent>) {
+    attach_accelerator_hook(webview, proxy, false);
+}
+
+fn attach_page_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent>) {
+    attach_accelerator_hook(webview, proxy, true);
+}
+
+fn attach_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent>, page_shortcuts: bool) {
     use webview2_com::AcceleratorKeyPressedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
@@ -981,12 +1012,22 @@ fn attach_f11_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent
                 let mut kind = Default::default();
                 let mut vk = 0u32;
                 if args.KeyEventKind(&mut kind).is_ok() && args.VirtualKey(&mut vk).is_ok() {
-                    if vk == 0x7A
-                        && (kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
-                            || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN)
-                    {
+                    let down = kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN;
+                    if vk == 0x7A && down {
                         let _ = args.SetHandled(true);
                         let _ = proxy.send_event(AppEvent::ToggleFullscreen);
+                    } else if page_shortcuts && kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
+                        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+                        let pressed = |k: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
+                        if let Some(id) = page_shortcut_id(vk, pressed(VK_CONTROL), pressed(VK_SHIFT), pressed(VK_MENU)) {
+                            // Ignore auto-repeat so holding Ctrl+T opens one tab.
+                            let mut status = Default::default();
+                            let repeat = args.PhysicalKeyStatus(&mut status).is_ok() && status.WasKeyDown.as_bool();
+                            let _ = args.SetHandled(true);
+                            if !repeat {
+                                let _ = proxy.send_event(AppEvent::PageShortcut(id));
+                            }
+                        }
                     }
                 }
             }
@@ -998,6 +1039,8 @@ fn attach_f11_accelerator_hook(webview: &WebView, proxy: EventLoopProxy<AppEvent
 
 #[cfg(not(windows))]
 fn attach_f11_accelerator_hook(_webview: &WebView, _proxy: EventLoopProxy<AppEvent>) {}
+#[cfg(not(windows))]
+fn attach_page_accelerator_hook(_webview: &WebView, _proxy: EventLoopProxy<AppEvent>) {}
 
 fn expand_wildcard_range(line: &str) -> Option<Vec<String>> {
     let open = line.find('[')?;
@@ -1742,7 +1785,7 @@ fn create_tab_webview(
         })
         .build()?;
 
-    attach_f11_accelerator_hook(&wv, proxy.clone());
+    attach_page_accelerator_hook(&wv, proxy.clone());
     attach_native_webview2_hooks(&wv, tab_id, policy.adblock, !policy.images_enabled, proxy);
     apply_privacy_settings(&wv, global.save_passwords && !incognito, global.strict_tracking);
     apply_site_settings(&wv, policy);
@@ -3179,6 +3222,15 @@ fn main() -> wry::Result<()> {
                 let _ = proxy.send_event(AppEvent::RefreshChrome);
             }
 
+            Event::UserEvent(AppEvent::PageShortcut(id)) => {
+                // Run it through the toolbar's one shortcut handler; shortcuts that type into the
+                // toolbar (address bar, palette, find) need it to have keyboard focus.
+                if matches!(id, "focus-url" | "palette" | "find" | "new-tab") {
+                    let _ = chrome_wv.focus();
+                }
+                let _ = chrome_wv.evaluate_script(&format!("window.__shunnoShortcut && window.__shunnoShortcut('{id}')"));
+            }
+
             Event::UserEvent(AppEvent::SystemThemeChanged) => {
                 if global_settings.theme_mode == "system" {
                     let dark = system_prefers_dark();
@@ -3888,6 +3940,10 @@ fn main() -> wry::Result<()> {
                         });
                         active_tab_idx = tabs.len() - 1;
                         layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
+                        // The new (hidden) page must not keep keyboard focus: give it to the start page,
+                        // so typing searches and the next Ctrl+T works.
+                        let _ = chrome_wv.focus();
+                        let _ = chrome_wv.evaluate_script("window.__focusHomeSearch && window.__focusHomeSearch()");
                     }
                 } else if cmd == "NEXT_TAB" {
                     if !tabs.is_empty() {
