@@ -876,6 +876,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     padding: 18px 18px 14px; opacity: 0; transform: translateY(-6px) scale(0.97);
     transition: opacity var(--dur) var(--ease-fluid), transform var(--dur) var(--ease-fluid); user-select: text; }
   #ask-scrim.in #ask-card { opacity: 1; transform: none; }
+  /* The bookmark popup hangs from its toolbar button (like Menu and Downloads): no dimming. */
+  #ask-scrim.anchored { padding-top: 0; justify-content: flex-start; }
+  #ask-scrim.anchored.in { background: rgba(0,0,0,0); }
+  #ask-scrim.anchored #ask-card { position: absolute; transform-origin: var(--caret-x, 300px) 0; }
+  #ask-scrim.anchored #ask-card::before { content: ""; position: absolute; top: -6px; left: var(--caret-left, 300px); width: 12px; height: 12px;
+    background: var(--glass); border-left: 1px solid var(--border); border-top: 1px solid var(--border); transform: rotate(45deg); border-radius: 3px 0 0 0; }
   #ask-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
   #ask-card p { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-bottom: 10px; white-space: pre-wrap; }
   #ask-card label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 4px; }
@@ -1550,6 +1556,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) askClose(null); });
       document.body.appendChild(scrim);
     }
+    scrim.classList.remove('anchored');
     scrim.innerHTML = `<div id="ask-card" role="dialog" aria-modal="true">${inner}</div>`;
     const card = scrim.querySelector('#ask-card');
     card.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); askClose(null); } });
@@ -1721,6 +1728,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <input id="bm-title" value="${escapeHtml(o.title || '')}" spellcheck="false">
       ${showUrl ? `<label for="bm-url">Address</label><input id="bm-url" value="${escapeHtml(o.url || '')}" placeholder="example.com" spellcheck="false">` : ''}
       <div class="ask-btns">${o.edit ? '<button class="rm">Remove</button><span style="flex:1"></span>' : ''}<button class="cancel">Cancel</button><button class="ok">${o.edit ? 'Done' : 'Add'}</button></div>`);
+    // Under the bookmark button, right edge aligned with it, as Menu and Downloads hang from theirs.
+    const bmBtn = document.getElementById('btn-bookmark');
+    if (bmBtn && bmBtn.offsetParent !== null && !o.askUrl) {
+      const scrimEl = document.getElementById('ask-scrim');
+      scrimEl.classList.add('anchored');
+      const r = bmBtn.getBoundingClientRect(), w = Math.min(340, window.innerWidth - 32);
+      const left = Math.max(12, Math.min(Math.round(r.right - w + 4), window.innerWidth - w - 12));
+      card.style.left = left + 'px';
+      card.style.top = Math.round(r.bottom + 10) + 'px';
+      const caret = Math.max(14, Math.min(w - 28, Math.round(r.left + r.width / 2 - left - 6)));
+      card.style.setProperty('--caret-left', caret + 'px');
+      card.style.setProperty('--caret-x', (caret + 6) + 'px');
+    }
     const sel = card.querySelector('#bm-folder');
     const nf = card.querySelector('#bm-newfolder');
     if (sel) sel.onchange = () => { nf.style.display = sel.value === '__new' ? '' : 'none'; if (sel.value === '__new') nf.focus(); };

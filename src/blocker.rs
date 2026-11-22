@@ -14,7 +14,7 @@ use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
 use adblock::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -152,15 +152,7 @@ pub struct Blocker {
     refresh_gate: tokio::sync::Mutex<()>,
     /// Refreshes running or waiting (the panel shows "Updating" until the last has finished).
     refreshing: std::sync::atomic::AtomicUsize,
-    /// Recent verdicts by exact (url, page, type): a page asks about the same CDN files and
-    /// trackers again and again. Cleared whenever the engine is replaced.
-    verdicts: Mutex<HashMap<String, bool>>,
-    /// Counts engine replacements: a verdict from the engine before a swap is not stored after it.
-    engine_gen: std::sync::atomic::AtomicU64,
 }
-
-/// Entries kept before the verdict cache starts over.
-const VERDICT_CACHE_MAX: usize = 4096;
 
 /// Every read, change and write of settings.json goes through here, so two changes at once cannot
 /// each start from the same old file and lose the other's.
@@ -439,7 +431,6 @@ impl Blocker {
                 if let Ok(mut slot) = self.engine.write() {
                     *slot = Some(Arc::new(engine));
                 }
-                self.clear_verdicts();
                 self.set_status(self.summary(&settings, None));
                 return;
             }
@@ -500,7 +491,6 @@ impl Blocker {
             if let Ok(mut slot) = self.engine.write() {
                 *slot = None;
             }
-            self.clear_verdicts();
             let _ = fs::remove_file(cache_path());
             let _ = fs::remove_file(filters_dir().join(KEY_FILE));
             self.set_status("No filter lists chosen (built-in list in use)".to_string());
@@ -517,7 +507,6 @@ impl Blocker {
         if let Ok(mut slot) = self.engine.write() {
             *slot = Some(Arc::new(engine));
         }
-        self.clear_verdicts();
         self.set_status(self.summary(&settings, Some(rules)));
         Ok(rules)
     }
@@ -633,34 +622,11 @@ impl Blocker {
     /// websocket, ping, subdocument, other.
     pub fn should_block(&self, url: &str, source_url: &str, req_type: &str) -> bool {
         match self.engine() {
-            Some(engine) => {
-                let key = format!("{req_type}\n{source_url}\n{url}");
-                if let Some(v) = self.verdicts.lock().ok().and_then(|m| m.get(&key).copied()) {
-                    return v;
-                }
-                let gen = self.engine_gen.load(std::sync::atomic::Ordering::Acquire);
-                let verdict = match Request::new(url, source_url, req_type, "GET") {
-                    Ok(req) => engine.check_network_request(&req).should_block(),
-                    Err(_) => false,
-                };
-                if let Ok(mut m) = self.verdicts.lock() {
-                    if self.engine_gen.load(std::sync::atomic::Ordering::Acquire) == gen {
-                        if m.len() >= VERDICT_CACHE_MAX {
-                            m.clear();
-                        }
-                        m.insert(key, verdict);
-                    }
-                }
-                verdict
-            }
+            Some(engine) => match Request::new(url, source_url, req_type, "GET") {
+                Ok(req) => engine.check_network_request(&req).should_block(),
+                Err(_) => false,
+            },
             None => is_blocked_ad_url(url),
-        }
-    }
-
-    fn clear_verdicts(&self) {
-        self.engine_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        if let Ok(mut m) = self.verdicts.lock() {
-            m.clear();
         }
     }
 

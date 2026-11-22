@@ -1,6 +1,6 @@
 [package]
 name = "shunno-browser"
-version = "2.33.0"
+version = "2.33.1"
 edition = "2021"
 description = "Shunno Browser — Lightweight Desktop Web Browser & Native Multi-Threaded Download Manager"
 build = "build.rs"
@@ -62,7 +62,7 @@ windows = { version = "=0.56.0", features = [
 winres = "0.1.12"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"

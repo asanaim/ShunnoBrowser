@@ -3874,18 +3874,7 @@ fn main() -> wry::Result<()> {
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &wv2_data_dir);
     let mut web_context = WebContext::new(Some(wv2_data_dir));
 
-    // Downloads and filter updates run on these threads: one core stays free for the window, and the
-    // threads yield to it (below normal priority), so a large transfer does not make the UI stutter.
-    let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1)).unwrap_or(2).clamp(2, 8);
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(workers)
-        .on_thread_start(|| {
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
-                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-            }
-        })
         .enable_all()
         .build()
         .expect("Failed to start Tokio runtime");

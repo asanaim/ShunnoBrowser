@@ -1262,49 +1262,6 @@ fn write_positioned(file: &File, buf: &[u8], offset: u64) -> std::io::Result<()>
     file.write_all_at(buf, offset)
 }
 
-/// Runs blocking disk work so that it does not hold up the runtime's other tasks.
-fn run_blocking<R>(f: impl FnOnce() -> R) -> R {
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
-        _ => f(),
-    }
-}
-
-/// Bytes are collected in blocks and written in one call per block, instead of one small write for
-/// every network chunk (hundreds a second per segment).
-const WRITE_BLOCK: usize = 4 * 1024 * 1024;
-
-/// Collects a segment's bytes and writes them at `pos` once a block is full. Whatever the file
-/// holds is exactly the bytes before `pos`, so an offset saved after `flush` is true.
-struct BlockWriter<'a> {
-    file: &'a File,
-    buf: Vec<u8>,
-    pos: u64,
-}
-
-impl<'a> BlockWriter<'a> {
-    fn new(file: &'a File, pos: u64) -> Self {
-        Self { file, buf: Vec::with_capacity(WRITE_BLOCK), pos }
-    }
-    fn push(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.buf.extend_from_slice(bytes);
-        if self.buf.len() >= WRITE_BLOCK {
-            self.flush()?;
-        }
-        Ok(())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-        let (file, buf, pos) = (self.file, &self.buf, self.pos);
-        run_blocking(|| write_positioned(file, buf, pos))?;
-        self.pos += self.buf.len() as u64;
-        self.buf.clear();
-        Ok(())
-    }
-}
-
 // =====================================================================
 // HTTP engine: probe, segmented multi-connection transfer, resumable.
 // =====================================================================
@@ -1626,10 +1583,8 @@ async fn download_segmented(
                 let mut stream = resp.bytes_stream();
                 let mut since_save = 0usize;
                 let mut stream_err: Option<String> = None;
-                let mut bw = BlockWriter::new(&f, offset);
                 while let Some(chunk_res) = stream.next().await {
                     if !ctx.is_running() {
-                        let _ = bw.flush();
                         save_offset(&f, &off_path, offset);
                         return Err("Paused".to_string());
                     }
@@ -1638,12 +1593,11 @@ async fn download_segmented(
                             // Never write past this segment's end even if the server over-delivers.
                             let room = (end + 1).saturating_sub(offset) as usize;
                             let slice = &bytes[..bytes.len().min(room)];
-                            bw.push(slice).map_err(|e| e.to_string())?;
+                            write_positioned(&f, slice, offset).map_err(|e| e.to_string())?;
                             offset += slice.len() as u64;
                             prog[i].fetch_add(slice.len() as u64, Ordering::Relaxed);
                             since_save += slice.len();
                             if since_save >= 4 * 1024 * 1024 {
-                                bw.flush().map_err(|e| e.to_string())?;
                                 save_offset(&f, &off_path, offset);
                                 since_save = 0;
                             }
@@ -1658,7 +1612,6 @@ async fn download_segmented(
                         }
                     }
                 }
-                bw.flush().map_err(|e| e.to_string())?;
                 save_offset(&f, &off_path, offset);
                 if let Some(err_msg) = stream_err {
                     last_err = err_msg;
@@ -1787,20 +1740,8 @@ async fn download_single(
     let mut last_tick = Instant::now();
     let mut bytes_tick = 0u64;
     let mut since_save = 0u64;
-    // Written to disk in blocks (see WRITE_BLOCK); `written` counts what has been received, and is
-    // saved as the resume offset only after the block has been flushed.
-    let mut block: Vec<u8> = Vec::with_capacity(WRITE_BLOCK);
-    fn flush_block(out: &mut File, block: &mut Vec<u8>) -> Result<(), String> {
-        if block.is_empty() {
-            return Ok(());
-        }
-        run_blocking(|| out.write_all(block)).map_err(|e| e.to_string())?;
-        block.clear();
-        Ok(())
-    }
     while let Some(chunk_res) = stream.next().await {
         if !ctx.is_running() {
-            let _ = flush_block(&mut out, &mut block);
             let _ = out.flush();
             if supports_range {
                 save_offset(&out, &side, written);
@@ -1810,7 +1751,6 @@ async fn download_single(
         let bytes = match chunk_res {
             Ok(b) => b,
             Err(e) => {
-                let _ = flush_block(&mut out, &mut block);
                 let _ = out.flush();
                 if supports_range {
                     save_offset(&out, &side, written);
@@ -1818,15 +1758,11 @@ async fn download_single(
                 return Err(format!("{} (resumable)", e));
             }
         };
-        block.extend_from_slice(&bytes);
-        if block.len() >= WRITE_BLOCK {
-            flush_block(&mut out, &mut block)?;
-        }
+        out.write_all(&bytes).map_err(|e| e.to_string())?;
         written += bytes.len() as u64;
         bytes_tick += bytes.len() as u64;
         since_save += bytes.len() as u64;
         if supports_range && since_save >= 4 * 1024 * 1024 {
-            flush_block(&mut out, &mut block)?;
             let _ = out.flush();
             save_offset(&out, &side, written);
             since_save = 0;
@@ -1843,7 +1779,6 @@ async fn download_single(
             });
         }
     }
-    flush_block(&mut out, &mut block)?;
     out.flush().map_err(|e| e.to_string())?;
     if expected_total > 0 && written < expected_total && supports_range {
         save_offset(&out, &side, written);

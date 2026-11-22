@@ -1,3 +1,21 @@
+## v2.33.1
+
+### Fixed
+- The bookmark popup opens under the bookmark button, right aligned with a caret, like Menu and Downloads. It no longer opens in the middle of the window with a dimmed background.
+
+### Reverted (v2.33.0 changes that were applied without measurement)
+- Release profile back to `opt-level = "z"` (smaller executable). `lto`, `codegen-units = 1`, `panic = "abort"` and `strip` are unchanged.
+- WebView2 arguments back to the v2.32.1 set: `--enable-gpu-rasterization`, `--enable-zero-copy` and `RendererCodeIntegrity` are no longer changed (the last one also weakened a browser protection).
+- Tokio runtime back to its defaults (no worker limit, no lowered thread priority).
+- Downloader writes per network chunk again (the 4 MiB block buffer is removed), the blocker's URL verdict cache is removed, and the page script no longer defers work to idle time.
+
+### Kept
+- `assets/js/content_guard.min.js` (50 KB instead of 83 KB; the size is a fact, regenerate with `scripts/minify_js.sh`).
+- All v2.33.0 fixes: Chrome style tabs, the toolbar clip, extension and blocker audit fixes.
+
+### Not verified
+- Tab switching speed could not be measured on Windows from the build environment. If tabs still feel slow, the toolbar view that stays at full window size under a region (v2.33.0) is the first suspect; a timing capture on a Windows machine is needed before changing it.
+
 ## v2.33.0
 
 ### Fixed
