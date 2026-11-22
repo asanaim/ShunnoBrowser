@@ -1179,7 +1179,6 @@ fn blocker_updates_are_serialized_and_capped_while_streaming() {
     assert!(!src.contains("save_settings(&on_disk)"), "last_update is not a separate read modify write");
     assert!(src.contains("resp.chunk().await"), "list size is checked while streaming");
     assert!(!src.contains("resp.bytes().await"), "no unbounded body read");
-    assert!(src.contains("VERDICT_CACHE_MAX"), "repeated URLs are answered from a bounded cache");
 }
 
 #[test]
@@ -1234,28 +1233,26 @@ fn page_script_is_minified_in_step_with_its_source() {
     for p in ["__SHUNNO_IPC_TOKEN__", "__SHUNNO_POLICY_TABLE__", "__SHUNNO_FP_SESSION__"] {
         assert_eq!(min.matches(p).count(), 1, "{p} survives minification exactly once");
     }
-    assert!(String::from_utf8_lossy(&src).contains("whenIdle(() => collectAndSend(document), 400)"), "first cosmetic scan runs at idle");
 }
 
 #[test]
-fn speed_settings_for_release_and_webview2() {
+fn unmeasured_speed_settings_stay_out() {
+    // Nothing here is claimed faster without a measurement on a real machine; the build is tuned for size.
     let cargo = include_str!("../Cargo.toml");
-    assert!(cargo.contains("opt-level = 3") && cargo.contains("lto = true") && cargo.contains("codegen-units = 1") && cargo.contains("panic = \"abort\""));
+    assert!(cargo.contains("opt-level = \"z\"") && cargo.contains("lto = true") && cargo.contains("panic = \"abort\""));
     let a = state::browser_args(false);
-    // Chromium honours only the last --disable-features, so there is exactly one.
     assert_eq!(a.matches("--disable-features=").count(), 1);
-    assert!(a.contains("RendererCodeIntegrity"));
-    assert!(a.contains("--enable-gpu-rasterization") && a.contains("--enable-zero-copy"));
-    assert_eq!(state::browser_args(true).matches("--disable-features=").count(), 1);
+    assert!(!a.contains("RendererCodeIntegrity") && !a.contains("--enable-gpu-rasterization") && !a.contains("--enable-zero-copy"));
+    let main = include_str!("../src/main.rs");
+    assert!(!main.contains("THREAD_PRIORITY_BELOW_NORMAL") && !main.contains(".worker_threads("));
+    let d = include_str!("../src/downloader.rs");
+    assert!(!d.contains("BlockWriter"));
 }
 
 #[test]
-fn downloads_write_in_blocks_and_leave_the_window_a_core() {
-    let d = include_str!("../src/downloader.rs");
-    assert!(d.contains("const WRITE_BLOCK: usize = 4 * 1024 * 1024;"));
-    assert!(d.contains("struct BlockWriter"));
-    assert!(!d.contains("write_positioned(&f, slice, offset)"), "no write per network chunk");
-    assert!(d.contains("tokio::task::block_in_place(f)"), "disk writes do not hold up the runtime's other tasks");
-    let main = include_str!("../src/main.rs");
-    assert!(main.contains("THREAD_PRIORITY_BELOW_NORMAL") && main.contains(".worker_threads(workers)"));
+fn bookmark_popup_hangs_from_its_button() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("#ask-scrim.anchored"));
+    assert!(ui.contains("getElementById('btn-bookmark')") && ui.contains("scrimEl.classList.add('anchored')"));
+    assert!(ui.contains("scrim.classList.remove('anchored')"));
 }

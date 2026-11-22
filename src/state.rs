@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.33.0";
+pub const APP_VERSION: &str = "v2.33.1";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -1000,13 +1000,7 @@ pub fn effective_dark(theme_mode: &str, system_dark: bool) -> bool {
 /// WebView2 browser arguments. Every web view in a session must use the same string
 /// (they share one environment), so this depends only on settings read at startup.
 pub fn browser_args(force_dark_pages: bool) -> String {
-    // One --disable-features: Chromium reads only the last one given, so every feature goes in this list.
-    // RendererCodeIntegrity is switched off at the owner's request (it blocks unsigned DLLs, such as
-    // antivirus hooks, from loading into page processes; that also costs start time on older CPUs).
-    let mut a = String::from(
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,RendererCodeIntegrity \
-         --enable-gpu-rasterization --enable-zero-copy",
-    );
+    let mut a = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
     if force_dark_pages {
         // Chromium auto dark mode: perceptual (CIELAB) inversion, photos left alone.
         a.push_str(" --enable-features=WebContentsForceDark:inversion_method/cielab_based/image_behavior/selective_image_inversion");
