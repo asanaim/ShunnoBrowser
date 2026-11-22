@@ -1,3 +1,8 @@
+## v2.34.2
+
+### Changed
+- Tab widths follow Chrome's numbers: up to 240 px each, down to 28 px (icon only) for tabs that are not current, the current tab never below 56 px, and the close button on tabs that are not current from 84 px wide. Everything else in the tab strip is unchanged.
+
 ## v2.34.1
 
 ### Fixed

@@ -1128,7 +1128,7 @@ fn lists_animate_by_stable_keys() {
     for k in ["data-k=\"dl${d.id}\"", "data-k=\"pw${c.id}\"", "data-k=\"sp${x.id}\""] {
         assert!(ui.contains(k), "{k}");
     }
-    assert!(ui.contains("flex: 0 1 220px"), "tabs share width; New Tab button follows the last tab");
+    assert!(ui.contains("flex: 0 1 240px"), "tabs share width; New Tab button follows the last tab");
 }
 
 // ---------------------------------------------------------------- v2.33.0
