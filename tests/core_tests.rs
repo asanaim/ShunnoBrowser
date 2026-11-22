@@ -1280,8 +1280,16 @@ fn top_left_icon_opens_tab_search_and_new_tab_marks_are_grey() {
     assert!(ui.contains("id=\"btn-tabsearch\" onclick=\"toggleDrawer('tabsearch', this)\""));
     assert!(ui.contains("id=\"panel-tabsearch\"") && ui.contains("send('CLOSED_TABS_GET')"));
     assert!(ui.contains("'REOPEN_CLOSED_TAB:' + x.n") && ui.contains("'SWITCH_TAB:' + x.i"));
-    assert!(ui.contains("filter: grayscale(1)"));
+    assert!(ui.contains(".tab .shunno-mark svg { filter: grayscale(1)"));
+    assert!(!ui.contains("body:has(#home-canvas.active) .brand-emblem svg"), "the corner icon keeps its colour");
     let m = include_str!("../src/main.rs");
     assert!(m.contains("cmd == \"CLOSED_TABS_GET\"") && m.contains("strip_prefix(\"REOPEN_CLOSED_TAB:\")"));
     assert!(m.contains("closed_tabs.remove(closed_tabs.len() - 1 - sel)"), "index counts from the newest");
+}
+
+#[test]
+fn closing_the_last_tab_stretches_the_others_at_once() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("if (pos !== live.length - 1) lockTabWidths();"));
+    assert!(ui.contains("next.classList.add('active')"));
 }

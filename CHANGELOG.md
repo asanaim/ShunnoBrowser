@@ -1,3 +1,9 @@
+## v2.34.1
+
+### Fixed
+- The grey Shunno icon is the one on the New Tab tab in the tab strip. The icon at the top left and the one above the New Tab search box have their colour back (v2.34.0 greyed those by mistake).
+- Closing the last of many tabs: the others stretch at once (their widths are only held when a tab in the middle is closed), and the tab that becomes current is marked current immediately instead of after the window's reply.
+
 ## v2.34.0
 
 ### Added

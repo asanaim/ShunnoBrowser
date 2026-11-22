@@ -104,10 +104,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: transform 0.28s var(--ease-spring);
   }
   .brand-emblem:hover { transform: scale(1.06); }
-  /* On the New Tab page the Shunno marks are grey (the page itself is the brand). */
-  .brand-emblem svg, .home-hero > svg { transition: filter 0.2s var(--ease-fluid), opacity 0.2s var(--ease-fluid); }
-  body:has(#home-canvas.active) .brand-emblem { box-shadow: none; }
-  body:has(#home-canvas.active) .brand-emblem svg, #home-canvas.active .home-hero > svg { filter: grayscale(1); opacity: 0.55; }
+  /* On the New Tab page, the Shunno icon of the tab itself is grey (the page is the brand). */
+  .tab .shunno-mark svg { filter: grayscale(1); opacity: 0.6; }
   /* Tab search (the top left icon): open tabs and recently closed, as in Chrome. */
   #tabsearch-input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
   .ts-label { font-size: 11px; font-weight: 600; color: var(--muted); margin: 8px 6px 4px; letter-spacing: 0.02em; }
@@ -2306,7 +2304,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         el.dataset.iconKey = iconKey;
         const isNewTab = t.url === 'shunno://newtab';
         const anonSvg = `<span class="tab-logo tab-fav" style="display:inline-flex;align-items:center;justify-content:center;color:#BF5AF2;" title="Private Tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h20"/><path d="M5 11l2.8-6.5h8.4L19 11"/><circle cx="7.5" cy="17.5" r="3.3"/><circle cx="16.5" cy="17.5" r="3.3"/><path d="M10.8 17.3q1.2-1.1 2.4 0"/></svg></span>`;
-        const shunnoLogo = `<span class="tab-logo tab-fav" style="display:inline-flex;align-items:center;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`;
+        const shunnoLogo = `<span class="tab-logo tab-fav shunno-mark" style="display:inline-flex;align-items:center;" title="${t.pinned ? 'Pinned (Right-click to unpin)' : ''}"><svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg></span>`;
         // The site's own icon when the page has one; otherwise a lettered tile in a colour of the site.
         const tabLogoHtml = t.incognito ? anonSvg
           : isNewTab ? shunnoLogo
@@ -2374,7 +2372,19 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   function closeTabFromStrip(el, idx) {
     if (el.classList.contains('closing')) return;
-    lockTabWidths();
+    const live = [...document.querySelectorAll('#tabs-container .tab:not(.closing)')];
+    const pos = live.indexOf(el);
+    // As in Chrome: closing the last tab does not hold the others' widths (the next close button is
+    // not under the pointer), so they stretch at once.
+    if (pos !== live.length - 1) lockTabWidths();
+    // The neighbour that becomes current is shown as current now; the window confirms it a moment later.
+    if (el.classList.contains('active')) {
+      const next = live[pos + 1] || live[pos - 1];
+      if (next) {
+        el.classList.remove('active');
+        next.classList.add('active');
+      }
+    }
     knownTabIds.delete(el.dataset.tabId);
     foldAwayTab(el);
     send('CLOSE_TAB:' + idx);
