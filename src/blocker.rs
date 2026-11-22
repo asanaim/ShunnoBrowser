@@ -14,7 +14,7 @@ use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
 use adblock::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -148,6 +148,28 @@ pub struct Blocker {
     busy: std::sync::atomic::AtomicBool,
     /// One compile or download at a time; later requests wait and then see the newest settings.
     work: Mutex<()>,
+    /// One list download round at a time (an automatic update and "Update Now" can overlap).
+    refresh_gate: tokio::sync::Mutex<()>,
+    /// Refreshes running or waiting (the panel shows "Updating" until the last has finished).
+    refreshing: std::sync::atomic::AtomicUsize,
+    /// Recent verdicts by exact (url, page, type): a page asks about the same CDN files and
+    /// trackers again and again. Cleared whenever the engine is replaced.
+    verdicts: Mutex<HashMap<String, bool>>,
+    /// Counts engine replacements: a verdict from the engine before a swap is not stored after it.
+    engine_gen: std::sync::atomic::AtomicU64,
+}
+
+/// Entries kept before the verdict cache starts over.
+const VERDICT_CACHE_MAX: usize = 4096;
+
+/// Every read, change and write of settings.json goes through here, so two changes at once cannot
+/// each start from the same old file and lose the other's.
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+fn update_settings(f: impl FnOnce(&mut FilterSettings)) {
+    let _g = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut s = load_settings();
+    f(&mut s);
+    save_settings(&s.normalized());
 }
 
 pub fn global() -> &'static Blocker {
@@ -417,6 +439,7 @@ impl Blocker {
                 if let Ok(mut slot) = self.engine.write() {
                     *slot = Some(Arc::new(engine));
                 }
+                self.clear_verdicts();
                 self.set_status(self.summary(&settings, None));
                 return;
             }
@@ -477,6 +500,7 @@ impl Blocker {
             if let Ok(mut slot) = self.engine.write() {
                 *slot = None;
             }
+            self.clear_verdicts();
             let _ = fs::remove_file(cache_path());
             let _ = fs::remove_file(filters_dir().join(KEY_FILE));
             self.set_status("No filter lists chosen (built-in list in use)".to_string());
@@ -493,6 +517,7 @@ impl Blocker {
         if let Ok(mut slot) = self.engine.write() {
             *slot = Some(Arc::new(engine));
         }
+        self.clear_verdicts();
         self.set_status(self.summary(&settings, Some(rules)));
         Ok(rules)
     }
@@ -500,14 +525,20 @@ impl Blocker {
     /// Downloads enabled lists (all of them, or only those not on disk) and recompiles. A list
     /// that fails to download keeps its previous text; the error is reported in the status.
     pub async fn refresh(&self, client: &reqwest::Client, only_missing: bool) -> Result<usize, String> {
-        self.busy.store(true, std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::Relaxed;
+        self.refreshing.fetch_add(1, Relaxed);
+        self.busy.store(true, Relaxed);
+        let gate = self.refresh_gate.lock().await;
         let r = self.refresh_inner(client, only_missing).await;
-        self.busy.store(false, std::sync::atomic::Ordering::Relaxed);
+        drop(gate);
+        if self.refreshing.fetch_sub(1, Relaxed) == 1 {
+            self.busy.store(false, Relaxed);
+        }
         r
     }
 
     async fn refresh_inner(&self, client: &reqwest::Client, only_missing: bool) -> Result<usize, String> {
-        let mut settings = load_settings();
+        let settings = load_settings();
         let mut errors = Vec::new();
         let mut fetched = 0usize;
         for l in CATALOG.iter().filter(|l| settings.is_on(l.id)) {
@@ -523,10 +554,8 @@ impl Blocker {
             }
         }
         if fetched > 0 && !only_missing {
-            settings.last_update = now_secs();
-            let mut on_disk = load_settings();
-            on_disk.last_update = settings.last_update;
-            save_settings(&on_disk);
+            let now = now_secs();
+            update_settings(|s| s.last_update = now);
         }
         let built = tokio::task::spawn_blocking(|| global().rebuild()).await.map_err(|e| e.to_string())?;
         if !errors.is_empty() {
@@ -543,26 +572,22 @@ impl Blocker {
         if !CATALOG.iter().any(|l| l.id == id) {
             return false;
         }
-        let mut s = load_settings();
-        s.enabled.retain(|e| e != id);
-        if on {
-            s.enabled.push(id.to_string());
-        }
-        save_settings(&s.normalized());
+        update_settings(|s| {
+            s.enabled.retain(|e| e != id);
+            if on {
+                s.enabled.push(id.to_string());
+            }
+        });
         true
     }
 
     pub fn set_auto_update(&self, on: bool) {
-        let mut s = load_settings();
-        s.auto_update = on;
-        save_settings(&s);
+        update_settings(|s| s.auto_update = on);
     }
 
     pub fn set_interval(&self, days: u32) {
         if INTERVALS.contains(&days) {
-            let mut s = load_settings();
-            s.interval_days = days;
-            save_settings(&s);
+            update_settings(|s| s.interval_days = days);
         }
     }
 
@@ -608,11 +633,34 @@ impl Blocker {
     /// websocket, ping, subdocument, other.
     pub fn should_block(&self, url: &str, source_url: &str, req_type: &str) -> bool {
         match self.engine() {
-            Some(engine) => match Request::new(url, source_url, req_type, "GET") {
-                Ok(req) => engine.check_network_request(&req).should_block(),
-                Err(_) => false,
-            },
+            Some(engine) => {
+                let key = format!("{req_type}\n{source_url}\n{url}");
+                if let Some(v) = self.verdicts.lock().ok().and_then(|m| m.get(&key).copied()) {
+                    return v;
+                }
+                let gen = self.engine_gen.load(std::sync::atomic::Ordering::Acquire);
+                let verdict = match Request::new(url, source_url, req_type, "GET") {
+                    Ok(req) => engine.check_network_request(&req).should_block(),
+                    Err(_) => false,
+                };
+                if let Ok(mut m) = self.verdicts.lock() {
+                    if self.engine_gen.load(std::sync::atomic::Ordering::Acquire) == gen {
+                        if m.len() >= VERDICT_CACHE_MAX {
+                            m.clear();
+                        }
+                        m.insert(key, verdict);
+                    }
+                }
+                verdict
+            }
             None => is_blocked_ad_url(url),
+        }
+    }
+
+    fn clear_verdicts(&self) {
+        self.engine_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Ok(mut m) = self.verdicts.lock() {
+            m.clear();
         }
     }
 
@@ -641,9 +689,14 @@ async fn fetch_list(client: &reqwest::Client, l: &ListInfo) -> Result<String, St
     if resp.content_length().is_some_and(|n| n as usize > MAX_LIST_BYTES) {
         return Err("list is too large".to_string());
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_LIST_BYTES {
-        return Err("list is too large".to_string());
+    // Chunked responses have no length up front: stop as soon as the running total passes the cap.
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > MAX_LIST_BYTES {
+            return Err("list is too large".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     // Guard against captive portals and error pages masquerading as lists.

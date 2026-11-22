@@ -1112,12 +1112,13 @@ fn tab_strip_follows_safari() {
 fn tab_switch_keeps_the_previous_page_until_the_next_has_drawn() {
     let main = include_str!("../src/main.rs");
     assert!(main.contains("static TAB_WARM_PREV") && main.contains("AppEvent::RaiseTab(aid)"));
-    assert!(main.contains("place_tab_below(&tabs[active_idx].webview, &tabs[pi].webview)"));
-    // New Tab: the page stays over the growing New Tab page, and the New Tab page over the next page.
+    // While waiting, the page on screen is in front of its replacement; afterwards the order flips.
+    assert!(main.contains("if wait_home || wait_page {\n            // The page on screen stays in front until its replacement has drawn.\n            order.extend(prev);\n            order.extend(cur);"));
+    // New Tab: the page stays in front until the New Tab page has drawn, and the New Tab page over the next page.
     assert!(main.contains("let wait_home = single") && main.contains("let wait_leave_home = single"));
     assert!(main.contains("window.__holdHome && window.__holdHome(90)"));
-    // Popovers: the current page, not the kept previous one, sits under the toolbar.
-    assert!(main.contains("fn bring_chrome_above_tabs(chrome_wv: &WebView, tabs: &[BrowserTab], top: Option<&WebView>)"));
+    // Popovers: the current page, not the kept previous one, is the page directly behind the toolbar view.
+    assert!(main.contains("order.extend(cur);\n            order.extend(prev);"));
 }
 
 #[test]
@@ -1128,4 +1129,133 @@ fn lists_animate_by_stable_keys() {
         assert!(ui.contains(k), "{k}");
     }
     assert!(ui.contains("flex: 0 1 220px"), "tabs share width; New Tab button follows the last tab");
+}
+
+// ---------------------------------------------------------------- v2.33.0
+
+#[test]
+fn extension_manifest_paths_cannot_leave_the_extension_folder() {
+    let root = std::env::temp_dir().join(format!("shunno_ext_{}", std::process::id()));
+    let ext = root.join("ext");
+    std::fs::create_dir_all(ext.join("icons")).unwrap();
+    std::fs::write(ext.join("icons/a.png"), b"\x89PNG....").unwrap();
+    std::fs::write(root.join("outside.png"), b"\x89PNG....").unwrap();
+    // Plain relative paths (with a leading slash, as manifests write them) resolve inside the folder.
+    assert!(extensions::safe_join(&ext, "icons/a.png").is_some());
+    assert!(extensions::safe_join(&ext, "/icons/a.png").is_some());
+    // Windows: a backslash, a drive letter and a network share all replace the base of Path::join.
+    for bad in ["\\icons\\a.png", "C:\\Windows\\a.png", "C:a.png", "\\\\host\\share\\a.png", "//host/share/a.png", "icons\\..\\..\\outside.png", "../outside.png", "icons/../../outside.png", "", "/", "a\0.png"] {
+        assert!(extensions::safe_join(&ext, bad).is_none(), "{bad:?} must be refused");
+    }
+    // A name that is not a file in the folder (or is a link out of it) is not returned either.
+    assert!(extensions::safe_join(&ext, "icons/missing.png").is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn extension_locale_must_be_one_plain_name() {
+    let src = include_str!("../src/extensions.rs");
+    assert!(src.contains("b.is_ascii_alphanumeric() || b == b'_' || b == b'-'"), "default_locale is validated before it is joined");
+    assert!(src.contains("f.take(FILE_LIMIT + 1).read_to_end"), "the archive is read with a cap, not whole");
+    assert!(src.contains("more than 10,000 files"), "entry count is capped");
+}
+
+#[test]
+fn extension_installs_do_not_block_the_window_or_share_a_file() {
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("rt_handle.spawn_blocking(move ||"), "local install runs off the window's thread");
+    assert!(main.contains("tokio::task::spawn_blocking(move || -> Result<(std::path::PathBuf, extensions::Meta), String>"), "store install unpacks off the async workers");
+    assert!(main.contains(".download-{stamp}"), "each store install has a folder of its own");
+    assert!(!main.contains("format!(\"{id}.crx\"));\n                                let _ = fs::create_dir_all"), "no shared fixed .crx file in the extensions folder");
+    assert!(main.contains("url.starts_with(\"chrome-extension://\")"), "extension pages get no page script (IPC token)");
+    assert!(main.contains("pending_picks.remove(&tab_id);\n"), "a picker does not outlive the page");
+}
+
+#[test]
+fn blocker_updates_are_serialized_and_capped_while_streaming() {
+    let src = include_str!("../src/blocker.rs");
+    assert!(src.contains("refresh_gate: tokio::sync::Mutex<()>"), "one download round at a time");
+    assert!(src.contains("fn update_settings("), "settings changes go through one lock");
+    assert!(!src.contains("save_settings(&on_disk)"), "last_update is not a separate read modify write");
+    assert!(src.contains("resp.chunk().await"), "list size is checked while streaming");
+    assert!(!src.contains("resp.bytes().await"), "no unbounded body read");
+    assert!(src.contains("VERDICT_CACHE_MAX"), "repeated URLs are answered from a bounded cache");
+}
+
+#[test]
+fn toolbar_view_is_clipped_not_resized() {
+    let main = include_str!("../src/main.rs");
+    // The view keeps its full size; opening New Tab, Menu or Downloads changes only what shows.
+    assert!(main.contains("size: LogicalSize::new(inner_w, inner_h).into(),\n        });\n        clip_chrome_view(window, chrome_h);"));
+    assert!(main.contains("fn stack_views("), "one stacking function: pages behind, toolbar view on top");
+    assert!(!main.contains("fn bring_active_tab_above_chrome"), "the toolbar view is never put under a page");
+    assert!(main.contains("clip_h: i32"));
+    assert!(main.contains("CreateRectRgn(0, 0, 32000, if b.clip_h > 0 { b.clip_h } else { 32000 })"));
+    // New Tab (when not waiting for the page to be replaced) shows the whole view.
+    assert!(main.contains("overlay_active || (is_home && !wait_home) || wait_leave_home"));
+}
+
+#[test]
+fn tab_switching_state_belongs_to_each_window() {
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("fn swap_tab_flow(new: TabFlow) -> TabFlow"));
+    assert!(main.contains("p.tab_flow = swap_tab_flow(std::mem::take(&mut p.tab_flow));"), "swap_window! swaps it with the window");
+    assert!(main.contains("tab_flow: TabFlow::default(),"), "a new window starts clean");
+}
+
+#[test]
+fn chrome_style_tab_strip_and_bookmark_button() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(!ui.contains("#tabs-container.crowded .tab.active { min-width"), "no wide current tab beside icon only ones");
+    assert!(ui.contains(".tab.active { min-width: 56px; }"));
+    assert!(ui.contains("transition: flex-basis 0.26s var(--ease-fluid);"), "the strip's width follows its tabs");
+    assert!(ui.contains("knownTabIds.add(idStr);\n        sizeTabStrip();"), "a new tab sizes the strip at once");
+    // Bookmark sits in the right group, directly before Downloads.
+    let right = ui.find("<div class=\"nav-group right\">").unwrap();
+    let bm = ui.find("id=\"btn-bookmark\"").unwrap();
+    let dl = ui.find("id=\"btn-downloads\"").unwrap();
+    assert!(right < bm && bm < dl, "bookmark button is beside the Downloads button");
+    assert!(ui[bm - 40..bm].contains("class=\"tb\""));
+}
+
+#[test]
+fn page_script_is_minified_in_step_with_its_source() {
+    let src = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/content_guard.js")).unwrap();
+    let min = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/js/content_guard.min.js")).unwrap();
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in &src {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let want = format!("/*src:{h:016x}*/");
+    assert!(min.starts_with(&want), "content_guard.min.js is stale: run scripts/minify_js.sh");
+    assert!(min.len() < src.len() * 7 / 10, "minified copy is meaningfully smaller");
+    assert!(include_str!("../src/main.rs").contains("assets/js/content_guard.min.js"));
+    for p in ["__SHUNNO_IPC_TOKEN__", "__SHUNNO_POLICY_TABLE__", "__SHUNNO_FP_SESSION__"] {
+        assert_eq!(min.matches(p).count(), 1, "{p} survives minification exactly once");
+    }
+    assert!(String::from_utf8_lossy(&src).contains("whenIdle(() => collectAndSend(document), 400)"), "first cosmetic scan runs at idle");
+}
+
+#[test]
+fn speed_settings_for_release_and_webview2() {
+    let cargo = include_str!("../Cargo.toml");
+    assert!(cargo.contains("opt-level = 3") && cargo.contains("lto = true") && cargo.contains("codegen-units = 1") && cargo.contains("panic = \"abort\""));
+    let a = state::browser_args(false);
+    // Chromium honours only the last --disable-features, so there is exactly one.
+    assert_eq!(a.matches("--disable-features=").count(), 1);
+    assert!(a.contains("RendererCodeIntegrity"));
+    assert!(a.contains("--enable-gpu-rasterization") && a.contains("--enable-zero-copy"));
+    assert_eq!(state::browser_args(true).matches("--disable-features=").count(), 1);
+}
+
+#[test]
+fn downloads_write_in_blocks_and_leave_the_window_a_core() {
+    let d = include_str!("../src/downloader.rs");
+    assert!(d.contains("const WRITE_BLOCK: usize = 4 * 1024 * 1024;"));
+    assert!(d.contains("struct BlockWriter"));
+    assert!(!d.contains("write_positioned(&f, slice, offset)"), "no write per network chunk");
+    assert!(d.contains("tokio::task::block_in_place(f)"), "disk writes do not hold up the runtime's other tasks");
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("THREAD_PRIORITY_BELOW_NORMAL") && main.contains(".worker_threads(workers)"));
 }

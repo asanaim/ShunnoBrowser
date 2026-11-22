@@ -565,7 +565,7 @@ fn chrome_bar_height() -> f64 {
     f64::from_bits(CHROME_BAR_H_BITS.load(std::sync::atomic::Ordering::Relaxed))
 }
 const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
-const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.js");
+const CONTENT_GUARD_JS: &str = include_str!("../assets/js/content_guard.min.js");
 
 enum AppEvent {
     /// A site asked for a permission (id in PERM_PENDING).
@@ -703,6 +703,7 @@ struct ParkedWindow {
     space: u32,
     chrome_last_h: f64,
     peek_rect: [f64; 4],
+    tab_flow: TabFlow,
 }
 
 /// Which tab an event is about, if any (to route it to that tab's window).
@@ -2763,7 +2764,13 @@ fn create_tab_webview(
         apply_tab_zoom(&wv, policy.zoom);
     }
     let first = if url == "shunno://newtab" { "about:blank" } else { url };
-    install_content_guard(&wv, tab_id, &init_script, Some(first.to_string()));
+    if url.starts_with("chrome-extension://") {
+        // An extension's own page is not a web page: no page script (it carries the IPC token and
+        // hooks that would break the extension's interface).
+        let _ = wv.load_url(url);
+    } else {
+        install_content_guard(&wv, tab_id, &init_script, Some(first.to_string()));
+    }
     let _ = wv.set_visible(true);
     Ok(wv)
 }
@@ -2950,6 +2957,10 @@ struct MaxButton {
     fade_from: (u32, u32, u32),
     fade_start: u64,
     fade_ms: u32,
+    /// Height of the toolbar web view that is visible, physical px (0 = all of it). The view itself
+    /// always keeps its full size, so showing or hiding the New Tab page and the popovers never
+    /// resizes it (a resize draws an empty frame); a window region clips it instead.
+    clip_h: i32,
 }
 /// Timer that steps the maximize button's theme fade (one per window, on the window itself).
 const MAXBTN_FADE_TIMER: usize = 0x5B17;
@@ -3030,6 +3041,27 @@ fn set_chrome_host(main: isize, host: isize) {
     if let Some(e) = MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|e| e.0 == main) {
         e.2 = host;
     }
+    apply_max_button_hole(main);
+}
+
+/// Shows only the top `h` logical px of the toolbar web view (see `MaxButton::clip_h`).
+fn clip_chrome_view(window: &Window, h: f64) {
+    #[cfg(windows)]
+    {
+        use tao::platform::windows::WindowExtWindows;
+        let main = window.hwnd() as isize;
+        let px = (h * window.scale_factor()).round() as i32;
+        let changed = with_max_button(main, |b| {
+            let c = b.clip_h != px;
+            b.clip_h = px;
+            c
+        });
+        if changed {
+            apply_max_button_hole(main);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, h);
 }
 fn forget_window_native(main: isize) {
     MAX_BUTTONS.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.0 != main);
@@ -3135,7 +3167,7 @@ fn apply_max_button_hole(main_hwnd: isize) {
     }
     let b = with_max_button(main_hwnd, |b| *b);
     unsafe {
-        let all = CreateRectRgn(0, 0, 32000, 32000);
+        let all = CreateRectRgn(0, 0, 32000, if b.clip_h > 0 { b.clip_h } else { 32000 });
         if b.active && b.rect.2 > b.rect.0 && b.rect.3 > b.rect.1 {
             let hole = CreateRectRgn(b.rect.0, b.rect.1, b.rect.2, b.rect.3);
             CombineRgn(all, all, hole, RGN_DIFF);
@@ -3519,81 +3551,32 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
 #[cfg(not(windows))]
 fn install_native_win32_window_features(_window: &Window, _chrome_wv: &WebView) {}
 
+/// Window order of the pages and the toolbar view: `pages` from the front to the back, and the
+/// toolbar view above all of them. The toolbar view is always on top and shows only the part
+/// `clip_chrome_view` leaves, so a popover or the New Tab page is only a change of that part.
 #[cfg(windows)]
-fn bring_chrome_above_tabs(chrome_wv: &WebView, tabs: &[BrowserTab], top: Option<&WebView>) {
+fn stack_views(chrome_wv: &WebView, pages: &[&WebView]) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
     use wry::WebViewExtWindows;
-
-    let ctrl = chrome_wv.controller();
+    let hwnd_of = |wv: &WebView| -> Option<HWND> {
+        let mut h = HWND::default();
+        unsafe { wv.controller().ParentWindow(&mut h).ok().filter(|_| h.0 != 0).map(|_| h) }
+    };
+    let Some(chrome) = hwnd_of(chrome_wv) else { return };
     unsafe {
-        let mut chrome_hwnd = HWND::default();
-        if ctrl.ParentWindow(&mut chrome_hwnd).is_ok() && chrome_hwnd.0 != 0 {
-            let _ = SetWindowPos(chrome_hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            for tab in tabs {
-                let mut tab_hwnd = HWND::default();
-                if tab.webview.controller().ParentWindow(&mut tab_hwnd).is_ok()
-                    && tab_hwnd.0 != 0
-                    && tab_hwnd.0 != chrome_hwnd.0
-                {
-                    let _ = SetWindowPos(tab_hwnd, chrome_hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                }
-            }
-            // The loop leaves the last tab in the list directly under the chrome. Several pages can be
-            // visible (the previous tab is kept drawn under the current one), so the current page
-            // goes there; otherwise a popover showed the other tab's page through its backdrop.
-            if let Some(top) = top {
-                let mut h = HWND::default();
-                if top.controller().ParentWindow(&mut h).is_ok() && h.0 != 0 && h.0 != chrome_hwnd.0 {
-                    let _ = SetWindowPos(h, chrome_hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        for wv in pages.iter().rev() {
+            if let Some(h) = hwnd_of(wv) {
+                if h.0 != chrome.0 {
+                    let _ = SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 }
             }
         }
-    }
-}
-
-#[cfg(not(windows))]
-fn bring_chrome_above_tabs(_chrome_wv: &WebView, _tabs: &[BrowserTab], _top: Option<&WebView>) {}
-
-#[cfg(windows)]
-fn bring_active_tab_above_chrome(tab_wv: &WebView, chrome_wv: &WebView) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
-    use wry::WebViewExtWindows;
-
-    unsafe {
-        let mut tab_hwnd = HWND::default();
-        let mut chrome_hwnd = HWND::default();
-        if tab_wv.controller().ParentWindow(&mut tab_hwnd).is_ok()
-            && chrome_wv.controller().ParentWindow(&mut chrome_hwnd).is_ok()
-            && tab_hwnd.0 != 0
-            && chrome_hwnd.0 != 0
-            && tab_hwnd.0 != chrome_hwnd.0
-        {
-            let _ = SetWindowPos(tab_hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            let _ = SetWindowPos(chrome_hwnd, tab_hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn bring_active_tab_above_chrome(_tab_wv: &WebView, _chrome_wv: &WebView) {}
-
-/// Puts `wv` directly under `above` in the window's z-order.
-#[cfg(windows)]
-fn place_tab_below(wv: &WebView, above: &WebView) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
-    use wry::WebViewExtWindows;
-    unsafe {
-        let (mut a, mut b) = (HWND::default(), HWND::default());
-        if wv.controller().ParentWindow(&mut a).is_ok() && above.controller().ParentWindow(&mut b).is_ok() && a.0 != 0 && b.0 != 0 && a.0 != b.0 {
-            let _ = SetWindowPos(a, b, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+        let _ = SetWindowPos(chrome, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 #[cfg(not(windows))]
-fn place_tab_below(_wv: &WebView, _above: &WebView) {}
+fn stack_views(_chrome_wv: &WebView, _pages: &[&WebView]) {}
 
 thread_local! {
     /// Tab ids whose web views layout_webviews left visible.
@@ -3607,6 +3590,29 @@ thread_local! {
     static TAB_RAISE_DONE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     /// The New Tab page (the grown toolbar view) is what is on screen.
     static HOME_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The tab switching state of one window. The six thread locals above hold the current window's;
+/// they are swapped with the window (a second window must not see or disturb the first one's).
+#[derive(Default)]
+struct TabFlow {
+    shown: Vec<usize>,
+    last_active: Option<usize>,
+    warm_prev: Option<usize>,
+    raise_pending: Option<usize>,
+    raise_done: Option<usize>,
+    home_shown: bool,
+}
+/// Installs `new` as the current window's tab switching state and returns what it replaces.
+fn swap_tab_flow(new: TabFlow) -> TabFlow {
+    TabFlow {
+        shown: TAB_SHOWN.with(|c| std::mem::replace(&mut *c.borrow_mut(), new.shown)),
+        last_active: TAB_LAST_ACTIVE.with(|c| c.replace(new.last_active)),
+        warm_prev: TAB_WARM_PREV.with(|c| c.replace(new.warm_prev)),
+        raise_pending: TAB_RAISE_PENDING.with(|c| c.replace(new.raise_pending)),
+        raise_done: TAB_RAISE_DONE.with(|c| c.replace(new.raise_done)),
+        home_shown: HOME_SHOWN.with(|c| c.replace(new.home_shown)),
+    }
 }
 
 
@@ -3691,7 +3697,7 @@ fn layout_webviews(
 
     let chrome_h = if is_fs {
         if is_home { inner_h } else { 0.0 }
-    } else if overlay_active || is_home || wait_leave_home {
+    } else if overlay_active || (is_home && !wait_home) || wait_leave_home {
         inner_h
     } else {
         top_bar_h
@@ -3701,10 +3707,12 @@ fn layout_webviews(
     // cover the page first and hide it after; when it shrinks, show the page first and shrink after.
     let apply_chrome = || {
         let _ = chrome_wv.set_visible(!is_fs || is_home);
+        // The toolbar view never changes size; only the part of it that shows does.
         let _ = chrome_wv.set_bounds(Rect {
             position: LogicalPosition::new(grip, 0.0).into(),
-            size: LogicalSize::new(inner_w, chrome_h).into(),
+            size: LogicalSize::new(inner_w, inner_h).into(),
         });
+        clip_chrome_view(window, chrome_h);
     };
     let last_h = CHROME_LAST_H.with(|c| c.replace(chrome_h));
     let chrome_grows = chrome_h >= last_h;
@@ -3778,32 +3786,20 @@ fn layout_webviews(
     }
     HOME_SHOWN.with(|c| c.set(if waiting { home_was_shown } else { is_home && !is_fs }));
 
-    // Stacking: what the user should see on top.
+    // Stacking: the toolbar view on top; the page the user should see in front of the one it replaces.
     if !is_fs {
-        if wait_home {
-            // The page stays over the (growing) New Tab page until it has drawn.
-            if let Some(pi) = prev_idx {
-                bring_active_tab_above_chrome(&tabs[pi].webview, chrome_wv);
-            }
-        } else if wait_leave_home {
-            // The New Tab page stays over the page until the page has drawn.
-            bring_chrome_above_tabs(chrome_wv, tabs, Some(&tabs[active_idx].webview));
-        } else if wait_page {
-            if let Some(pi) = prev_idx {
-                place_tab_below(&tabs[active_idx].webview, &tabs[pi].webview);
-                if overlay_active {
-                    bring_chrome_above_tabs(chrome_wv, tabs, Some(&tabs[pi].webview));
-                    place_tab_below(&tabs[active_idx].webview, &tabs[pi].webview);
-                } else {
-                    bring_active_tab_above_chrome(&tabs[pi].webview, chrome_wv);
-                }
-            }
-        } else if overlay_active || is_home {
-            let top = tabs.get(active_idx).filter(|_| page_tab(active_idx)).map(|t| &t.webview);
-            bring_chrome_above_tabs(chrome_wv, tabs, top);
-        } else if page_tab(active_idx) {
-            bring_active_tab_above_chrome(&tabs[active_idx].webview, chrome_wv);
+        let cur = tabs.get(active_idx).filter(|_| page_tab(active_idx)).map(|t| &t.webview);
+        let prev = prev_idx.map(|pi| &tabs[pi].webview);
+        let mut order: Vec<&WebView> = Vec::new();
+        if wait_home || wait_page {
+            // The page on screen stays in front until its replacement has drawn.
+            order.extend(prev);
+            order.extend(cur);
+        } else {
+            order.extend(cur);
+            order.extend(prev);
         }
+        stack_views(chrome_wv, &order);
     }
 
     // Peek sits above everything, inset in the content area; the chrome draws the frame and backdrop.
@@ -3878,7 +3874,18 @@ fn main() -> wry::Result<()> {
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &wv2_data_dir);
     let mut web_context = WebContext::new(Some(wv2_data_dir));
 
+    // Downloads and filter updates run on these threads: one core stays free for the window, and the
+    // threads yield to it (below normal priority), so a large transfer does not make the UI stutter.
+    let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1)).unwrap_or(2).clamp(2, 8);
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .on_thread_start(|| {
+            #[cfg(windows)]
+            unsafe {
+                use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            }
+        })
         .enable_all()
         .build()
         .expect("Failed to start Tokio runtime");
@@ -4389,6 +4396,7 @@ fn main() -> wry::Result<()> {
                 SPACES.with(|s| s.borrow_mut().active = p.space);
                 p.space = sp;
                 p.chrome_last_h = CHROME_LAST_H.with(|c| c.replace(p.chrome_last_h));
+                p.tab_flow = swap_tab_flow(std::mem::take(&mut p.tab_flow));
                 PEEK.with(|k| std::mem::swap(&mut *k.borrow_mut(), &mut p.peek));
                 p.peek_rect = PEEK_RECT.with(|c| c.replace(p.peek_rect));
             }};
@@ -4493,6 +4501,7 @@ fn main() -> wry::Result<()> {
                                     chrome_last_h: 0.0,
                                     peek: None,
                                     peek_rect: [0.0; 4],
+                                    tab_flow: TabFlow::default(),
                                 });
                                 switch_to!(key);
                                 focused_key = key;
@@ -4966,6 +4975,8 @@ fn main() -> wry::Result<()> {
             }
 
             Event::UserEvent(AppEvent::TabUrlChanged(tab_id, new_url)) => {
+                // The picker belongs to the page it was started on.
+                pending_picks.remove(&tab_id);
                 if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
                     tab.url = new_url.clone();
                     let h = extract_host(&new_url);
@@ -7162,19 +7173,27 @@ fn main() -> wry::Result<()> {
                         rt_handle.spawn(async move {
                             let res = async {
                                 let bytes = eng.fetch_store_package(&crx_url, 200 * 1024 * 1024).await?;
-                                let file = extensions::root_dir().join(format!("{id}.crx"));
-                                let _ = fs::create_dir_all(extensions::root_dir());
-                                fs::write(&file, &bytes).map_err(|e| format!("Could not save the package: {e}"))?;
-                                let dir = extensions::unpack_archive(&file);
-                                let _ = fs::remove_file(&file);
-                                let dir = dir?;
-                                match extensions::read_manifest(&dir) {
-                                    Ok(m) => Ok((dir, m)),
-                                    Err(e) => {
-                                        extensions::delete_copy(&dir.to_string_lossy());
-                                        Err(e)
+                                // Disk work and unpacking off the async workers; a folder of its own per
+                                // install, so two clicks on "Add" never share (or delete) one file.
+                                tokio::task::spawn_blocking(move || -> Result<(std::path::PathBuf, extensions::Meta), String> {
+                                    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+                                    let tmp = extensions::root_dir().join(format!(".download-{stamp}"));
+                                    fs::create_dir_all(&tmp).map_err(|e| format!("Could not save the package: {e}"))?;
+                                    let file = tmp.join(format!("{id}.crx"));
+                                    let saved = fs::write(&file, &bytes).map_err(|e| format!("Could not save the package: {e}"));
+                                    let dir = saved.and_then(|_| extensions::unpack_archive(&file));
+                                    let _ = fs::remove_dir_all(&tmp);
+                                    let dir = dir?;
+                                    match extensions::read_manifest(&dir) {
+                                        Ok(m) => Ok((dir, m)),
+                                        Err(e) => {
+                                            extensions::delete_copy(&dir.to_string_lossy());
+                                            Err(e)
+                                        }
                                     }
-                                }
+                                })
+                                .await
+                                .map_err(|e| e.to_string())?
                             }
                             .await;
                             let _ = p.send_event(AppEvent::ExtStoreReady(res));
@@ -7186,19 +7205,22 @@ fn main() -> wry::Result<()> {
                     {
                         use tao::platform::windows::WindowExtWindows;
                         if let Some(src) = extensions::pick(window.hwnd() as isize, cmd == "EXT_ADD_FOLDER") {
-                            let copied = if cmd == "EXT_ADD_FOLDER" { extensions::copy_folder(&src) } else { extensions::unpack_archive(&src) };
-                            match copied.and_then(|dir| match extensions::read_manifest(&dir) {
-                                Ok(m) => Ok((dir, m)),
-                                Err(e) => {
-                                    extensions::delete_copy(&dir.to_string_lossy());
-                                    Err(e)
-                                }
-                            }) {
-                                Ok((dir, meta)) => ext_install(&chrome_wv, proxy.clone(), dir, meta),
-                                Err(e) => {
-                                    let _ = proxy.send_event(AppEvent::ExtensionNotice(e));
-                                }
-                            }
+                            // Copying or unpacking (up to 500 MB) runs off the window's thread.
+                            let is_folder = cmd == "EXT_ADD_FOLDER";
+                            let p = proxy.clone();
+                            let _ = proxy.send_event(AppEvent::ExtensionNotice("Installing the extension…".into()));
+                            rt_handle.spawn_blocking(move || {
+                                let res = (if is_folder { extensions::copy_folder(&src) } else { extensions::unpack_archive(&src) }).and_then(|dir| {
+                                    match extensions::read_manifest(&dir) {
+                                        Ok(m) => Ok((dir, m)),
+                                        Err(e) => {
+                                            extensions::delete_copy(&dir.to_string_lossy());
+                                            Err(e)
+                                        }
+                                    }
+                                });
+                                let _ = p.send_event(AppEvent::ExtStoreReady(res));
+                            });
                         }
                     }
                 } else if let Some(arg) = cmd.strip_prefix("EXT_SET:") {

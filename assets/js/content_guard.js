@@ -1,5 +1,13 @@
 (function() {
   const IPC_TOKEN = "__SHUNNO_IPC_TOKEN__";
+  // Work that no page feature waits for runs when the page is idle (or after `ms` at the latest), so
+  // it never competes with the site's first paint.
+  const whenIdle = (fn, ms) => {
+    try {
+      if (typeof requestIdleCallback === 'function') { requestIdleCallback(fn, { timeout: ms }); return; }
+    } catch (e) {}
+    setTimeout(fn, Math.min(ms, 200));
+  };
   // Site settings follow the top-level page (an iframe uses its top page's settings), looked up
   // when each document starts, so a tab that moves to another site gets that site's settings.
   const TOP_HOST = (function () {
@@ -1224,7 +1232,8 @@
       cosmeticTimer = setTimeout(() => { cosmeticTimer = null; collectAndSend(document); }, 800);
     });
     const startCosmetic = () => {
-      collectAndSend(document);
+      // The first scan of every class and id on the page is the costly part: at idle, within 400 ms.
+      whenIdle(() => collectAndSend(document), 400);
       if (document.body) cosmeticObserver.observe(document.body, { childList: true, subtree: true });
     };
     if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', startCosmetic, { once: true });
@@ -1473,10 +1482,12 @@
     if (titleEl) {
       new MutationObserver(sendPageMeta).observe(titleEl, { childList: true, characterData: true, subtree: true });
     }
-    document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {
-      if (el.src) inspectUrl(el.src);
-    });
-    installFloatingOverlay();
+    whenIdle(() => {
+      document.querySelectorAll('video source, audio source, video[src], audio[src]').forEach(el => {
+        if (el.src) inspectUrl(el.src);
+      });
+      installFloatingOverlay();
+    }, 1500);
   });
   window.addEventListener('load', sendPageMeta);
   window.addEventListener('popstate', sendPageMeta);
