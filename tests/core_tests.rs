@@ -1272,7 +1272,9 @@ fn maximize_button_fades_on_the_pages_frame_clock() {
     assert!(ui.contains("function easeFluid(") && ui.contains("function fadeMaxButton(from, to, ms)"));
     assert!(ui.contains("requestAnimationFrame(step)"));
     assert!(!ui.contains("sendMaxButton(to, ms)"), "no timer run fade started from the window");
+}
 
+#[test]
 fn top_left_icon_opens_tab_search_and_new_tab_marks_are_grey() {
     let ui = include_str!("../src/ui_chrome.rs");
     assert!(ui.contains("id=\"btn-tabsearch\" onclick=\"toggleDrawer('tabsearch', this)\""));

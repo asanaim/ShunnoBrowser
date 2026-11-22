@@ -8,6 +8,7 @@
 
 ### Not changed
 - Tab widths, opening and closing already follow the Chrome behaviour of v2.33.0; no new tab strip changes in this version.
+
 ## v2.33.2
 
 ### Fixed
