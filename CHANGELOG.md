@@ -1,3 +1,13 @@
+## v2.33.2
+
+### Fixed
+- Slow tabs with many tabs open: every layout pass resized and hid every tab's web view (about 60 window calls per click with 30 tabs, seen in a screen recording). Each tab's view state is remembered now and only changes are applied; a hidden tab is hidden once and sized when it is shown.
+- Maximize button on light to dark and back: it no longer reaches its new colour before the toolbar does. The fade is stepped from the page's own frame clock (it was a window timer that ran ahead whenever the page animation started late).
+- Closing a menu no longer forces a repaint of the whole window (the exposed area was first filled with the frame colour).
+
+### Not verified
+- Windows timings and the closing menu flash could not be measured from the build environment; the causes come from reading a screen recording and the code. Measured here: a state render with 30 tabs takes about 5 ms, so the tab strip page is not the slow part.
+
 ## v2.33.1
 
 ### Fixed

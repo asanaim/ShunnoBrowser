@@ -1019,7 +1019,7 @@ fn max_button_glyph_is_grayscale_and_fades_with_the_theme() {
     let main = include_str!("../src/main.rs");
     let ui = include_str!("../src/ui_chrome.rs");
     assert!(!main.contains("CLEARTYPE_QUALITY"), "ClearType fringes the native glyph");
-    assert!(ui.contains("fadeMaxButton(to"), "theme change must fade the native button");
+    assert!(ui.contains("fadeMaxButton(from, to"), "theme change must fade the native button");
     assert!(main.contains("MAXBTN_FADE_TIMER") && main.contains("CreateCompatibleDC"), "native fade, double buffered paint");
 }
 
@@ -1255,4 +1255,21 @@ fn bookmark_popup_hangs_from_its_button() {
     assert!(ui.contains("#ask-scrim.anchored"));
     assert!(ui.contains("getElementById('btn-bookmark')") && ui.contains("scrimEl.classList.add('anchored')"));
     assert!(ui.contains("scrim.classList.remove('anchored')"));
+}
+
+#[test]
+fn many_tabs_do_not_cost_window_calls_on_every_layout() {
+    let m = include_str!("../src/main.rs");
+    assert!(m.contains("static TAB_APPLIED"), "per tab view state is remembered");
+    assert!(m.contains("A hidden tab is only hidden, once"));
+    assert!(m.contains("SetWindowRgn(HWND(host), all, false)"), "no forced repaint of the exposed area");
+    assert!(!m.contains("InvalidateRect(HWND(main_hwnd), None, false)"), "no whole window repaint on region change");
+}
+
+#[test]
+fn maximize_button_fades_on_the_pages_frame_clock() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("function easeFluid(") && ui.contains("function fadeMaxButton(from, to, ms)"));
+    assert!(ui.contains("requestAnimationFrame(step)"));
+    assert!(!ui.contains("sendMaxButton(to, ms)"), "no timer run fade started from the window");
 }

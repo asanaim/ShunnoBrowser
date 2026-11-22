@@ -3173,9 +3173,13 @@ fn apply_max_button_hole(main_hwnd: isize) {
             CombineRgn(all, all, hole, RGN_DIFF);
             let _ = DeleteObject(hole);
         }
-        // The system owns the region after this call.
-        SetWindowRgn(HWND(host), all, true);
-        let _ = InvalidateRect(HWND(main_hwnd), None, false);
+        // The system owns the region after this call. No repaint of the exposed area is requested: a
+        // popover closing exposes the page view, which draws itself, and a forced repaint of the
+        // parent first filled that area with the frame colour (the flash when a menu closed).
+        SetWindowRgn(HWND(host), all, false);
+        if let Some(r) = max_button_client_rect(HWND(main_hwnd)) {
+            let _ = InvalidateRect(HWND(main_hwnd), Some(&r), false);
+        }
     }
 }
 #[cfg(not(windows))]
@@ -3579,6 +3583,9 @@ fn stack_views(chrome_wv: &WebView, pages: &[&WebView]) {
 fn stack_views(_chrome_wv: &WebView, _pages: &[&WebView]) {}
 
 thread_local! {
+    /// What layout_webviews last applied to each tab's web view: (visible, x, y, w, h). Every call
+    /// used to resize and hide every tab, tens of window calls per click with many tabs open.
+    static TAB_APPLIED: std::cell::RefCell<std::collections::HashMap<usize, (bool, [f64; 4])>> = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Tab ids whose web views layout_webviews left visible.
     static TAB_SHOWN: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The current tab, and the one before it (kept on screen under the current one).
@@ -3743,24 +3750,32 @@ fn layout_webviews(
             }
         }
     }
-    for &(idx, x, pw) in &placements {
-        let tab = &tabs[idx];
-        let _ = tab.webview.set_bounds(Rect {
-            position: LogicalPosition::new(x, top_bar_h).into(),
-            size: LogicalSize::new(pw, content_h).into(),
-        });
-        let _ = tab.webview.set_visible(true);
-    }
-    for (idx, tab) in tabs.iter().enumerate() {
-        if placements.iter().any(|p| p.0 == idx) {
-            continue;
+    TAB_APPLIED.with(|m| {
+        let mut m = m.borrow_mut();
+        m.retain(|id, _| tabs.iter().any(|t| t.id == *id));
+        for &(idx, x, pw) in &placements {
+            let tab = &tabs[idx];
+            let want = (true, [x, top_bar_h, pw, content_h]);
+            if m.get(&tab.id) != Some(&want) {
+                let _ = tab.webview.set_bounds(Rect {
+                    position: LogicalPosition::new(x, top_bar_h).into(),
+                    size: LogicalSize::new(pw, content_h).into(),
+                });
+                let _ = tab.webview.set_visible(true);
+                m.insert(tab.id, want);
+            }
         }
-        let _ = tab.webview.set_bounds(Rect {
-            position: LogicalPosition::new(grip, top_bar_h).into(),
-            size: LogicalSize::new(web_w, content_h).into(),
-        });
-        let _ = tab.webview.set_visible(false);
-    }
+        // A hidden tab is only hidden, once; it gets its size when it is shown.
+        for (idx, tab) in tabs.iter().enumerate() {
+            if placements.iter().any(|p| p.0 == idx) {
+                continue;
+            }
+            if m.get(&tab.id).map(|e| e.0) != Some(false) {
+                let _ = tab.webview.set_visible(false);
+                m.insert(tab.id, (false, [0.0; 4]));
+            }
+        }
+    });
     TAB_SHOWN.with(|v| *v.borrow_mut() = placements.iter().map(|p| tabs[p.0].id).collect());
     if !chrome_grows {
         apply_chrome();
@@ -5594,6 +5609,7 @@ fn main() -> wry::Result<()> {
                     for (i, t) in tabs.iter().enumerate() {
                         if i != active_tab_idx {
                             let _ = t.webview.set_visible(false);
+                            TAB_APPLIED.with(|m| { m.borrow_mut().remove(&t.id); });
                         }
                     }
                     layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
@@ -7284,6 +7300,7 @@ fn main() -> wry::Result<()> {
                                 tabs.push(t);
                                 active_tab_idx = 0;
                                 let _ = tabs[0].webview.set_visible(true);
+                                TAB_APPLIED.with(|m| { m.borrow_mut().remove(&tabs[0].id); });
                                 layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                                 window.set_focus();
                                 let _ = proxy.send_event(AppEvent::RefreshChrome);
