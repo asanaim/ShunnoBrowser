@@ -111,6 +111,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   #tabs-container {
     position: relative; display: flex; gap: 4px; align-items: center; flex: 0 1 auto; min-width: 0; height: 100%;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+    /* The strip's width follows its tabs as they open and close, so the New Tab button glides. */
+    transition: flex-basis 0.26s var(--ease-fluid);
   }
   #tabs-container::-webkit-scrollbar { display: none; }
   #tabs-container.fade-l { -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px); mask-image: linear-gradient(90deg, transparent, #000 28px); }
@@ -173,8 +175,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: var(--surface-solid); color: var(--text); font-weight: 600;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
   }
-  /* Only when tabs are crowded does the current tab keep room for its title. */
-  #tabs-container.crowded .tab.active { min-width: min(170px, 46%); }
+  /* Chrome: all tabs share the width equally and shrink together; only the current tab keeps a
+     minimum wide enough for its icon and close button, so it is never reduced to a bare icon. */
+  .tab.active { min-width: 56px; }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
   /* Spaces: the active Space's colour marks the current tab and the Space button. */
   .tab.active:not(.incognito) { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12), inset 0 -2px 0 var(--space-accent, transparent); }
@@ -196,6 +199,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tb:hover { background: var(--input-bg); opacity: 1; }
   .tb:active { transform: scale(0.92); }
   .tb.open { background: var(--input-bg); opacity: 1; }
+  .tb.marked { color: var(--blue); opacity: 1; }
+  #btn-bookmark > svg { width: 16px; height: 16px; }
   .tb > svg { width: 18px; height: 18px; display: block; }
   .tb > img { width: 20px; height: 20px; border-radius: 5px; display: block; }
   .tb .ph { width: 20px; height: 20px; }
@@ -998,10 +1003,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="field-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
           <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
         </button>
-        <!-- Page actions live in the address field, as in Safari: bookmark, then reload. -->
-        <button class="field-btn" id="btn-bookmark" onclick="bookmarkCurrentPage()" title="Add Bookmark (Ctrl+D)">
-          <svg viewBox="0 0 15 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 1.75h9a.75.75 0 0 1 .75.75v12.1l-5.25-3.3-5.25 3.3V2.5A.75.75 0 0 1 3 1.75z"/></svg>
-        </button>
         <button class="field-btn" id="btn-reload" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8A5.2 5.2 0 1 1 11.6 4.3"/><path d="M13.3 2.4v2.9h-2.9"/></svg>
         </button>
@@ -1011,7 +1012,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <div id="perm-offer" class="pw-offer perm-offer" style="display:none"></div>
         <div id="pw-offer" class="pw-offer" style="display:none"></div>
         <div class="ext-bar" id="ext-bar"></div>
-        <!-- Shown once there are downloads; a ring shows the progress of running ones (Safari). -->
+        <!-- The bookmark button sits beside Downloads; it is filled when the page is bookmarked. -->
+        <button class="tb" id="btn-bookmark" onclick="bookmarkCurrentPage()" title="Add Bookmark (Ctrl+D)">
+          <svg viewBox="0 0 15 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 1.75h9a.75.75 0 0 1 .75.75v12.1l-5.25-3.3-5.25 3.3V2.5A.75.75 0 0 1 3 1.75z"/></svg>
+        </button>
+        <!-- Always shown; a ring shows the progress of running downloads (Safari). -->
         <button class="tb" id="btn-downloads" onclick="toggleDrawer('downloads', this)" title="Downloads (Ctrl+J)">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle class="dl-track" cx="10" cy="10" r="8.2"/><circle class="dl-ring" cx="10" cy="10" r="8.2" transform="rotate(-90 10 10)"/><path d="M10 5.8v7.4M6.9 10.3L10 13.4l3.1-3.1"/></svg>
           <span class="badge" id="dl-count"></span>
@@ -2168,6 +2173,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         setTimeout(() => { el.classList.remove('is-new'); markNarrowTabs(); updateTabFades(); }, 280);
         tc.appendChild(el);
         knownTabIds.add(idStr);
+        sizeTabStrip();
       }
 
       const wantClass = `tab ${idx === activeIdx ? 'active' : ''} ${t.incognito ? 'incognito' : ''} ${t.pinned ? 'pinned' : ''} ${t.sleeping ? 'sleeping' : ''} ${idx === window.__shunnoSplitTabIdx ? 'split-peer' : ''}`;
@@ -2299,6 +2305,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     el.classList.add('closing');
     el.dataset.tabId = '';
     el.removeAttribute('data-tab-id');
+    sizeTabStrip();
     setTimeout(() => { el.remove(); markNarrowTabs(); updateTabFades(); }, 260);
   }
   function closeTabFromStrip(el, idx) {
@@ -2375,7 +2382,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     document.querySelectorAll('#tabs-container .tab:not(.closing)').forEach(el => {
       if (tabWidthsLocked || el.classList.contains('is-new')) return;
       const wpx = el.getBoundingClientRect().width;
-      const narrow = wpx < 58;
+      const narrow = wpx < 50;
       const tight = wpx < 96;
       if (tight !== (el.dataset.tight === '1')) { if (tight) el.dataset.tight = '1'; else delete el.dataset.tight; }
       if (narrow !== (el.dataset.narrow === '1')) {
@@ -3384,7 +3391,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const got = running.reduce((a, d) => a + (d.total_bytes > 0 ? Math.min(d.downloaded_bytes, d.total_bytes) : 0), 0);
     dlBtn.querySelector('.dl-ring').style.strokeDashoffset = String(51.5 * (1 - (tot > 0 ? got / tot : 0.08)));
     dlBtn.title = 'Downloads (Ctrl+J)' + (running.length ? ': ' + running.length + ' running' : '');
-    // Bookmark (in the address field) is filled when this page is bookmarked; it then edits it.
+    // Bookmark (beside Downloads) is filled when this page is bookmarked; it then edits it.
     const bmBtn = document.getElementById('btn-bookmark');
     const marked = !!state.active_url && (state.bookmarks || []).some(b => b.url === state.active_url);
     bmBtn.classList.toggle('marked', marked);

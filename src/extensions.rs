@@ -113,7 +113,7 @@ pub fn page_url(id: &str, meta: &Meta, which: &str) -> Option<String> {
         _ => None,
     }?;
     let ok_id = !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric());
-    if !ok_id || page.contains("..") || page.contains("://") {
+    if !ok_id || page.contains("..") || page.contains("://") || page.contains('\\') || page.contains(':') {
         return None;
     }
     Some(format!("chrome-extension://{id}/{}", page.trim_start_matches('/')))
@@ -127,6 +127,10 @@ fn localize(dir: &Path, default_locale: Option<&str>, s: &str) -> String {
         return s.to_string();
     };
     let locale = default_locale.unwrap_or("en");
+    // One plain folder name (a locale such as "en" or "pt_BR"): never a path.
+    if locale.is_empty() || locale.len() > 32 || !locale.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return key.to_string();
+    }
     let file = dir.join("_locales").join(locale).join("messages.json");
     let msgs: serde_json::Value = fs::read_to_string(file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     // Message keys are case-insensitive.
@@ -136,6 +140,24 @@ fn localize(dir: &Path, default_locale: Option<&str>, s: &str) -> String {
         .and_then(|m| m.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| key.to_string())
+}
+
+/// A path from a manifest, resolved inside `dir` and nowhere else. On Windows `Path::join` replaces
+/// the base for "\\x", "C:\\x" and "\\\\host\\share\\x" (a network share would be contacted and
+/// the user's credentials offered), so only plain relative components are accepted, and the file
+/// that results must really lie in `dir`.
+pub fn safe_join(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let rel = rel.trim_start_matches('/');
+    if rel.is_empty() || rel.contains(':') || rel.contains('\\') || rel.contains('\0') {
+        return None;
+    }
+    let p = Path::new(rel);
+    if !p.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return None;
+    }
+    let full = dir.join(p);
+    let real = full.canonicalize().ok()?;
+    real.starts_with(dir.canonicalize().ok()?).then_some(real)
 }
 
 /// Read what the panel needs from an extension folder's manifest.json.
@@ -158,7 +180,7 @@ pub fn read_manifest(dir: &Path) -> Result<Meta, String> {
         .and_then(|v| v.as_str())
         .filter(|p| !p.is_empty())
         .map(str::to_string);
-    let icon = icon_candidates(&m, action).into_iter().find_map(|rel| icon_data_url(&dir.join(rel.trim_start_matches('/'))));
+    let icon = icon_candidates(&m, action).into_iter().find_map(|rel| safe_join(dir, &rel).and_then(|f| icon_data_url(&f)));
     Ok(Meta {
         name: name.chars().take(60).collect(),
         version: s("version").chars().take(20).collect(),
@@ -260,9 +282,13 @@ pub fn crx_zip_offset(b: &[u8]) -> Result<usize, String> {
 
 /// Unpack a .crx or .zip into a new folder under the extensions folder.
 pub fn unpack_archive(file: &Path) -> Result<PathBuf, String> {
+    const FILE_LIMIT: u64 = 200 * 1024 * 1024;
     let mut bytes = Vec::new();
-    fs::File::open(file).and_then(|mut f| f.read_to_end(&mut bytes)).map_err(|e| format!("Could not read the file: {e}"))?;
-    if bytes.len() > 200 * 1024 * 1024 {
+    // Read at most one byte past the limit: a huge file must not be loaded before it is refused.
+    fs::File::open(file)
+        .and_then(|f| f.take(FILE_LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("Could not read the file: {e}"))?;
+    if bytes.len() as u64 > FILE_LIMIT {
         return Err("The extension file is larger than 200 MB.".into());
     }
     let off = crx_zip_offset(&bytes)?;
@@ -272,6 +298,9 @@ pub fn unpack_archive(file: &Path) -> Result<PathBuf, String> {
     const LIMIT: u64 = 500 * 1024 * 1024;
     let extract = |zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>| -> Result<(), String> {
         let mut total: u64 = 0;
+        if zip.len() > 10_000 {
+            return Err("The extension has more than 10,000 files.".into());
+        }
         for i in 0..zip.len() {
             let f = zip.by_index(i).map_err(|e| e.to_string())?;
             // enclosed_name() refuses absolute paths and "..": nothing can land outside `dest`.

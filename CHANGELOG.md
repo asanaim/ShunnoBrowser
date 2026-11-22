@@ -1,3 +1,28 @@
+## v2.33.0
+
+### Fixed
+- New Tab, Menu and Downloads flicker (also over YouTube): the toolbar view no longer changes size. It keeps the full window size and a window region decides how much of it shows, so opening a popover or the New Tab page is one instant change and no empty frame is drawn. The toolbar view always sits above the pages, and only the order of the pages changes on a tab switch.
+- Tabs, as in Chrome: all tabs share the width equally and shrink together; the current tab is no longer kept wide beside icon only tabs (it only keeps room for its icon and close button). The New Tab button follows the last tab smoothly while tabs open and close, and the strip no longer jumps sideways when a tab opens.
+- Bookmark button moved beside the Downloads button.
+
+### Security (audit of v2.25.0 to v2.32.1)
+- Extensions: icon and `_locales` paths from a manifest can no longer leave the extension folder. On Windows a path such as `\\host\share\x.png` or `C:\x.png` replaced the base folder (reading local files or contacting a network share); only plain relative paths inside the folder are accepted now.
+- Extensions: a picked archive is read with a size cap before anything is loaded (a multi gigabyte file no longer exhausts memory), and an archive with more than 10,000 files is refused. Local installs run off the window's thread; store installs unpack off the async workers and each uses its own temporary folder (two clicks on Add no longer delete each other's file).
+- Extension popup and options pages no longer receive the page script (it carries the IPC token and hooks that break an extension's interface).
+- Content blocker: a list download is cut off as soon as it passes the size limit (chunked responses had no length up front); only one update round runs at a time; changes to the filter settings are serialized, so an update cannot drop another change.
+- Element picker: a picker started on one page is cancelled when the tab navigates.
+- Tab switching state is kept per window (a second window disturbed the first one's New Tab and tab reveal).
+
+### Performance
+- Release build: `opt-level = 3` (with `lto`, `codegen-units = 1`, `panic = "abort"` already set). The executable is larger than the size optimized builds.
+- WebView2 gets `--enable-gpu-rasterization`, `--enable-zero-copy` and `RendererCodeIntegrity` disabled, in one `--disable-features` list (Chromium reads only the last one given).
+- The page script is shipped minified (`assets/js/content_guard.min.js`, made by `scripts/minify_js.sh`; a test fails when it is out of date). The first scan of the page's classes and ids, and the media source scan, run when the page is idle.
+- Blocker: recent verdicts for a URL on a page are kept in a bounded cache (cleared whenever the lists change).
+- Downloads write in 4 MB blocks instead of one small write per network chunk; the download threads run below normal priority and leave one core free for the window.
+
+### Not changed
+- Web Push: WebView2 has no push service, so sites cannot subscribe to push messages. Notifications that a page shows while it is open work as before.
+
 ## v2.32.1
 
 ### Fixed
