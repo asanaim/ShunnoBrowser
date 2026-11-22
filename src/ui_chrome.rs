@@ -144,7 +144,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: transparent; color: var(--text); font-size: 12px; cursor: default; user-select: none;
     /* Same starting width for every tab, all shrinking alike: tabs stay equal and the New Tab and
        Private buttons follow the last tab. */
-    flex: 0 1 220px; min-width: 36px; max-width: 220px; overflow: hidden;
+    flex: 0 1 240px; min-width: 28px; max-width: 240px; overflow: hidden;
     /* Switching tabs changes no sizes and animates nothing but colour: no reflow, no flicker. */
     transition: background 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
   }
@@ -2435,14 +2435,14 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   // Safari, many tabs: a narrow tab keeps its close button, shown in place of the icon on the
   // current tab and on hover, instead of being pushed out of view.
-  // The strip asks for the room its tabs want at full width (220px each, pinned 36px); the window
+  // The strip asks for the room its tabs want at full width (240px each, pinned 36px); the window
   // then shrinks all tabs alike. Measured content would feed back (a narrow tab hides its title,
   // asks for less room, and the strip shrinks further).
   function sizeTabStrip() {
     const tc = document.getElementById('tabs-container');
     if (!tc || tabWidthsLocked) return;
     let want = 0, n = 0;
-    tc.querySelectorAll('.tab:not(.closing):not(.tg-hidden)').forEach(el => { want += el.classList.contains('pinned') ? 36 : 220; n++; });
+    tc.querySelectorAll('.tab:not(.closing):not(.tg-hidden)').forEach(el => { want += el.classList.contains('pinned') ? 36 : 240; n++; });
     tc.querySelectorAll('.tg-chip').forEach(c => { want += c.getBoundingClientRect().width; n++; });
     tc.style.flexBasis = (want + Math.max(0, n - 1) * 4) + 'px';
   }
@@ -2457,7 +2457,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       if (tabWidthsLocked || el.classList.contains('is-new')) return;
       const wpx = el.getBoundingClientRect().width;
       const narrow = wpx < 50;
-      const tight = wpx < 96;
+      const tight = wpx < 84;
       if (tight !== (el.dataset.tight === '1')) { if (tight) el.dataset.tight = '1'; else delete el.dataset.tight; }
       if (narrow !== (el.dataset.narrow === '1')) {
         if (narrow) el.dataset.narrow = '1'; else delete el.dataset.narrow;
