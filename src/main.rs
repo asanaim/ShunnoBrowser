@@ -6475,8 +6475,20 @@ fn main() -> wry::Result<()> {
                             layout_webviews(&window, &chrome_wv, &tabs, active_tab_idx, split_tab_idx, drawer_open, engine_menu_open, palette_open, is_fullscreen);
                         }
                     }
-                } else if cmd == "REOPEN_CLOSED_TAB" {
-                    if let Some(saved) = closed_tabs.pop() {
+                } else if cmd == "CLOSED_TABS_GET" {
+                    // Newest first, as the tab search lists them; index n here is what REOPEN_CLOSED_TAB:n takes.
+                    let list: Vec<serde_json::Value> = closed_tabs
+                        .iter()
+                        .rev()
+                        .take(15)
+                        .map(|t| serde_json::json!({ "title": t.title, "url": t.url }))
+                        .collect();
+                    if let Ok(arg) = serde_json::to_string(&list) {
+                        let _ = chrome_wv.evaluate_script(&format!("window.__setClosedTabs && window.__setClosedTabs({});", arg));
+                    }
+                } else if let Some(sel) = if cmd == "REOPEN_CLOSED_TAB" { Some(0) } else { cmd.strip_prefix("REOPEN_CLOSED_TAB:").and_then(|n| n.parse::<usize>().ok()) } {
+                    let picked = if sel < closed_tabs.len() { Some(closed_tabs.remove(closed_tabs.len() - 1 - sel)) } else { None };
+                    if let Some(saved) = picked {
                         let host = extract_host(&saved.url);
                         let pol = site_policies.get(&host).cloned().unwrap_or_default();
                         let tid = next_tab_id.fetch_add(1, Ordering::SeqCst);

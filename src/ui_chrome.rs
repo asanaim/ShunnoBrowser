@@ -104,6 +104,23 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     transition: transform 0.28s var(--ease-spring);
   }
   .brand-emblem:hover { transform: scale(1.06); }
+  /* On the New Tab page the Shunno marks are grey (the page itself is the brand). */
+  .brand-emblem svg, .home-hero > svg { transition: filter 0.2s var(--ease-fluid), opacity 0.2s var(--ease-fluid); }
+  body:has(#home-canvas.active) .brand-emblem { box-shadow: none; }
+  body:has(#home-canvas.active) .brand-emblem svg, #home-canvas.active .home-hero > svg { filter: grayscale(1); opacity: 0.55; }
+  /* Tab search (the top left icon): open tabs and recently closed, as in Chrome. */
+  #tabsearch-input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+  .ts-label { font-size: 11px; font-weight: 600; color: var(--muted); margin: 8px 6px 4px; letter-spacing: 0.02em; }
+  .ts-list { max-height: 300px; overflow-y: auto; }
+  .ts-row { display: flex; align-items: center; gap: 9px; width: 100%; border: none; background: none; color: var(--text); text-align: left;
+    padding: 6px 8px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+  .ts-row:hover, .ts-row.sel { background: rgba(128, 128, 128, 0.14); }
+  .ts-row .ts-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ts-row .ts-u { flex: 0 1 38%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+  .ts-row .tab-fav { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; object-fit: contain; }
+  .ts-row span.tab-fav { display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; color: #fff; }
+  .ts-row.cur .ts-t { font-weight: 600; }
+  .ts-empty { padding: 8px; color: var(--muted); font-size: 12px; }
 
   /* Safari-style tab strip: tabs share the width evenly; the current tab keeps room for its title
      while the others shrink to their icon; past that the strip scrolls sideways (wheel or
@@ -962,7 +979,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   <div class="chrome-shell">
     <!-- 1. Borderless Tab Strip (No redundant top title bar!) -->
     <div class="tab-bar" id="tab-bar">
-      <div class="brand-emblem" onclick="send('NAV:shunno://newtab')" title="Shunno Home">
+      <div class="brand-emblem" id="btn-tabsearch" onclick="toggleDrawer('tabsearch', this)" title="Search tabs">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><defs><linearGradient id="shunnoTile" x1="0" y1="1.5" x2="0" y2="26.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#48B2FF"/><stop offset="100%" stop-color="#0062EB"/></linearGradient></defs><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg>
       </div>
       <button class="space-pill" id="space-pill" onclick="toggleDrawer('spaces', this)" title="Spaces"></button>
@@ -1319,6 +1336,11 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           From the Chrome Web Store or Edge Add-ons: open an extension's page and press <b>Add to Shunno</b> in the address bar.
           Extensions run in normal tabs, not private ones, and some that depend on Chrome only features may not work.
         </div>
+      </div>
+
+      <div id="panel-tabsearch" style="display:none">
+        <input class="text-box" id="tabsearch-input" placeholder="Search tabs" autocomplete="off" oninput="renderTabSearch()" onkeydown="tabSearchKey(event)" />
+        <div id="tabsearch-body" class="ts-list"></div>
       </div>
 
       <div id="panel-tabmenu" style="display:none"><div id="tabmenu-body"></div></div>
@@ -1961,6 +1983,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   let drawerAnchor = null;
 
   function defaultAnchorFor(name) {
+    if (name === 'tabsearch') return document.getElementById('btn-tabsearch');
     return document.getElementById(name === 'downloads' ? 'btn-downloads' : name === 'bookmarks' ? 'btn-library' : 'btn-controls');
   }
 
@@ -2005,11 +2028,12 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const oldH = switching ? sheet.getBoundingClientRect().height : 0;
     activeDrawer = name;
     if (name === 'bookmarks') renderLibrary();
+    if (name === 'tabsearch') openTabSearch();
     if (name === 'blocker') { cbUserDirty(false); send('FILTERS_USER_GET'); if (lastState) renderBlocker(lastState); }
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
+    ['controls', 'find', 'tabsearch', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -2469,6 +2493,70 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
   // ---------------------------------------------------------------- Tab and group menus (right-click)
   let ctxTab = null, ctxGroup = null, groupColor = null, groupSaveTimer = null;
+
+  // ---------------------------------------------------------------- Tab search
+  let closedTabs = [];
+  let tsSel = 0;
+  function openTabSearch() {
+    const inp = document.getElementById('tabsearch-input');
+    inp.value = '';
+    tsSel = 0;
+    renderTabSearch();
+    send('CLOSED_TABS_GET');
+    setTimeout(() => inp.focus(), 60);
+  }
+  window.__setClosedTabs = function (list) {
+    closedTabs = Array.isArray(list) ? list : [];
+    if (activeDrawer === 'tabsearch') renderTabSearch();
+  };
+  function tsFav(t) {
+    return t.favicon ? `<img class="tab-fav" alt="" src="${escapeHtml(t.favicon)}">` : siteIcon(t.url, t.title, 'tab-fav');
+  }
+  function tabSearchRows() {
+    const q = (document.getElementById('tabsearch-input').value || '').trim().toLowerCase();
+    const hit = (t) => !q || (t.title || '').toLowerCase().includes(q) || (t.url || '').toLowerCase().includes(q);
+    const st = lastState || { tabs: [] };
+    const open = st.tabs.map((t, i) => ({ t, i })).filter(x => hit(x.t));
+    const closed = closedTabs.map((t, n) => ({ t, n })).filter(x => hit(x.t));
+    return { open, closed, active: st.active_tab };
+  }
+  function renderTabSearch() {
+    const body = document.getElementById('tabsearch-body');
+    if (!body) return;
+    const { open, closed, active } = tabSearchRows();
+    const total = open.length + closed.length;
+    if (tsSel >= total) tsSel = Math.max(0, total - 1);
+    let k = 0, h = '';
+    const row = (cls, cmd, t) => `<button class="ts-row ${cls} ${k++ === tsSel ? 'sel' : ''}" data-cmd="${escapeHtml(cmd)}" onclick="tabSearchGo(this.dataset.cmd)">${tsFav(t)}<span class="ts-t">${escapeHtml(t.title || t.url || 'New Tab')}</span><span class="ts-u">${escapeHtml(hostOf(t.url))}</span></button>`;
+    if (open.length) h += '<div class="ts-label">Open tabs</div>' + open.map(x => row(x.i === active ? 'cur' : '', 'SWITCH_TAB:' + x.i, x.t)).join('');
+    if (closed.length) h += '<div class="ts-label">Recently closed</div>' + closed.map(x => row('', 'REOPEN_CLOSED_TAB:' + x.n, x.t)).join('');
+    if (!total) h = '<div class="ts-empty">No matching tabs</div>';
+    body.innerHTML = h;
+    const sel = body.querySelector('.ts-row.sel');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+  function hostOf(u) {
+    try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u && u.startsWith('shunno://') ? 'New Tab' : ''; }
+  }
+  function tabSearchGo(cmd) {
+    send(cmd);
+    closeDrawer();
+  }
+  function tabSearchKey(e) {
+    const rows = document.querySelectorAll('#tabsearch-body .ts-row');
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!rows.length) return;
+      tsSel = (tsSel + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+      renderTabSearch();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const r = rows[tsSel];
+      if (r) tabSearchGo(r.dataset.cmd);
+    } else if (e.key === 'Escape') {
+      closeDrawer();
+    }
+  }
   function ctxRow(label, cmd, extra) {
     return `<button class="ctx-row ${extra && extra.danger ? 'danger' : ''}" onclick="${cmd}; closeDrawer()">${extra && extra.dot ? `<span class="dot" style="background:${extra.dot}"></span>` : ''}${escapeHtml(label)}</button>`;
   }
