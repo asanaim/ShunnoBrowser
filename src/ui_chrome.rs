@@ -1821,6 +1821,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function over(top, base) { const a = top[3]; return [0, 1, 2].map(i => top[i] * a + base[i] * (1 - a)); }
   function hex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
   let lastMaxBtn = '';
+  let lastMaxCols = null;
   // Colours of the native maximize button, as painted: [bg, fg, hover] (RGB arrays).
   function maxButtonColors() {
     const b = document.getElementById('btn-max');
@@ -1848,17 +1849,35 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const r = b.getBoundingClientRect();
     const d = window.devicePixelRatio || 1;
     const msg = `MAXBTN:${r.left * d}|${r.top * d}|${r.width * d}|${r.height * d}|${hex(cols[0])}|${hex(cols[1])}|${hex(cols[2])}|${7 * d}|${10 * d}`;
+    lastMaxCols = cols;
     if (msg !== lastMaxBtn) { lastMaxBtn = msg; send(fadeMs ? msg + '|' + fadeMs : msg); }
   }
-  // The native button fades itself (one message, timed by the window on the page's curve), so it
-  // stays in step with the cross-fade without a message per frame.
-  function fadeMaxButton(to, ms) {
+  // The native button is not part of the page snapshot, so it is faded by hand. A timer run by the
+  // window drifted from the page's own animation whenever the page started late (many tabs open):
+  // the button reached its new colour while the toolbar was still the old one. So the fade is
+  // stepped here, once per frame, from the page's own frame clock, on the same curve.
+  function easeFluid(x) {
+    const bz = (t, a, b) => 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
+    let lo = 0, hi = 1, t = x;
+    for (let i = 0; i < 24; i++) { t = (lo + hi) / 2; if (bz(t, 0.32, 0) < x) lo = t; else hi = t; }
+    return bz(t, 0.72, 1);
+  }
+  function fadeMaxButton(from, to, ms) {
     if (!snapNative || !to) { maxBtnFade = null; reportMaxButton(); return; }
     const id = {};
     maxBtnFade = id;
-    lastMaxBtn = '';
-    sendMaxButton(to, ms);
-    setTimeout(() => { if (maxBtnFade === id) { maxBtnFade = null; reportMaxButton(); } }, ms + 40);
+    if (!from) from = to;
+    let t0 = 0;
+    const step = (now) => {
+      if (maxBtnFade !== id) return;
+      if (!t0) t0 = now;
+      const p = Math.min(1, (now - t0) / ms), k = easeFluid(p);
+      sendMaxButton(to.map((c, i) => c.map((v, j) => from[i][j] + (v - from[i][j]) * k)));
+      if (p < 1) requestAnimationFrame(step);
+      else { maxBtnFade = null; reportMaxButton(); }
+    };
+    requestAnimationFrame(step);
+    setTimeout(() => { if (maxBtnFade === id) { maxBtnFade = null; reportMaxButton(); } }, ms + 400);
   }
   window.addEventListener('resize', () => requestAnimationFrame(reportMaxButton));
   function cancelSnapHover() {
@@ -2059,6 +2078,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function applyTheme(dark) {
     if (document.body.classList.contains('dark') === dark) return;
     let to = null;
+    const from = lastMaxCols || maxButtonColors();
     const flip = () => {
       document.body.classList.add('theme-switching');
       document.body.classList.toggle('dark', dark);
@@ -2069,7 +2089,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     if (document.startViewTransition && !reduce) {
       maxBtnFade = {};  // hold the old colours until the cross-fade starts
       const vt = document.startViewTransition(flip);
-      const go = () => fadeMaxButton(to || maxButtonColors(), 380);
+      const go = () => fadeMaxButton(from, to || maxButtonColors(), 380);
       vt.ready.then(go, go);
     } else {
       flip();
