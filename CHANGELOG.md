@@ -1,3 +1,13 @@
+## v2.34.0
+
+### Added
+- The icon at the top left now opens tab search, as in Chrome: a search box, your open tabs (click to switch) and recently closed tabs (click to reopen, newest first, up to 15). Arrow keys and Enter work. It used to open the New Tab page.
+
+### Changed
+- On the New Tab page the Shunno icon at the top left and the one above the search box are grey.
+
+### Not changed
+- Tab widths, opening and closing already follow the Chrome behaviour of v2.33.0; no new tab strip changes in this version.
 ## v2.33.2
 
 ### Fixed

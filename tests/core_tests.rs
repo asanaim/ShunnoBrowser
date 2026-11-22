@@ -1272,4 +1272,14 @@ fn maximize_button_fades_on_the_pages_frame_clock() {
     assert!(ui.contains("function easeFluid(") && ui.contains("function fadeMaxButton(from, to, ms)"));
     assert!(ui.contains("requestAnimationFrame(step)"));
     assert!(!ui.contains("sendMaxButton(to, ms)"), "no timer run fade started from the window");
+
+fn top_left_icon_opens_tab_search_and_new_tab_marks_are_grey() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains("id=\"btn-tabsearch\" onclick=\"toggleDrawer('tabsearch', this)\""));
+    assert!(ui.contains("id=\"panel-tabsearch\"") && ui.contains("send('CLOSED_TABS_GET')"));
+    assert!(ui.contains("'REOPEN_CLOSED_TAB:' + x.n") && ui.contains("'SWITCH_TAB:' + x.i"));
+    assert!(ui.contains("filter: grayscale(1)"));
+    let m = include_str!("../src/main.rs");
+    assert!(m.contains("cmd == \"CLOSED_TABS_GET\"") && m.contains("strip_prefix(\"REOPEN_CLOSED_TAB:\")"));
+    assert!(m.contains("closed_tabs.remove(closed_tabs.len() - 1 - sel)"), "index counts from the newest");
 }
