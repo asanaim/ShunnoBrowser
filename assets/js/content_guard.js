@@ -387,7 +387,23 @@
     return txt.replace(AD_KEY_RE, '"no_ads_$1"$2');
   }
 
-  if (isYouTube && (ADBLOCK_ON || SPONSORBLOCK_ON)) {
+  // Safe mode: if the player fails with a playback error while the ad fields are being pruned, the
+  // pruning is switched off for this profile for six hours and the page reloads once. Clearing the
+  // site data starts it again. (Reported: YouTube showed an error until site data was cleared and
+  // the blockers were switched off and on; the cause could not be reproduced, so the page now
+  // recovers by itself instead of relying on a guess about the cause.)
+  const YT_SAFE_KEY = 'shunno_yt_safe';
+  const YT_SAFE_MS = 6 * 3600 * 1000;
+  const ytSafe = (() => {
+    if (!isYouTube) return false;
+    try {
+      const t = Number(localStorage.getItem(YT_SAFE_KEY) || 0);
+      return t > 0 && Date.now() - t < YT_SAFE_MS;
+    } catch (e) { return false; }
+  })();
+  const YT_ERROR_RE = /something went wrong|an error occurred|playback (id|error)|try again|refresh the page|error loading/i;
+
+  if (isYouTube && !ytSafe && (ADBLOCK_ON || SPONSORBLOCK_ON)) {
     let _ytPlayerResp = undefined;
     try {
       Object.defineProperty(window, 'ytInitialPlayerResponse', {
@@ -450,6 +466,26 @@
       }
       skipYtAdImmediately();
     });
+  }
+
+  if (isYouTube && !ytSafe && (ADBLOCK_ON || SPONSORBLOCK_ON)) {
+    let errSince = 0;
+    setInterval(() => {
+      try {
+        const box = document.querySelector('#movie_player .ytp-error, .ytp-error');
+        const reason = box ? (box.textContent || '') : '';
+        if (box && YT_ERROR_RE.test(reason)) {
+          if (!errSince) errSince = Date.now();
+          else if (Date.now() - errSince > 1500) {
+            errSince = 0;
+            try { localStorage.setItem(YT_SAFE_KEY, String(Date.now())); } catch (e) { return; }
+            location.reload();
+          }
+        } else {
+          errSince = 0;
+        }
+      } catch (e) {}
+    }, 700);
   }
 
   // Fallback for an ad that still reaches the player: skip it the moment the player marks it, and

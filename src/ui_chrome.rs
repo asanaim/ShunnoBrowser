@@ -216,6 +216,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tb.open { background: var(--input-bg); opacity: 1; }
   .tb.marked { color: var(--blue); opacity: 1; }
   #btn-bookmark > svg { width: 16px; height: 16px; }
+  #btn-downloads > svg { width: 20px; height: 20px; }
   .tb > svg { width: 18px; height: 18px; display: block; }
   .tb > img { width: 20px; height: 20px; border-radius: 5px; display: block; }
   .tb .ph { width: 20px; height: 20px; }
@@ -231,7 +232,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   #btn-downloads.active .dl-track { opacity: 0.18; }
   #btn-downloads.active .dl-ring { opacity: 1; }
   #btn-downloads.active { color: var(--blue); opacity: 1; }
-  /* Buttons inside the address field (Reader, Bookmark, Reload): smaller, quieter. */
+  /* Buttons inside the address field (Reader): smaller, quieter. */
   .field-btn { width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px; background: transparent; color: var(--muted);
     display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer;
     transition: background var(--dur-fast) var(--ease-fluid), color var(--dur-fast) var(--ease-fluid); }
@@ -1011,6 +1012,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="tb" onclick="send('FORWARD')" title="Forward">
           <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 3.6L12.2 9l-5.4 5.4"/></svg>
         </button>
+        <button class="tb" id="btn-reload" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8A5.2 5.2 0 1 1 11.6 4.3"/><path d="M13.3 2.4v2.9h-2.9"/></svg>
+        </button>
       </div>
 
       <div class="firefox-capsule">
@@ -1024,9 +1028,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         <button class="field-btn" id="reader-btn" style="display:none" onclick="send('READER_MODE')" title="Reader (F9)">
           <svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 3.2C8.2 1.9 5.6 1.4 2 1.5v11.6c3.6-.1 6.2.4 8 1.7 1.8-1.3 4.4-1.8 8-1.7V1.5c-3.6-.1-6.2.4-8 1.7z"/><path d="M10 3.2v11.6"/></svg>
         </button>
-        <button class="field-btn" id="btn-reload" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8A5.2 5.2 0 1 1 11.6 4.3"/><path d="M13.3 2.4v2.9h-2.9"/></svg>
-        </button>
       </div>
 
       <div class="nav-group right">
@@ -1039,7 +1040,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         </button>
         <!-- Always shown; a ring shows the progress of running downloads (Safari). -->
         <button class="tb" id="btn-downloads" onclick="toggleDrawer('downloads', this)" title="Downloads (Ctrl+J)">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle class="dl-track" cx="10" cy="10" r="8.2"/><circle class="dl-ring" cx="10" cy="10" r="8.2" transform="rotate(-90 10 10)"/><path d="M10 5.8v7.4M6.9 10.3L10 13.4l3.1-3.1"/></svg>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle class="dl-track" cx="10" cy="10" r="8.2"/><circle class="dl-ring" cx="10" cy="10" r="8.2" transform="rotate(-90 10 10)"/><path d="M10 2.6v14M4.7 11.6L10 16.9l5.3-5.3"/></svg>
           <span class="badge" id="dl-count"></span>
         </button>
         <button class="tb" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"><span class="avatar" id="profile-avatar"></span></button>
