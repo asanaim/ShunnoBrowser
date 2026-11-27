@@ -3582,7 +3582,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       ['force_dark_pages', '🌑 Darken All Sites', state.global.force_dark_pages],
       ['download_takeover', '⚡ Accelerate Downloads', state.global.download_takeover],
       ['little_for_links', '🪟 Links in Little Window', state.global.little_for_links],
-      ['drop_basket', '🧺 Drop Basket', state.global.drop_basket_enabled],
       ['bg_audio', '🎧 Background Play', state.global.background_media_play],
       ['auto_pip', '📺 Auto-PiP on Blur', state.global.auto_pip_on_blur],
       ['auto_clean', '🧹 Tidy on Start', state.global.auto_clean_completed],

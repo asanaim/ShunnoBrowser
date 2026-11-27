@@ -1,3 +1,16 @@
+## v2.34.3
+
+### Removed
+- The "Drop Link" basket in the bottom right corner of pages, and its Drop Basket switch in the menu.
+
+### Fixed
+- The download list opened from the floating download bar now stays inside the window at any size (it narrows, slides left and opens above the bar when needed), so the Get button can always be clicked.
+- A second click on the open download button closes the list.
+- With no connection the page no longer shows the Edge error page with the Edge logo in the corner; a plain "You are offline" page with Try again is shown instead (it retries on its own when the network returns). Certificate and other errors still show the built in warning.
+
+### Not verified
+- The offline page was not run on Windows (the error page replacement needs WebView2); the download list was tested in a browser at 1000x900, 420x360 and 330x300.
+
 ## v2.34.2
 
 ### Changed

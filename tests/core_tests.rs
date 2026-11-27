@@ -275,7 +275,7 @@ fn test_every_content_script_placeholder_is_replaced() {
         found += 1;
         rest = &tail[end + 2..];
     }
-    assert!(found >= 8);
+    assert!(found >= 7);
 }
 
 #[test]
@@ -1292,4 +1292,24 @@ fn closing_the_last_tab_stretches_the_others_at_once() {
     let ui = include_str!("../src/ui_chrome.rs");
     assert!(ui.contains("if (pos !== live.length - 1) lockTabWidths();"));
     assert!(ui.contains("next.classList.add('active')"));
+}
+
+#[test]
+fn download_pill_menu_fits_the_window_and_closes_on_second_click() {
+    let js = include_str!("../assets/js/content_guard.js");
+    assert!(!js.contains("basket") && !js.contains("Drop Link"), "the Drop Link basket is gone");
+    assert!(js.contains("A second click on the open button closes the list."));
+    assert!(js.contains("menu.style.maxWidth = Math.min(400") && js.contains("pillTop - mr.height - 6"));
+    assert!(!include_str!("../src/main.rs").contains("__SHUNNO_BASKET__"));
+}
+
+#[test]
+fn no_connection_replaces_the_edge_error_page() {
+    let m = include_str!("../src/main.rs");
+    assert!(m.contains("add_NavigationCompleted") && m.contains("COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED"));
+    assert!(m.contains("assets/js/offline_page.js"));
+    // certificate and other errors keep the built in warning page
+    assert!(!m.contains("SetIsBuiltInErrorPageEnabled"));
+    let page = include_str!("../assets/js/offline_page.js");
+    assert!(page.contains("You are offline") && !page.to_lowercase().contains("edge"));
 }
