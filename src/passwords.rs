@@ -286,14 +286,30 @@ fn vault_path() -> std::path::PathBuf {
     crate::state::BrowserStorage::app_data_dir().join("passwords.vault")
 }
 
-#[cfg(windows)]
 fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, String> {
+    dpapi_with(data, protect, ENTROPY)
+}
+
+/// Download session cookies on disk: DPAPI sealed (current Windows account only), hex encoded.
+/// None when sealing is not possible; callers then store nothing, never plaintext.
+const COOKIE_ENTROPY: &[u8] = b"ShunnoBrowser.DownloadCookie.v1";
+pub(crate) fn seal_secret(plain: &str) -> Option<String> {
+    dpapi_with(plain.as_bytes(), true, COOKIE_ENTROPY).ok().map(hex::encode)
+}
+pub(crate) fn unseal_secret(hex_text: &str) -> Option<String> {
+    let blob = hex::decode(hex_text).ok()?;
+    let plain = dpapi_with(&blob, false, COOKIE_ENTROPY).ok()?;
+    String::from_utf8(plain).ok()
+}
+
+#[cfg(windows)]
+fn dpapi_with(data: &[u8], protect: bool, entropy_bytes: &[u8]) -> Result<Vec<u8>, String> {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
     let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
-    let entropy = CRYPT_INTEGER_BLOB { cbData: ENTROPY.len() as u32, pbData: ENTROPY.as_ptr() as *mut u8 };
+    let entropy = CRYPT_INTEGER_BLOB { cbData: entropy_bytes.len() as u32, pbData: entropy_bytes.as_ptr() as *mut u8 };
     let mut out = CRYPT_INTEGER_BLOB::default();
     unsafe {
         let r = if protect {
@@ -308,7 +324,7 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, String> {
     }
 }
 #[cfg(not(windows))]
-fn dpapi(_data: &[u8], _protect: bool) -> Result<Vec<u8>, String> {
+fn dpapi_with(_data: &[u8], _protect: bool, _entropy: &[u8]) -> Result<Vec<u8>, String> {
     Err("password vault requires Windows".into())
 }
 

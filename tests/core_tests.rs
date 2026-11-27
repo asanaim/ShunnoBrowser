@@ -489,7 +489,8 @@ fn test_theme_mode_and_browser_args() {
     assert!(effective_dark("unknown", true)); // falls back to following Windows
     let off = browser_args(false);
     let on = browser_args(true);
-    assert!(off.starts_with("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    assert!(off.starts_with("--disable-features=msWebOOUI,msPdfOOUI"));
+    assert!(!off.contains("SmartScreen"), "WebView2 SmartScreen protection stays on");
     assert!(!off.contains("WebContentsForceDark"));
     assert!(on.starts_with(&off) && on.contains("--enable-features=WebContentsForceDark"));
     // Default settings follow the system theme and leave pages undarkened.
@@ -1344,4 +1345,24 @@ fn narrow_window_keeps_every_toolbar_button_on_screen() {
     assert!(main.contains("let w = size.width.max(1.0);"));
     assert!(ui.contains("@media (max-width: 760px)"));
     assert!(ui.contains("grid-template-columns: auto minmax(0, 1fr) auto;"));
+}
+
+#[test]
+fn download_cookies_never_reach_disk_as_plain_text() {
+    let d = include_str!("../src/downloader.rs");
+    assert!(d.contains("#[serde(default, with = \"sealed_cookie\")]"));
+    assert!(d.contains("seal_secret") && d.contains("unseal_secret"));
+    // Sealing failure stores nothing; it never falls back to the plain value.
+    assert!(d.contains("None => s.serialize_none()"));
+    // A finished download drops its cookie, in the engine and the browser native path.
+    assert!(d.matches("t.cookie = None;").count() >= 2);
+    let p = include_str!("../src/passwords.rs");
+    assert!(p.contains("CryptProtectData") && p.contains("COOKIE_ENTROPY"));
+}
+
+#[test]
+fn no_profile_button_on_the_toolbar() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(!ui.contains("id=\"profile-btn\"") && !ui.contains("profile-avatar"));
+    assert!(ui.contains("toggleDrawer('profiles'"), "profiles stay reachable from the menu");
 }

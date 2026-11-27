@@ -1054,7 +1054,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle class="dl-track" cx="10" cy="10" r="8.2"/><circle class="dl-ring" cx="10" cy="10" r="8.2" transform="rotate(-90 10 10)"/><path d="M10 2.6v14M4.7 11.6L10 16.9l5.3-5.3"/></svg>
           <span class="badge" id="dl-count"></span>
         </button>
-        <button class="tb" id="profile-btn" onclick="toggleDrawer('profiles', this)" title="Profiles"><span class="avatar" id="profile-avatar"></span></button>
         <button class="tb" id="btn-controls" onclick="toggleDrawer('controls', this)" title="Settings and more">
           <svg viewBox="0 0 20 20" fill="currentColor"><circle cx="4.6" cy="10" r="1.55"/><circle cx="10" cy="10" r="1.55"/><circle cx="15.4" cy="10" r="1.55"/></svg>
         </button>
@@ -3122,16 +3121,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function renderProfiles(state) {
     const list = state.profiles || [];
     const me = list.find(p => p.id === state.profile_id) || list[0];
-    const btn = document.getElementById('profile-btn');
-    const av = document.getElementById('profile-avatar');
-    if (me) {
-      document.documentElement.style.setProperty('--profile-accent', me.color);
-      const t = profileInitial(me.name);
-      if (av.textContent !== t) av.textContent = t;
-      btn.title = 'Profile: ' + me.name;
-    }
-    // Shown once there is more than one profile (one profile needs no switcher).
-    btn.style.display = list.length > 1 ? '' : 'none';
+    // No toolbar button: profiles are switched from the menu. The accent colour still follows the profile.
+    if (me) document.documentElement.style.setProperty('--profile-accent', me.color);
     const el = document.getElementById('profiles-list');
     const html = list.map(p => {
       const mine = me && p.id === me.id;
