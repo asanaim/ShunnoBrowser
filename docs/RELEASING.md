@@ -22,16 +22,24 @@ From then on each release's manifest is Ed25519-signed; the browser downloads th
 signed SHA-256, swaps it in (the old EXE is kept as `ShunnoBrowser.old.exe` until the next start)
 and offers **Restart to update**. A tampered manifest, EXE or download link is rejected.
 
-## 2. Code signing (removes the SmartScreen "unknown publisher" warning; paid)
+## 2. Code signing (removes the SmartScreen "unknown publisher" warning)
 
-- Microsoft Artifact Signing (about USD 10/month) currently accepts individual developers only in the
-  USA and Canada, so it is not available from Bangladesh.
-- Alternative: an OV code-signing certificate from a commercial CA (typically USD 300 to 500 per year).
-  Since 2023 these keys live in a hardware token or the CA's cloud vault, not a downloadable PFX.
-  For CI, pick a CA with a cloud signing service and replace the `Sign EXE (Authenticode)` step with
-  that CA's signing command. The current step works only if your CA issues a PFX
-  (secrets `WINDOWS_PFX_BASE64`, `WINDOWS_PFX_PASSWORD`).
+Status: the release EXE is **not** Authenticode signed. The update manifest (section 1) is signed and
+is a separate mechanism. Options, checked against Microsoft's and SignPath's pages in November 2026:
+
+| Route | Cost | Fit for this project |
+| --- | --- | --- |
+| Microsoft Artifact Signing | about USD 10 per month | Individual developers only in the USA and Canada; organizations in the USA, Canada, EU and UK. Not available from Bangladesh. |
+| SignPath Foundation | free | Requires an OSI approved open source license (no dual licensing) and a public repository. Windows then shows SignPath Foundation as the publisher. The repo's `LICENSE` is proprietary, so it does not qualify unless the license changes. Decision taken: keep the proprietary license, so this route is not used. |
+| Commercial OV certificate | roughly USD 150 to 500 per year | Works worldwide. Keys live in a hardware token or the CA's cloud vault, not a downloadable PFX. |
+
+What remains is a commercial OV certificate with a cloud signing service. The workflow's
+`Sign EXE (Authenticode)` step only works with a PFX (secrets `WINDOWS_PFX_BASE64` and
+`WINDOWS_PFX_PASSWORD`), which most CAs no longer issue. Once a CA is chosen, replace that step with the
+CA's own signing action or command; the rest of the workflow needs no change.
+
 - Signing must run before the manifest step (it changes the EXE hash); the workflow already orders it so.
+- A new publisher still shows SmartScreen warnings until the file builds reputation, even when signed.
 
 ## 3. Before each release
 
