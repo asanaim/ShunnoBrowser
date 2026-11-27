@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.34.2";
+pub const APP_VERSION: &str = "v2.34.3";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -394,7 +394,6 @@ pub struct GlobalSettings {
     pub background_media_play: bool,
     pub strip_tracking_params: bool,
     pub block_popups: bool,
-    pub drop_basket_enabled: bool,
     #[serde(default)]
     pub auto_pip_on_blur: bool,
     #[serde(default)]
@@ -465,7 +464,6 @@ impl Default for GlobalSettings {
             background_media_play: true,
             strip_tracking_params: true,
             block_popups: true,
-            drop_basket_enabled: true,
             auto_pip_on_blur: false,
             auto_clean_completed: false,
             max_concurrent_downloads: 3,

@@ -1,4 +1,4 @@
-# Shunno Browser (শূন্য ব্রাউজার) — v2.34.2
+# Shunno Browser (শূন্য ব্রাউজার) — v2.34.3
 
 **Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with native Windows TLS / SChannel).
 
@@ -13,7 +13,6 @@
 - **32-Thread HTTP Range Acceleration:** Verifies `206 Partial Content` + `Content-Range` before splitting downloads across up to **32 concurrent async Tokio streams** with live segment progress bars (`[████▓▓▒▒]`) and graceful single-stream fallback on `200 OK` servers.
 - **Duplicate Detection & Auto-Cleanup:** Detects existing active or completed files before creating duplicate tasks (offering one-click **Open** or **Download Again**), plus **🧹 Clean** and **Auto-Clean Done** switches.
 - **Trusted-Types Safe Floating Media Pill + Picture-in-Picture (`📺 PiP`):** Hovering over YouTube videos, HTML5 `<video>`/`<audio>` players, or downloadable links floats an isolated Shadow-DOM **`0↓ Download`** pill with live HTTP `HEAD`/`Range` file-size probing (`MB`/`GB`), stream quality selector, and a one-click **`📺 PiP`** button.
-- **Drag-and-Drop Floating Basket (`0↓ Drop Link`):** Drag any link or multi-line URL list onto the corner basket to start 16-thread downloads immediately.
 - **HLS (`.m3u8`) & DASH:** HLS is downloaded through FFmpeg (encrypted, byte-ranged and fMP4 streams included) with a plain segment fallback; split DASH video + audio are muxed losslessly (`-c copy`). FFmpeg is auto-installed on first use (SHA-256 verified) into `%LOCALAPPDATA%\ShunnoBrowser\bin\`, or picked up from `PATH`.
 - **YouTube via yt-dlp:** YouTube watch/shorts/live pages and `.mpd` manifests are routed to yt-dlp (auto-installed, SHA-256 verified), which merges the best video and audio into MP4 with live progress, pause and resume.
 - **Real Pause/Resume:** multi-connection and single-connection transfers resume from `.offset` sidecars; browser-native (WebView2) downloads are paused/resumed through `ICoreWebView2DownloadOperation`.

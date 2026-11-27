@@ -18,7 +18,6 @@
   const ADBLOCK_ON = SITE_FLAGS[0] === true;
   const SPONSORBLOCK_ON = SITE_FLAGS[1] === true;
   const REJECT_COOKIES_ON = SITE_FLAGS[2] === true;
-  const BASKET_ON = __SHUNNO_BASKET__;
   const BG_MEDIA_ON = __SHUNNO_BG_MEDIA__;
   const FULL_DARK_ON = __SHUNNO_FULL_DARK__;
   const IMAGES_DISABLED = SITE_FLAGS[3] === true;
@@ -711,7 +710,8 @@
         display: none;
         flex-direction: column;
         gap: 6px;
-        min-width: 300px;
+        min-width: min(300px, calc(100vw - 16px));
+        box-sizing: border-box;
         max-width: 400px;
         max-height: 320px;
         overflow-y: auto;
@@ -749,6 +749,7 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         flex: 1;
+        min-width: 0;
         font-size: 11.5px;
       }
       .go {
@@ -763,31 +764,6 @@
         flex-shrink: 0;
       }
       .go:hover { background: #30D158; color: #000; }
-      .basket {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        pointer-events: auto;
-        display: ${BASKET_ON ? 'flex' : 'none'};
-        align-items: center;
-        gap: 6px;
-        background: rgba(10, 132, 255, 0.92);
-        color: #fff;
-        border: 1.5px dashed rgba(255, 255, 255, 0.7);
-        border-radius: 14px;
-        padding: 7px 12px;
-        font-family: system-ui, "Segoe UI", sans-serif;
-        font-size: 11.5px;
-        font-weight: 700;
-        box-shadow: 0 8px 24px rgba(10, 132, 255, 0.35);
-        cursor: pointer;
-      }
-      .basket.dragover {
-        background: #30D158;
-        color: #000;
-        transform: scale(1.06);
-        border-style: solid;
-      }
     `;
     let styledViaSheet = false;
     try {
@@ -838,102 +814,13 @@
     menu.className = 'menu';
     menu.style.display = 'none';
 
-    const basket = document.createElement('div');
-    basket.className = 'basket';
-    basket.title = 'Drag & drop any link or URL here to start a 16-thread download';
-    const bIcon = document.createElement('span');
-    bIcon.textContent = '0↓';
-    const basketLabel = document.createElement('span');
-    basketLabel.textContent = 'Drop Link';
-    basket.appendChild(bIcon);
-    basket.appendChild(basketLabel);
-
     shadow.appendChild(pillWrap);
     shadow.appendChild(menu);
-    shadow.appendChild(basket);
     document.documentElement.appendChild(host);
-    window.__shunnoSetDropBasket = function(enabled) { basket.style.display = enabled ? 'flex' : 'none'; };
 
     let activeItems = [];
     let activeBaseLabel = 'Download';
     let hideTimer = null;
-
-    basket.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      basket.classList.add('dragover');
-      basketLabel.textContent = 'Release to Get!';
-    });
-    basket.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      basket.classList.remove('dragover');
-      basketLabel.textContent = 'Drop Link';
-    });
-    basket.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!e.isTrusted) return; // only a real drag by the user starts downloads
-      basket.classList.remove('dragover');
-      const dropped = (e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'))) || '';
-      const urls = dropped.split(/\r?\n/).map(s => s.trim()).filter(s => s.startsWith('http'));
-      if (urls.length > 0) {
-        urls.forEach(u => triggerNativeDownload(u, 16));
-        basketLabel.textContent = 'Queued (' + urls.length + ')!';
-        setTimeout(() => { basketLabel.textContent = 'Drop Link'; }, 1400);
-      } else {
-        basketLabel.textContent = 'Drop Link';
-      }
-    });
-    try {
-      const savedPos = JSON.parse(localStorage.getItem('shunno_basket_pos') || 'null');
-      if (savedPos && typeof savedPos.left === 'number' && typeof savedPos.top === 'number') {
-        basket.style.right = 'auto';
-        basket.style.bottom = 'auto';
-        basket.style.left = Math.min(window.innerWidth - 110, Math.max(8, savedPos.left)) + 'px';
-        basket.style.top = Math.min(window.innerHeight - 44, Math.max(8, savedPos.top)) + 'px';
-      }
-    } catch (e) {}
-
-    let basketDragging = false;
-    let basketMoved = false;
-    let dragOffX = 0;
-    let dragOffY = 0;
-
-    basket.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      basketDragging = true;
-      basketMoved = false;
-      const r = basket.getBoundingClientRect();
-      dragOffX = e.clientX - r.left;
-      dragOffY = e.clientY - r.top;
-      e.preventDefault();
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (!basketDragging) return;
-      basketMoved = true;
-      const nx = Math.min(window.innerWidth - 110, Math.max(8, e.clientX - dragOffX));
-      const ny = Math.min(window.innerHeight - 44, Math.max(8, e.clientY - dragOffY));
-      basket.style.right = 'auto';
-      basket.style.bottom = 'auto';
-      basket.style.left = nx + 'px';
-      basket.style.top = ny + 'px';
-    }, { passive: true });
-
-    window.addEventListener('mouseup', () => {
-      if (!basketDragging) return;
-      basketDragging = false;
-      if (basketMoved) {
-        const r = basket.getBoundingClientRect();
-        try {
-          localStorage.setItem('shunno_basket_pos', JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) }));
-        } catch (e) {}
-      }
-    });
-
-    basket.addEventListener('click', () => {
-      if (!basketMoved) postSecure('KEY:j');
-    });
 
     refreshFloatingPill = function(url, sizeLabel) {
       if (activeItems.length === 1 && activeItems[0].url === url && pillWrap.style.display !== 'none') {
@@ -986,6 +873,8 @@
         pillWrap.style.display = 'none';
         return;
       }
+      // A second click on the open button closes the list.
+      if (menu.style.display === 'flex') { menu.style.display = 'none'; return; }
       while (menu.firstChild) menu.removeChild(menu.firstChild);
 
       const hdr = document.createElement('div');
@@ -1026,9 +915,21 @@
         menu.appendChild(row);
       });
 
-      menu.style.left = pillWrap.style.left;
-      menu.style.top = (parseFloat(pillWrap.style.top) + 36) + 'px';
+      // Inside the window whatever its size: shrink to fit, slide left of the pill's edge, flip above.
+      const vw = window.innerWidth, vh = window.innerHeight;
+      menu.style.maxWidth = Math.min(400, Math.max(120, vw - 16)) + 'px';
+      menu.style.maxHeight = Math.min(320, Math.max(120, vh - 16)) + 'px';
+      menu.style.visibility = 'hidden';
       menu.style.display = 'flex';
+      const mr = menu.getBoundingClientRect();
+      const pillTop = parseFloat(pillWrap.style.top) || 0;
+      let ml = parseFloat(pillWrap.style.left) || 8;
+      ml = Math.max(8, Math.min(ml, vw - mr.width - 8));
+      let mt = pillTop + 36;
+      if (mt + mr.height > vh - 8) mt = Math.max(8, pillTop - mr.height - 6);
+      menu.style.left = ml + 'px';
+      menu.style.top = mt + 'px';
+      menu.style.visibility = 'visible';
     });
 
     // Items offered for one media element. Streaming players (blob:/MSE, HLS, DASH) have no direct

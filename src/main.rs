@@ -958,7 +958,6 @@ fn build_content_init_script(
         .replace("__SHUNNO_IPC_TOKEN__", ipc_token)
         .replace("__SHUNNO_POLICY_TABLE__", &state::page_policy_table_json())
         .replace("__SHUNNO_POLICY_DEFAULT__", &default_flags)
-        .replace("__SHUNNO_BASKET__", if global.drop_basket_enabled { "true" } else { "false" })
         .replace("__SHUNNO_BG_MEDIA__", if global.background_media_play { "true" } else { "false" })
         .replace("__SHUNNO_FULL_DARK__", if global.full_dark_mode { "true" } else { "false" })
         .replace("__SHUNNO_PEEK__", if global.peek_links { "true" } else { "false" })
@@ -1044,6 +1043,10 @@ fn now_epoch_secs() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+/// Replaces the built in error page when there is no connection (no Edge logo, no game).
+#[cfg(windows)]
+const OFFLINE_PAGE_JS: &str = include_str!("../assets/js/offline_page.js");
 
 #[cfg(windows)]
 fn suspend_tab_webview(webview: &WebView) {
@@ -2314,6 +2317,37 @@ fn attach_native_webview2_hooks(
             }));
             let mut perm_token = Default::default();
             let _ = core.add_PermissionRequested(&perm_handler, &mut perm_token);
+        }
+
+        // 2c. No connection: WebView2's own error page carries the Edge logo. Replace it, once the
+        //     navigation has failed for a network reason, with a plain page. Certificate and other
+        //     errors keep the built in page (it is the warning for those).
+        {
+            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+            use webview2_com::{ExecuteScriptCompletedHandler, NavigationCompletedEventHandler};
+            let nav_handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+                let mut ok = windows::Win32::Foundation::BOOL(1);
+                let mut status = COREWEBVIEW2_WEB_ERROR_STATUS::default();
+                let _ = args.IsSuccess(&mut ok);
+                if ok.as_bool() || args.WebErrorStatus(&mut status).is_err() {
+                    return Ok(());
+                }
+                let offline = status == COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED
+                    || status == COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED
+                    || status == COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT
+                    || status == COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE
+                    || status == COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT
+                    || status == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET;
+                if offline {
+                    let js = windows::core::HSTRING::from(OFFLINE_PAGE_JS);
+                    let done = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+                    let _ = sender.ExecuteScript(&js, &done);
+                }
+                Ok(())
+            }));
+            let mut nav_token = Default::default();
+            let _ = core.add_NavigationCompleted(&nav_handler, &mut nav_token);
         }
 
         // 3. Native WebView2 Download Engine Bridge (ICoreWebView2_4::add_DownloadStarting)
@@ -6613,18 +6647,6 @@ fn main() -> wry::Result<()> {
                         }
                         "download_takeover" => global_settings.download_takeover = !global_settings.download_takeover,
                         "little_for_links" => global_settings.little_for_links = !global_settings.little_for_links,
-                        "drop_basket" => {
-                            global_settings.drop_basket_enabled = !global_settings.drop_basket_enabled;
-                            let js = format!(
-                                "if (window.__shunnoSetDropBasket) window.__shunnoSetDropBasket({});",
-                                global_settings.drop_basket_enabled
-                            );
-                            for t in &tabs {
-                                if t.url != "shunno://newtab" {
-                                    let _ = t.webview.evaluate_script(&js);
-                                }
-                            }
-                        }
                         "bg_audio" => global_settings.background_media_play = !global_settings.background_media_play,
                         "auto_pip" => global_settings.auto_pip_on_blur = !global_settings.auto_pip_on_blur,
                         "auto_clean" => {
