@@ -1,3 +1,20 @@
+## v2.37.0
+
+### Removed
+- The profile feature: the Profiles button in the menu, the Profiles panel, New Profile, the palette entries and the commands behind them. The browser now runs as its one default profile. Data of profiles created earlier is left on disk untouched (`%LOCALAPPDATA%\\ShunnoBrowser\\Profiles`), and `--profile=` still opens one.
+
+### Changed
+- The Downloads list is a compact popover (300 px wide, was 400 px); the floating download pill menu is at most 280 px wide and 260 px tall (was 400 by 320).
+
+### Security (from the 2.36.0 audit)
+- A `cookies.txt` left behind by a crashed yt-dlp job is deleted at the next start. Documented in docs/SECURITY.md.
+- Tests for the sealed cookie queue: no plain text in the saved queue, old plain queues still load, an unreadable sealed value is dropped, and (run by CI on Windows) a real DPAPI round trip.
+- README states the WebView2 runtime requirement and the limits that follow from it.
+- Not adopted: signing the executable (needs a code signing certificate the project does not have; the release workflow already signs when one is configured).
+
+### Not verified
+- Nothing ran on Windows here; the DPAPI round trip test runs in CI.
+
 ## v2.36.0
 
 ### Security

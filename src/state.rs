@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.36.0";
+pub const APP_VERSION: &str = "v2.37.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -600,29 +600,6 @@ pub fn sanitize_profiles(list: Vec<Profile>) -> Vec<Profile> {
     out
 }
 
-/// A new id from a name ("Work Stuff" -> "work-stuff"), unique within `taken`.
-pub fn new_profile_id(name: &str, taken: &[Profile]) -> String {
-    let mut slug: String = name
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    slug.truncate(24);
-    let slug = slug.trim_matches('-').to_string();
-    let base = if slug.is_empty() || slug == DEFAULT_PROFILE { "profile".to_string() } else { slug };
-    let mut id = base.clone();
-    let mut n = 2;
-    while taken.iter().any(|p| p.id == id) {
-        id = format!("{base}-{n}");
-        n += 1;
-    }
-    id
-}
-
 /// Where links opened from other apps go: "last" (the profile used most recently) or a profile id.
 pub const LINKS_LAST: &str = "last";
 
@@ -719,11 +696,6 @@ impl BrowserStorage {
             .filter(|t| t == LINKS_LAST || valid_profile_id(t))
             .unwrap_or_else(|| LINKS_LAST.to_string())
     }
-    pub fn save_links_profile(v: &str) {
-        if v == LINKS_LAST || valid_profile_id(v) {
-            let _ = fs::write(Self::shared_data_dir().join("links_profile.txt"), v);
-        }
-    }
     /// The profile whose window was focused most recently.
     pub fn load_last_profile() -> Option<String> {
         fs::read_to_string(Self::shared_data_dir().join("last_profile.txt")).ok().map(|t| t.trim().to_string()).filter(|t| valid_profile_id(t))
@@ -733,11 +705,6 @@ impl BrowserStorage {
         if fs::read_to_string(&p).ok().as_deref().map(str::trim) != Some(id) {
             let _ = fs::write(p, id);
         }
-    }
-
-    pub fn save_profiles(list: &[Profile]) {
-        let path = Self::shared_data_dir().join("profiles.json");
-        save_json(&path, list);
     }
 
     fn custom_dl_lock() -> &'static Mutex<Option<String>> {

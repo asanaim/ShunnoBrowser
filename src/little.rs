@@ -65,12 +65,6 @@ pub fn profile_running(_profile: &str) -> bool {
     false
 }
 
-/// Start (or bring forward) a profile's own Shunno window.
-pub fn launch_profile(profile: &str) -> bool {
-    let Ok(exe) = std::env::current_exe() else { return false };
-    std::process::Command::new(exe).arg(format!("--profile={profile}")).spawn().is_ok()
-}
-
 fn hwnd_file() -> std::path::PathBuf {
     crate::state::BrowserStorage::app_data_dir().join("instance.hwnd")
 }

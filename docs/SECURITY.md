@@ -23,7 +23,8 @@
    `file:///` or a local page path; never `javascript:` or internal schemes.
 13. **WebView2 SmartScreen stays on.** `browser_args` does not disable `msSmartScreenProtection`, so navigation protection is Microsoft's default. (v2.36.0; earlier builds disabled it.)
 14. **Download session cookies.** The cookies a download needs are kept in memory, written to `downloads_queue.json` only sealed with DPAPI (current Windows user, app specific entropy), and dropped when the download completes. If sealing fails nothing is stored, so a paused download may need to be restarted from its page after a restart. A queue file from an older version is read once and sealed on the next save. Malware running as the same Windows user can still use DPAPI, as with the password vault.
-15. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
+15. **yt-dlp cookie file.** For a login gated site yt-dlp is given the tab's cookies as `parts/<id>_ytdlp/cookies.txt` inside the user's own `%LOCALAPPDATA%` folder. It is deleted when yt-dlp ends, and any file left by a crash is deleted at the next start. While the job runs it is readable by processes of the same Windows user.
+16. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
 
 ## Known dependency advisories (v2.36.0)
 
