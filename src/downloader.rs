@@ -47,6 +47,25 @@ pub fn split_route_prefix(raw: &str) -> (Option<&'static str>, &str) {
     (None, raw)
 }
 
+mod sealed_cookie {
+    use serde::{Deserialize, Deserializer, Serializer};
+    const PREFIX: &str = "dpapi:";
+    pub fn serialize<S: Serializer>(v: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+        match v.as_deref().and_then(crate::passwords::seal_secret) {
+            Some(h) => s.serialize_some(&format!("{PREFIX}{h}")),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+        let o = Option::<String>::deserialize(d)?;
+        // A queue file from an older version holds plain text; it is read once and sealed on the next save.
+        Ok(o.and_then(|t| match t.strip_prefix(PREFIX) {
+            Some(h) => crate::passwords::unseal_secret(h),
+            None => Some(t),
+        }))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DownloadTask {
     pub id: u64,
@@ -60,6 +79,9 @@ pub struct DownloadTask {
     pub category: String,
     pub supports_ranges: bool,
     pub referer: Option<String>,
+    /// Session cookies for this download. Kept in memory as is; written to the queue file only
+    /// DPAPI sealed, and dropped once the download completes.
+    #[serde(default, with = "sealed_cookie")]
     pub cookie: Option<String>,
     pub sha256: Option<String>,
     pub saved_path: Option<String>,
@@ -645,6 +667,7 @@ impl NativeDownloadEngine {
                 t.speed_bps = 0;
                 if ok {
                     t.status = "COMPLETED".to_string();
+                    t.cookie = None;
                     if let Some(sz) = final_size {
                         t.total_bytes = sz as i64;
                         t.downloaded_bytes = sz;
@@ -1897,6 +1920,7 @@ fn mark_completed(ctx: &JobCtx, task_id: u64, dest: &Path, sha: Option<String>, 
             t.total_bytes = size as i64;
             t.downloaded_bytes = size;
             t.status = "COMPLETED".to_string();
+            t.cookie = None;
             t.speed_bps = 0;
             t.sha256 = sha;
             t.saved_path = Some(dest.to_string_lossy().to_string());

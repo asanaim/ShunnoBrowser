@@ -1,3 +1,17 @@
+## v2.36.0
+
+### Security
+- WebView2 SmartScreen navigation protection is no longer disabled.
+- Download session cookies are no longer stored in plain text in `downloads_queue.json`: they are DPAPI sealed, and dropped when the download completes. An old plain text queue is converted on the next save. After a restart a paused download that needs a login may have to be restarted from its page.
+- `url` updated to 2.5.9.
+- `zip` 2.6.1 advisories reviewed: no vulnerable call path; documented in docs/SECURITY.md.
+
+### Removed
+- The profile button on the toolbar. Profiles remain in the menu.
+
+### Not verified
+- Nothing ran on Windows; DPAPI sealing and SmartScreen behaviour were checked only by compiling and by source tests. The release executable is still not code signed.
+
 ## v2.35.0
 
 ### Fixed

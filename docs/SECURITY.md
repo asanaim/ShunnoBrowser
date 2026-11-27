@@ -21,7 +21,14 @@
    playlist may not point the engine at local addresses.
 12. **Links from other programs** (second launch, `WM_COPYDATA`) are accepted only as http(s),
    `file:///` or a local page path; never `javascript:` or internal schemes.
-13. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
+13. **WebView2 SmartScreen stays on.** `browser_args` does not disable `msSmartScreenProtection`, so navigation protection is Microsoft's default. (v2.36.0; earlier builds disabled it.)
+14. **Download session cookies.** The cookies a download needs are kept in memory, written to `downloads_queue.json` only sealed with DPAPI (current Windows user, app specific entropy), and dropped when the download completes. If sealing fails nothing is stored, so a paused download may need to be restarted from its page after a restart. A queue file from an older version is read once and sealed on the next save. Malware running as the same Windows user can still use DPAPI, as with the password vault.
+15. **Not yet done.** Release binaries are not Authenticode-signed; SmartScreen will warn until a code-signing certificate is added to CI.
+
+## Known dependency advisories (v2.36.0)
+
+* `url` is 2.5.9 (fixes the `Url::origin()` stack overflow advisory).
+* `zip` is 2.6.1, the last 2.x release. Open advisories concern extraction APIs and AES entries; Shunno extracts with its own bounded code (`enclosed_name()`, size limits) and does not call them. A move to the 9.x line is an API change and is not done.
 
 ## Password vault (v2.17.0)
 
