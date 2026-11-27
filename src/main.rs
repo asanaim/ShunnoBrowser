@@ -919,8 +919,10 @@ fn set_explicit_app_user_model_id() {
 #[cfg(not(windows))]
 fn set_explicit_app_user_model_id() {}
 
+/// One embedded copy of the icon, shared by the window icon loader and the DPI aware taskbar icons.
+const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
+
 fn load_embedded_window_icon() -> Option<Icon> {
-    const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
     if ICO_BYTES.len() < 22 {
         return None;
     }
@@ -3250,7 +3252,6 @@ fn install_native_win32_window_features(window: &Window, chrome_wv: &WebView) {
         {
             use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
             use windows::Win32::UI::WindowsAndMessaging::{SM_CXICON, SM_CXSMICON};
-            const ICO_BYTES: &[u8] = include_bytes!("../assets/app.ico");
             let dpi = GetDpiForWindow(hwnd).max(96);
             let entries: Vec<(i32, &[u8])> = (|| {
                 let count = u16::from_le_bytes([*ICO_BYTES.get(4)?, *ICO_BYTES.get(5)?]) as usize;
