@@ -216,7 +216,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tb.open { background: var(--input-bg); opacity: 1; }
   .tb.marked { color: var(--blue); opacity: 1; }
   #btn-bookmark > svg { width: 16px; height: 16px; }
-  #btn-downloads > svg { width: 20px; height: 20px; }
+  #btn-downloads > svg { width: 19px; height: 19px; }
   .tb > svg { width: 18px; height: 18px; display: block; }
   .tb > img { width: 20px; height: 20px; border-radius: 5px; display: block; }
   .tb .ph { width: 20px; height: 20px; }
@@ -371,6 +371,17 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     height: 46px;
   }
   .nav-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  /* Narrow windows: the address field gives way, never the buttons at either end (window controls,
+     Bookmark, Downloads, Menu stay on screen down to the window's minimum width). */
+  @media (max-width: 760px) {
+    .nav-bar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 5px 8px; }
+    .nav-group.right .ext-bar { display: none; }
+  }
+  @media (max-width: 520px) {
+    .nav-bar { gap: 4px; padding: 5px 6px; }
+    .nav-group { gap: 0; }
+    .tab-add#btn-reopen-tab { display: none !important; }
+  }
   .nav-group.left { justify-self: start; }
   .nav-group.right { justify-self: end; }
   .nav-btn {
@@ -1013,7 +1024,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 3.6L12.2 9l-5.4 5.4"/></svg>
         </button>
         <button class="tb" id="btn-reload" onclick="send('RELOAD')" title="Reload (Ctrl+R)">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8A5.2 5.2 0 1 1 11.6 4.3"/><path d="M13.3 2.4v2.9h-2.9"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
       </div>
 

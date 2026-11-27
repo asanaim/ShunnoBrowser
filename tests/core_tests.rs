@@ -1322,7 +1322,7 @@ fn reload_sits_beside_forward_and_toolbar_glyphs_match() {
     let field = ui.find("class=\"firefox-capsule\"").unwrap();
     assert!(fwd < rel && rel < field, "Reload follows Forward, before the address field");
     assert!(ui.contains("<button class=\"tb\" id=\"btn-reload\""));
-    assert!(ui.contains("#btn-downloads > svg { width: 20px; height: 20px; }"));
+    assert!(ui.contains("#btn-downloads > svg { width: 19px; height: 19px; }"));
 }
 
 #[test]
@@ -1331,4 +1331,17 @@ fn youtube_recovers_from_a_playback_error_by_itself() {
     assert!(js.contains("const YT_SAFE_KEY = 'shunno_yt_safe'"));
     assert!(js.matches("if (isYouTube && !ytSafe && (ADBLOCK_ON || SPONSORBLOCK_ON))").count() == 2);
     assert!(js.contains("YT_ERROR_RE") && js.contains("location.reload()"));
+}
+
+#[test]
+fn narrow_window_keeps_every_toolbar_button_on_screen() {
+    let main = include_str!("../src/main.rs");
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(main.contains("const MIN_WINDOW_W: f64 = 420.0;"));
+    assert!(main.matches("with_min_inner_size(LogicalSize::new(MIN_WINDOW_W, MIN_WINDOW_H))").count() >= 2);
+    // No floor above the real window size: it pushed the toolbar view past the window edge.
+    assert!(!main.contains("size.width.max(400.0)"));
+    assert!(main.contains("let w = size.width.max(1.0);"));
+    assert!(ui.contains("@media (max-width: 760px)"));
+    assert!(ui.contains("grid-template-columns: auto minmax(0, 1fr) auto;"));
 }
