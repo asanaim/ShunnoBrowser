@@ -40,6 +40,9 @@ use state::{
 };
 
 const CHROME_BAR_HEIGHT: f64 = 112.0;
+/// Smallest browser window. Below this the toolbar can no longer show its buttons.
+const MIN_WINDOW_W: f64 = 420.0;
+const MIN_WINDOW_H: f64 = 320.0;
 
 /// Actual toolbar height reported by the chrome UI (`CHROME_H:`), as f64 bits. The bookmarks bar is
 /// shown only on the New Tab page, and the maximized tab strip is taller, so the height varies.
@@ -2742,7 +2745,7 @@ fn create_tab_webview(
         .with_web_context(web_context)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, CHROME_BAR_HEIGHT).into(),
-            size: LogicalSize::new(size.width.max(400.0), content_h).into(),
+            size: LogicalSize::new(size.width.max(1.0), content_h).into(),
         })
         // No URL here: the page script is installed first (below), then the first page is opened.
         // Private tabs get a separate in-memory WebView2 InPrivate session: no shared cookies, storage, cache or passwords.
@@ -3670,13 +3673,16 @@ fn layout_webviews(
     is_fs: bool,
 ) {
     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-    let w = size.width.max(400.0);
-    let h = size.height.max(300.0);
+    // The real window size, never a larger one: a floor here pushed the toolbar view past the
+    // window edge (controls cut off, right edge unreachable). The window's own minimum is
+    // MIN_WINDOW_W by MIN_WINDOW_H.
+    let w = size.width.max(1.0);
+    let h = size.height.max(1.0);
     let is_max = window.is_maximized() || is_fs;
     let grip = if is_max { 0.0 } else { 3.0 };
 
     let top_bar_h = if is_fs { 0.0 } else { chrome_bar_height() };
-    let inner_w = (w - grip * 2.0).max(200.0);
+    let inner_w = (w - grip * 2.0).max(1.0);
     let inner_h = (h - grip).max(200.0);
     let content_h = (inner_h - top_bar_h).max(80.0);
 
@@ -3957,6 +3963,7 @@ fn main() -> wry::Result<()> {
         .with_decorations(false)
         .with_window_icon(load_embedded_window_icon())
         .with_inner_size(LogicalSize::new(1240.0, 780.0))
+        .with_min_inner_size(LogicalSize::new(MIN_WINDOW_W, MIN_WINDOW_H))
         .build(&event_loop)
         .unwrap();
 
@@ -4472,7 +4479,8 @@ fn main() -> wry::Result<()> {
                     .with_title(window_title_for_profile(&BrowserStorage::load_profiles()))
                     .with_decorations(false)
                     .with_window_icon(load_embedded_window_icon())
-                    .with_inner_size(LogicalSize::new(size.width.max(640.0), size.height.max(420.0)));
+                    .with_inner_size(LogicalSize::new(size.width.max(640.0), size.height.max(420.0)))
+                    .with_min_inner_size(LogicalSize::new(MIN_WINDOW_W, MIN_WINDOW_H));
                 let pos: Option<(f64, f64)> = $pos;
                 match pos {
                     Some((x, y)) => wb = wb.with_position(tao::dpi::PhysicalPosition::new(x, y)),

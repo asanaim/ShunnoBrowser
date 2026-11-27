@@ -1,3 +1,14 @@
+## v2.35.0
+
+### Fixed
+- Narrow windows: the window had no minimum size and the layout never went below 400 px, so under that width the toolbar view stuck out past the window edge. Minimize, Maximize, Close, Bookmark, Downloads and Menu were cut off and the right edge could not be grabbed for resizing. The window now has a minimum size of 420 by 320 px, the layout uses the real window size, and below 760 px the address field shrinks while all buttons stay visible (extension icons are hidden below 760 px, the Reopen Tab button below 520 px).
+- The Downloads list and the other popovers always fit inside the window width.
+- The Downloads arrow is sized to match the Bookmark icon.
+- The Reload icon was redrawn as a clean circular arrow.
+
+### Not verified
+- Nothing ran on Windows/WebView2. Narrow layouts were checked in a browser at 420, 480, 560, 700 and 1000 px wide; the minimum window size and the resize border depend on Windows and were checked only by compiling.
+
 ## v2.34.4
 
 ### Changed
