@@ -746,10 +746,10 @@
         display: none;
         flex-direction: column;
         gap: 6px;
-        min-width: min(300px, calc(100vw - 16px));
+        min-width: min(220px, calc(100vw - 16px));
         box-sizing: border-box;
-        max-width: 400px;
-        max-height: 320px;
+        max-width: 280px;
+        max-height: 260px;
         overflow-y: auto;
         background: rgba(20, 20, 24, 0.97);
         color: #fff;
@@ -953,8 +953,8 @@
 
       // Inside the window whatever its size: shrink to fit, slide left of the pill's edge, flip above.
       const vw = window.innerWidth, vh = window.innerHeight;
-      menu.style.maxWidth = Math.min(400, Math.max(120, vw - 16)) + 'px';
-      menu.style.maxHeight = Math.min(320, Math.max(120, vh - 16)) + 'px';
+      menu.style.maxWidth = Math.min(280, Math.max(120, vw - 16)) + 'px';
+      menu.style.maxHeight = Math.min(260, Math.max(120, vh - 16)) + 'px';
       menu.style.visibility = 'hidden';
       menu.style.display = 'flex';
       const mr = menu.getBoundingClientRect();

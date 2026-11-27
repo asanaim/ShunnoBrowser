@@ -653,10 +653,6 @@ fn profiles_ids_dirs_and_sanitizing() {
     assert_eq!(list[1].name, "Work");
     assert_eq!(list[2].color, PROFILE_COLORS[0]);
 
-    assert_eq!(new_profile_id("Work Stuff!", &list), "work-stuff");
-    assert_eq!(new_profile_id("Work", &list), "work-2");
-    assert_eq!(new_profile_id("কাজ", &list), "profile");
-    assert_eq!(new_profile_id("Default", &list), "profile");
 }
 
 #[test]
@@ -1300,7 +1296,7 @@ fn download_pill_menu_fits_the_window_and_closes_on_second_click() {
     let js = include_str!("../assets/js/content_guard.js");
     assert!(!js.contains("basket") && !js.contains("Drop Link"), "the Drop Link basket is gone");
     assert!(js.contains("A second click on the open button closes the list."));
-    assert!(js.contains("menu.style.maxWidth = Math.min(400") && js.contains("pillTop - mr.height - 6"));
+    assert!(js.contains("menu.style.maxWidth = Math.min(280") && js.contains("pillTop - mr.height - 6"));
     assert!(!include_str!("../src/main.rs").contains("__SHUNNO_BASKET__"));
 }
 
@@ -1361,8 +1357,18 @@ fn download_cookies_never_reach_disk_as_plain_text() {
 }
 
 #[test]
-fn no_profile_button_on_the_toolbar() {
+fn the_profile_feature_is_removed() {
     let ui = include_str!("../src/ui_chrome.rs");
     assert!(!ui.contains("id=\"profile-btn\"") && !ui.contains("profile-avatar"));
-    assert!(ui.contains("toggleDrawer('profiles'"), "profiles stay reachable from the menu");
+    assert!(!ui.contains("panel-profiles") && !ui.contains("PROFILE_NEW") && !ui.contains("profileForm"), "the profile feature is gone from the UI");
+    let main = include_str!("../src/main.rs");
+    assert!(!main.contains("PROFILE_NEW:") && !main.contains("PROFILE_DELETE:"), "and from the command handlers");
+}
+
+#[test]
+fn download_popovers_are_compact() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    assert!(ui.contains(".floating-sheet[data-panel=\"downloads\"] { width: 300px; }"));
+    let js = include_str!("../assets/js/content_guard.js");
+    assert!(js.contains("max-width: 280px;") && js.contains("Math.min(280, Math.max(120, vw - 16))"));
 }

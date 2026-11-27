@@ -1,4 +1,4 @@
-# Shunno Browser (শূন্য ব্রাউজার) — v2.36.0
+# Shunno Browser (শূন্য ব্রাউজার) — v2.37.0
 
 **Shunno Browser** is a lightweight, fast desktop web browser and multi-threaded download manager for Windows 10 & 11 built in pure **Rust** (`tao` + `wry` Edge WebView2 + `tokio` + `reqwest` with native Windows TLS / SChannel).
 
@@ -37,6 +37,13 @@
 - **`Ctrl + R`** — Reload Page
 - **`Esc`** — Close Side Panel
 
+
+## Requirements and limits
+
+- Windows 10 or 11, 64 bit. The Microsoft Edge WebView2 Runtime must be installed (it is not bundled; Windows 11 and current Windows 10 installs normally have it).
+- Pages are rendered by the installed Edge WebView2 engine, so site compatibility, updates and extension support follow that engine. Shunno is not an independent engine, and extension support is limited to what WebView2 offers.
+- Bookmarks, passwords and history are stored on this PC only; there is no account sync.
+- The release executable is not code signed, so Windows SmartScreen may warn on first run. The auto update manifest is signed and verified separately.
 
 ## License
 Free to use. Proprietary, closed source: Copyright (c) 2026 Sayed Naim. All rights reserved. The source is visible for transparency; it is not open source. See `LICENSE`.

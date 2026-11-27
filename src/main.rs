@@ -391,11 +391,6 @@ fn window_title_for_profile(list: &[state::Profile]) -> String {
         _ => "Shunno Browser".to_string(),
     }
 }
-#[derive(serde::Deserialize)]
-struct ProfileForm {
-    name: String,
-    color: String,
-}
 
 // ---------------------------------------------------------------- Extensions (WebView2 profile)
 thread_local! {
@@ -6307,9 +6302,6 @@ fn main() -> wry::Result<()> {
                     let _ = proxy.send_event(AppEvent::ToggleFullscreen);
                 } else if cmd.starts_with("DRAWER_OPEN:") {
                     drawer_open = true;
-                    if cmd == "DRAWER_OPEN:profiles" {
-                        refresh_profiles();
-                    }
                     if cmd == "DRAWER_OPEN:extensions" {
                         ext_refresh(&chrome_wv, proxy.clone());
                     }
@@ -7513,49 +7505,6 @@ fn main() -> wry::Result<()> {
                             }
                         }
                     }
-                } else if let Some(id) = cmd.strip_prefix("PROFILE_OPEN:") {
-                    // Each profile is its own window; an open one comes forward (single instance per profile).
-                    if id != state::profile_id() && refresh_profiles().iter().any(|p| p.id == id) {
-                        little::launch_profile(id);
-                    }
-                } else if let Some(json) = cmd.strip_prefix("PROFILE_NEW:") {
-                    if let Ok(f) = serde_json::from_str::<ProfileForm>(json) {
-                        let mut list = BrowserStorage::load_profiles();
-                        let id = state::new_profile_id(&f.name, &list);
-                        list.push(state::Profile { id: id.clone(), name: f.name, color: f.color });
-                        let list = state::sanitize_profiles(list);
-                        if list.iter().any(|p| p.id == id) {
-                            BrowserStorage::save_profiles(&list);
-                            little::launch_profile(&id);
-                        }
-                        refresh_profiles();
-                    }
-                } else if let Some(arg) = cmd.strip_prefix("PROFILE_EDIT:") {
-                    if let Some((id, json)) = arg.split_once('|') {
-                        if let Ok(f) = serde_json::from_str::<ProfileForm>(json) {
-                            let mut list = BrowserStorage::load_profiles();
-                            if let Some(p) = list.iter_mut().find(|p| p.id == id) {
-                                p.name = f.name;
-                                p.color = f.color;
-                            }
-                            let list = state::sanitize_profiles(list);
-                            BrowserStorage::save_profiles(&list);
-                            window.set_title(&window_title_for_profile(&list));
-                            refresh_profiles();
-                        }
-                    }
-                } else if let Some(v) = cmd.strip_prefix("PROFILE_LINKS:") {
-                    BrowserStorage::save_links_profile(v);
-                    refresh_profiles();
-                } else if let Some(id) = cmd.strip_prefix("PROFILE_DELETE:") {
-                    // Only a closed, non-default profile other than this one. Its folder is deleted.
-                    if state::valid_profile_id(id) && id != state::DEFAULT_PROFILE && id != state::profile_id() && !little::profile_running(id) {
-                        let mut list = BrowserStorage::load_profiles();
-                        list.retain(|p| p.id != id);
-                        BrowserStorage::save_profiles(&list);
-                        let _ = fs::remove_dir_all(state::profile_dir_in(&BrowserStorage::shared_data_dir(), id));
-                    }
-                    refresh_profiles();
                 } else if let Some(arg) = cmd.strip_prefix("PERM_DECIDE:") {
                     // PERM_DECIDE:<id>|allow|block
                     if let Some((id, d)) = arg.split_once('|') {

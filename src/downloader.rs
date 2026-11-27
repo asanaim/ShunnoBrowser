@@ -47,6 +47,19 @@ pub fn split_route_prefix(raw: &str) -> (Option<&'static str>, &str) {
     (None, raw)
 }
 
+/// Removes `cookies.txt` from every `*_ytdlp` job folder under `parts`; returns how many were removed.
+fn purge_cookie_files_in(parts: &Path) -> usize {
+    let Ok(rd) = fs::read_dir(parts) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let is_job_dir = e.file_name().to_string_lossy().ends_with("_ytdlp") && e.path().is_dir();
+        if is_job_dir && fs::remove_file(e.path().join("cookies.txt")).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 mod sealed_cookie {
     use serde::{Deserialize, Deserializer, Serializer};
     const PREFIX: &str = "dpapi:";
@@ -873,7 +886,14 @@ impl NativeDownloadEngine {
         BrowserStorage::app_data_dir().join("downloads_queue.json")
     }
 
+    /// A yt-dlp job writes the tab's session cookies to `parts/<id>_ytdlp/cookies.txt` and removes the
+    /// file when it ends. A crash or forced shutdown can leave it behind, so every start removes any left.
+    pub fn purge_stale_cookie_files() -> usize {
+        purge_cookie_files_in(&Self::parts_dir())
+    }
+
     fn load_queue() -> Vec<DownloadTask> {
+        Self::purge_stale_cookie_files();
         // A damaged queue file is moved aside (not silently replaced by an empty list on the next save).
         if let Some(mut items) = crate::state::load_json::<Vec<DownloadTask>>(&Self::queue_file_path()) {
             {
@@ -2755,4 +2775,61 @@ fn newest_file_since(dir: &Path, since: SystemTime) -> Option<PathBuf> {
         })
         .max_by_key(|(m, _)| *m)
         .map(|(_, p)| p)
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::*;
+
+    fn task_json(cookie: &str) -> String {
+        format!(r#"{{"id":1,"url":"https://a.example/b","file_name":"b","total_bytes":1,"downloaded_bytes":0,"status":"PAUSED","speed_bps":0,"threads":1,"category":"x","supports_ranges":true,"referer":null,"cookie":{cookie},"sha256":null,"saved_path":null,"error_message":null,"segment_map":""}}"#)
+    }
+
+    #[test]
+    fn plain_cookie_never_reaches_the_queue_file() {
+        let t: DownloadTask = serde_json::from_str(&task_json(r#""sid=SECRET""#)).unwrap();
+        assert_eq!(t.cookie.as_deref(), Some("sid=SECRET"), "an old plain queue still loads");
+        let out = serde_json::to_string(&t).unwrap();
+        assert!(!out.contains("SECRET"), "plain text on disk: {out}");
+    }
+
+    #[test]
+    fn a_cookie_that_cannot_be_unsealed_is_dropped() {
+        let t: DownloadTask = serde_json::from_str(&task_json(r#""dpapi:00ff00""#)).unwrap();
+        assert_eq!(t.cookie, None);
+        let t: DownloadTask = serde_json::from_str(&task_json(r#""dpapi:not hex""#)).unwrap();
+        assert_eq!(t.cookie, None);
+    }
+
+    /// DPAPI round trip: only meaningful (and only possible) on Windows, which CI runs.
+    #[cfg(windows)]
+    #[test]
+    fn sealed_cookie_round_trips_through_the_queue_file() {
+        let t: DownloadTask = serde_json::from_str(&task_json(r#""sid=SECRET; other=VALUE""#)).unwrap();
+        let out = serde_json::to_string(&t).unwrap();
+        assert!(!out.contains("SECRET") && !out.contains("VALUE"));
+        assert!(out.contains("\"cookie\":\"dpapi:"));
+        let back: DownloadTask = serde_json::from_str(&out).unwrap();
+        assert_eq!(back.cookie.as_deref(), Some("sid=SECRET; other=VALUE"));
+    }
+
+    /// Where sealing is impossible nothing is stored (not the plain value).
+    #[cfg(not(windows))]
+    #[test]
+    fn without_dpapi_no_cookie_is_stored() {
+        let t: DownloadTask = serde_json::from_str(&task_json(r#""sid=SECRET""#)).unwrap();
+        assert!(serde_json::to_string(&t).unwrap().contains(r#""cookie":null"#));
+    }
+
+    #[test]
+    fn leftover_ytdlp_cookie_files_are_removed_at_start() {
+        let dir = std::env::temp_dir().join(format!("shunno_cookie_purge_{}", std::process::id()));
+        let job = dir.join("7_ytdlp");
+        fs::create_dir_all(&job).unwrap();
+        fs::write(job.join("cookies.txt"), "x").unwrap();
+        fs::write(job.join("keep.part"), "y").unwrap();
+        assert_eq!(purge_cookie_files_in(&dir), 1);
+        assert!(!job.join("cookies.txt").exists() && job.join("keep.part").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

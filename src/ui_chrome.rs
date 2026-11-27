@@ -205,9 +205,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .space-pill:hover { background: color-mix(in srgb, var(--space-accent, #0A84FF) 24%, transparent); }
   .space-pill .ic { font-size: 13px; line-height: 1; }
   .space-pill .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Profiles: a round avatar in the toolbar, coloured like Safari's profile badge. */
   /* Toolbar buttons, Safari style: one size, one glyph size, no fill until hovered. Every button in
-     the toolbar row (sidebar, back, forward, extensions, downloads, profile, more) uses .tb. */
+     the toolbar row (sidebar, back, forward, extensions, downloads, more) uses .tb. */
   .tb { width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px; background: transparent; color: var(--text);
     display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; position: relative;
     opacity: 0.78; transition: background var(--dur-fast) var(--ease-fluid), opacity var(--dur-fast) var(--ease-fluid), transform var(--dur-fast) var(--ease-fluid); }
@@ -220,8 +219,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tb > svg { width: 18px; height: 18px; display: block; }
   .tb > img { width: 20px; height: 20px; border-radius: 5px; display: block; }
   .tb .ph { width: 20px; height: 20px; }
-  .tb .avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--profile-accent, #0A84FF); color: #fff;
-    font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
   .tb .badge { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3.5px; border-radius: 7px;
     background: var(--blue); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 14px; text-align: center;
     font-variant-numeric: tabular-nums; box-shadow: 0 0 0 1.5px var(--surface-solid); }
@@ -266,16 +263,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .ext-row.off .ic, .ext-row.off .tx { opacity: .5; }
   .ext-notice { font-size: 12px; padding: 8px 10px; border-radius: 9px; background: rgba(10,132,255,.10); margin-bottom: 8px; display: none; }
   .ext-notice.on { display: block; }
-  .prof-links { display: none; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 10px;
-    border-radius: 10px; background: rgba(118,118,128,.08); font-size: 12px; }
-  .prof-links.on { display: flex; }
-  .prof-links select { border: 1px solid var(--border); border-radius: 7px; background: var(--surface, #fff); color: var(--text);
-    font: inherit; font-weight: 600; padding: 3px 6px; max-width: 160px; }
-  .prof-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; }
-  .prof-row:hover { background: rgba(118,118,128,.10); }
-  .prof-av { width: 28px; height: 28px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-  .prof-row .nm { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .prof-row .sub { font-size: 11px; color: var(--text-dim, #8E8E93); font-weight: 400; }
   .space-row { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 9px; cursor: pointer; position: relative; }
   .space-row:hover { background: rgba(118,118,128,0.10); }
   .space-row.on { background: color-mix(in srgb, var(--row-accent) 16%, transparent); }
@@ -563,6 +550,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
   /* Context menus (tab, group) are narrow and open from the item's left edge, like macOS menus. */
   .floating-sheet[data-panel="tabmenu"], .floating-sheet[data-panel="groupmenu"] { width: 250px; padding: 6px; }
+  /* The Downloads list is a compact popover (the other panels keep 400 px). */
+  .floating-sheet[data-panel="downloads"] { width: 300px; }
   #group-swatches { gap: 6px; flex-wrap: nowrap; }
   #group-swatches .swatch { width: 18px; height: 18px; flex-shrink: 0; }
   .floating-sheet.closing { animation: popoverOut var(--dur-fast) var(--ease-in) both; pointer-events: none; }
@@ -1189,7 +1178,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
             <button class="pill-btn pill-orange" id="btn-clear-site-data" onclick="send('CLEAR_SITE_DATA')" title="Clear cookies, localStorage, sessionStorage & cache for this site">🧹 Clear Site Data</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('passwords', document.getElementById('btn-controls'))" title="Saved passwords">🔑 Passwords</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('permissions', document.getElementById('btn-controls'))" title="Camera, microphone, location and more, per site">🛡️ Permissions</button>
-            <button class="pill-btn pill-soft" onclick="toggleDrawer('profiles', document.getElementById('btn-controls'))" title="Separate cookies, logins and history">👤 Profiles</button>
             <button class="pill-btn pill-soft" onclick="toggleDrawer('extensions', document.getElementById('btn-controls'))" title="Add and manage browser extensions">🧩 Extensions</button>
             <button class="pill-btn pill-soft" onclick="send('NEW_WINDOW'); closeDrawer()" title="New Window (Ctrl+N)">🪟 New Window</button>
             <button class="pill-btn pill-soft" id="btn-update-filters" onclick="toggleDrawer('blocker', document.getElementById('btn-controls'))" title="Filter lists, My Filters and the element picker">🛡️ Content Blocker</button>
@@ -1359,35 +1347,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           oninput="groupSaveSoon()" onkeydown="if (event.key === 'Enter') { groupSaveNow(); closeDrawer(); }" />
         <div class="swatches" id="group-swatches" style="margin-bottom:6px;"></div>
         <div id="groupmenu-body"></div>
-      </div>
-
-      <div id="panel-profiles" style="display:none">
-        <div class="sheet-head">
-          <h3>Profiles</h3>
-          <button class="text-btn" onclick="profileForm(null)">New Profile</button>
-        </div>
-        <div id="profiles-list"></div>
-        <div class="prof-links" id="prof-links">
-          <span>Open links from other apps in</span>
-          <select id="prof-links-sel" onchange="send('PROFILE_LINKS:' + this.value)"></select>
-        </div>
-        <div class="card" id="profile-form" style="display:none;margin-top:8px;">
-          <div class="card-title" id="profile-form-title" style="margin-bottom:8px;">New Profile</div>
-          <input class="text-box" id="profile-name" maxlength="40" style="width:100%;margin-bottom:8px;" placeholder="Name (e.g. Work, School)"
-            onkeydown="if (event.key === 'Enter') profileSave()" />
-          <div class="swatches" id="profile-swatches"></div>
-          <div style="display:flex;gap:6px;justify-content:space-between;margin-top:10px;">
-            <button class="text-btn" id="profile-delete" style="color:var(--red);" onclick="profileDelete()">Delete Profile</button>
-            <div style="display:flex;gap:6px;">
-              <button class="text-btn" onclick="document.getElementById('profile-form').style.display='none'">Cancel</button>
-              <button class="pill-btn pill-blue" id="profile-save" onclick="profileSave()">Create</button>
-            </div>
-          </div>
-        </div>
-        <div class="meta" style="margin-top:8px;line-height:1.45;">
-          Each profile opens in its own window with separate cookies, sign-ins, history, bookmarks, passwords, permissions and settings.
-          Spaces, by contrast, share one profile. Ctrl+Alt+N opens Little Shunno in the profile you used last.
-        </div>
       </div>
 
       <div id="panel-blocker" style="display:none">
@@ -2061,7 +2020,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'tabsearch', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'profiles', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
+    ['controls', 'find', 'tabsearch', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -2710,8 +2669,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Site Permissions (camera, microphone, location)', run: () => toggleDrawer('permissions') },
       { kind: 'Action', title: 'Content Blocker (filter lists, My Filters)', run: () => toggleDrawer('blocker') },
       { kind: 'Action', title: 'Hide an Element on This Page', run: () => startPicker() },
-      { kind: 'Action', title: 'Profiles: switch or open another profile', run: () => toggleDrawer('profiles') },
-      { kind: 'Action', title: 'New Profile', run: () => { toggleDrawer('profiles'); setTimeout(() => profileForm(null), 80); } },
       { kind: 'Action', title: 'Export Download History to CSV (with SHA-256)', run: () => send('EXPORT_DL_CSV') },
       { kind: 'Action', title: 'Sleep Inactive Background Tabs (Save RAM)', run: () => send('SLEEP_INACTIVE_TABS') },
       { kind: 'Action', title: 'Toggle Dark Mode', run: () => send('TOGGLE_GLOBAL:full_dark') },
@@ -3112,73 +3069,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function extRemove(id) {
     const e = (lastState.extensions || []).find(x => x.id === id);
     if (e) askConfirm('Remove extension?', `Remove "${e.name}"? Its settings and data are deleted.`, 'Remove').then(ok => { if (ok) send('EXT_SET:' + id + '|remove'); });
-  }
-
-  // ---------------------------------------------------------------- Profiles
-  const PROFILE_COLORS = ['#0A84FF', '#30D158', '#FF9F0A', '#FF375F', '#BF5AF2', '#64D2FF', '#8E8E93'];
-  let profileEditing = null, profileColor = PROFILE_COLORS[0];
-  function profileInitial(n) { const c = Array.from((n || '?').trim())[0] || '?'; return c.toUpperCase(); }
-  function renderProfiles(state) {
-    const list = state.profiles || [];
-    const me = list.find(p => p.id === state.profile_id) || list[0];
-    // No toolbar button: profiles are switched from the menu. The accent colour still follows the profile.
-    if (me) document.documentElement.style.setProperty('--profile-accent', me.color);
-    const el = document.getElementById('profiles-list');
-    const html = list.map(p => {
-      const mine = me && p.id === me.id;
-      const sub = mine ? 'This window' : (p.running ? 'Open' : '');
-      return `<div class="prof-row">
-        <div class="prof-av" style="background:${p.color}">${escapeHtml(profileInitial(p.name))}</div>
-        <div class="nm">${escapeHtml(p.name)}${sub ? `<div class="sub">${sub}</div>` : ''}</div>
-        ${mine ? '' : `<button class="pill-btn pill-soft" onclick="send('PROFILE_OPEN:${p.id}')">${p.running ? 'Show' : 'Open'}</button>`}
-        <button class="icon-btn" title="Edit" onclick="profileForm('${p.id}')"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
-      </div>`;
-    }).join('');
-    if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
-    // Link routing matters only with two or more profiles.
-    document.getElementById('prof-links').classList.toggle('on', list.length > 1);
-    const sel = document.getElementById('prof-links-sel');
-    const opts = '<option value="last">Last used window</option>' + list.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
-    if (sel.dataset.h !== opts) { sel.dataset.h = opts; sel.innerHTML = opts; }
-    const want = list.some(p => p.id === state.links_profile) ? state.links_profile : 'last';
-    if (document.activeElement !== sel) sel.value = want;
-  }
-  function profileForm(id) {
-    const list = (lastState && lastState.profiles) || [];
-    const p = id !== null ? list.find(x => x.id === id) : null;
-    profileEditing = p ? p.id : null;
-    profileColor = p ? p.color : PROFILE_COLORS[list.length % PROFILE_COLORS.length];
-    document.getElementById('profile-form-title').textContent = p ? 'Edit Profile' : 'New Profile';
-    document.getElementById('profile-save').textContent = p ? 'Save' : 'Create';
-    document.getElementById('profile-name').value = p ? p.name : '';
-    // The default profile, this window's profile and open profiles cannot be deleted.
-    const canDelete = p && p.id !== 'default' && p.id !== lastState.profile_id && !p.running;
-    document.getElementById('profile-delete').style.display = canDelete ? '' : 'none';
-    renderProfileSwatches();
-    document.getElementById('profile-form').style.display = '';
-    document.getElementById('profile-name').focus();
-  }
-  function renderProfileSwatches() {
-    document.getElementById('profile-swatches').innerHTML = PROFILE_COLORS.map(c =>
-      `<button class="swatch ${c === profileColor ? 'on' : ''}" style="background:${c}" onclick="profileColor='${c}'; renderProfileSwatches()" title="${c}"></button>`).join('');
-  }
-  function profileSave() {
-    const name = document.getElementById('profile-name').value.trim();
-    if (!name) { document.getElementById('profile-name').focus(); return; }
-    const payload = JSON.stringify({ name, color: profileColor });
-    send(profileEditing === null ? 'PROFILE_NEW:' + payload : 'PROFILE_EDIT:' + profileEditing + '|' + payload);
-    document.getElementById('profile-form').style.display = 'none';
-  }
-  function profileDelete() {
-    if (profileEditing === null) return;
-    const p = lastState.profiles.find(x => x.id === profileEditing);
-    if (!p) return;
-    const id = profileEditing;
-    askConfirm('Delete profile?', `Delete the profile "${p.name}"? Its cookies, sign-ins, history, bookmarks and saved passwords are erased from this PC. This cannot be undone.`, 'Delete').then(ok => {
-      if (!ok) return;
-      send('PROFILE_DELETE:' + id);
-      document.getElementById('profile-form').style.display = 'none';
-    });
   }
 
   // ---------------------------------------------------------------- Spaces
@@ -3673,7 +3563,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     rb.title = state.active_reader ? 'Close Reader (F9 or Esc)' : 'Reader (F9)';
     renderPwOffer(state);
     renderPermOffer(state);
-    renderProfiles(state);
     renderExtensions(state);
     renderPermissions(state);
     renderBlocker(state);
