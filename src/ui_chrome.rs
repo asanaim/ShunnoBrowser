@@ -90,10 +90,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     background: var(--tab-bg); height: 36px; overflow: hidden;
     border-top-left-radius: 12px; border-top-right-radius: 12px;
   }
-  /* Arc-style: with more than one Space, the whole tab bar takes a light tint of the Space colour,
-     so the current Space is obvious at a glance. */
-  html.spaces-tinted .tab-bar { background: color-mix(in srgb, var(--space-accent) 11%, var(--tab-bg)); }
-  html.spaces-tinted.dark .tab-bar, html.spaces-tinted body.dark .tab-bar { background: color-mix(in srgb, var(--space-accent) 16%, var(--tab-bg)); }
 
   /* Chrome/Safari-inspired Compass-Ring Logo */
   .brand-emblem {
@@ -194,17 +190,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
      minimum wide enough for its icon and close button, so it is never reduced to a bare icon. */
   .tab.active { min-width: 56px; }
   .tab.incognito.active { background: #2C2C2E; color: #FFFFFF; }
-  /* Spaces: the active Space's colour marks the current tab and the Space button. */
-  .tab.active:not(.incognito) { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12), inset 0 -2px 0 var(--space-accent, transparent); }
-  .space-pill {
-    display: inline-flex; align-items: center; gap: 6px; height: 28px; max-width: 150px; padding: 0 10px 0 8px; margin: 0 4px 0 2px;
-    border: none; border-radius: 9px; cursor: pointer; flex-shrink: 0;
-    background: color-mix(in srgb, var(--space-accent, #0A84FF) 14%, transparent); color: var(--text);
-    font-size: 12px; font-weight: 600; transition: background 0.18s var(--ease-fluid);
-  }
-  .space-pill:hover { background: color-mix(in srgb, var(--space-accent, #0A84FF) 24%, transparent); }
-  .space-pill .ic { font-size: 13px; line-height: 1; }
-  .space-pill .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab.active:not(.incognito) { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12); }
   /* Toolbar buttons, Safari style: one size, one glyph size, no fill until hovered. Every button in
      the toolbar row (sidebar, back, forward, extensions, downloads, more) uses .tb. */
   .tb { width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px; background: transparent; color: var(--text);
@@ -263,12 +249,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .ext-row.off .ic, .ext-row.off .tx { opacity: .5; }
   .ext-notice { font-size: 12px; padding: 8px 10px; border-radius: 9px; background: rgba(10,132,255,.10); margin-bottom: 8px; display: none; }
   .ext-notice.on { display: block; }
-  .space-row { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 9px; cursor: pointer; position: relative; }
-  .space-row:hover { background: rgba(118,118,128,0.10); }
-  .space-row.on { background: color-mix(in srgb, var(--row-accent) 16%, transparent); }
-  .space-row .sw { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; background: color-mix(in srgb, var(--row-accent) 22%, transparent); }
-  .space-row .nm { flex: 1; font-size: 12.5px; font-weight: 500; }
-  .space-row .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
   .swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
   .swatch.on { border-color: var(--text); }
@@ -318,7 +298,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .tab[data-narrow] .tab-close { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; background: var(--surface-solid); }
   .tab[data-narrow].active .tab-close { opacity: 1; pointer-events: auto; }
   .tab[data-narrow].active .tab-close ~ .tab-fav, .tab[data-narrow].active > .tab-fav, .tab[data-narrow].active > .tab-logo { visibility: hidden; }
-  .space-pill:empty { display: none; }
 
   .tab-add {
     border: none; background: rgba(128, 128, 128, 0.14); color: var(--blue); font-weight: 700;
@@ -605,8 +584,8 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   .cb-pick:hover { filter: brightness(1.05); }
   .cb-pick:active { transform: scale(0.98); }
   /* Press feedback everywhere: a small give under the pointer, released on the same curve. */
-  .text-btn, .fav-tile, .lib-row, .space-row, .ctx-row, .dl-row, .cb-pick, .ext-stores button { transition-property: transform, background, color, opacity; transition-duration: var(--dur-fast); transition-timing-function: var(--ease-fluid); }
-  .text-btn:active, .fav-tile:active, .lib-row:active, .space-row:active, .ctx-row:active, .ext-stores button:active { transform: scale(0.97); }
+  .text-btn, .fav-tile, .lib-row, .ctx-row, .dl-row, .cb-pick, .ext-stores button { transition-property: transform, background, color, opacity; transition-duration: var(--dur-fast); transition-timing-function: var(--ease-fluid); }
+  .text-btn:active, .fav-tile:active, .lib-row:active, .ctx-row:active, .ext-stores button:active { transform: scale(0.97); }
   @keyframes noticeIn { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
   .cb-notice, #menu-note, #ext-notice, .perm-offer, #dup-banner { animation: noticeIn 0.3s var(--ease-fluid); }
   .cb-notice { margin-top: 8px; padding: 7px 10px; border-radius: 9px; font-size: 11.5px; line-height: 1.4; background: rgba(118,118,128,.1); word-break: break-word; }
@@ -981,7 +960,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       <div class="brand-emblem" id="btn-tabsearch" onclick="toggleDrawer('tabsearch', this)" title="Search tabs">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><defs><linearGradient id="shunnoTile" x1="0" y1="1.5" x2="0" y2="26.5" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#48B2FF"/><stop offset="100%" stop-color="#0062EB"/></linearGradient></defs><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="url(#shunnoTile)"/><path d="M21.50 12.27A7.70 7.70 0 1 1 15.73 6.50" stroke="white" stroke-width="3.30" stroke-linecap="round" fill="none"/><circle cx="19.44" cy="8.56" r="1.98" fill="#FFC43D"/></svg>
       </div>
-      <button class="space-pill" id="space-pill" onclick="toggleDrawer('spaces', this)" title="Spaces"></button>
       <div id="tabs-container"></div>
       <button class="tab-add" onclick="openNewTab()" title="New Tab (Ctrl+T)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1268,31 +1246,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
           <div class="lib-body" id="lib-body"></div>
           <div class="lib-foot" id="lib-foot"></div>
         </div>
-      </div>
-
-      <div id="panel-spaces" style="display:none">
-        <div class="sheet-head">
-          <h3>Spaces</h3>
-          <button class="text-btn" onclick="spaceForm(null)">New Space</button>
-        </div>
-        <div id="spaces-list"></div>
-        <div class="card" id="space-form" style="display:none;margin-top:8px;">
-          <div class="card-title" id="space-form-title" style="margin-bottom:8px;">New Space</div>
-          <div style="display:flex;gap:6px;margin-bottom:8px;">
-            <input class="text-box" id="space-icon" maxlength="2" style="width:44px;text-align:center;" placeholder="✦" />
-            <input class="text-box" id="space-name" maxlength="24" style="flex:1;" placeholder="Name (e.g. Work, Study)" />
-          </div>
-          <div class="swatches" id="space-swatches"></div>
-          <div style="display:flex;gap:6px;justify-content:space-between;margin-top:10px;">
-            <button class="text-btn" id="space-delete" style="color:var(--red);" onclick="spaceDelete()">Delete Space</button>
-            <div style="display:flex;gap:6px;">
-              <button class="text-btn" onclick="document.getElementById('space-form').style.display='none'">Cancel</button>
-              <button class="pill-btn pill-blue" onclick="spaceSave()">Save</button>
-            </div>
-          </div>
-        </div>
-        <div class="meta" id="space-move" style="margin-top:10px;"></div>
-        <div class="meta" style="margin-top:8px;line-height:1.45;">Each Space keeps its own tabs. New tabs open in the current Space. Spaces share cookies and logins.</div>
       </div>
 
       <div id="panel-passwords" style="display:none">
@@ -1888,7 +1841,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // continues from where it was. Same curve as the tabs; nothing moves with reduced motion.
   const MOTION_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
   const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const MOTION_LISTS = ['#lib-body', '#downloads-list', '#perm-list', '#pw-list', '#cb-lists', '#ext-list', '#spaces-list',
+  const MOTION_LISTS = ['#lib-body', '#downloads-list', '#perm-list', '#pw-list', '#cb-lists', '#ext-list',
     '#bookmarks-strip', '#home-shortcuts-grid', '#streams-list'];
   const motionState = new WeakMap(); // container -> Map(key -> {x, y, bar})
   function motionSnapshot(box) {
@@ -2020,7 +1973,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
 
     sheet.dataset.panel = name;
 
-    ['controls', 'find', 'tabsearch', 'streams', 'bookmarks', 'downloads', 'passwords', 'spaces', 'permissions', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
+    ['controls', 'find', 'tabsearch', 'streams', 'bookmarks', 'downloads', 'passwords', 'permissions', 'tabmenu', 'groupmenu', 'extensions', 'blocker'].forEach(p => {
       document.getElementById('panel-' + p).style.display = (p === name) ? 'block' : 'none';
     });
 
@@ -2178,10 +2131,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   // Flicker-free incremental tab reconciliation (never blinks or re-animates existing tabs!)
   function syncTabsStatic(tabs, activeIdx) {
     const tc = document.getElementById('tabs-container');
-    // Spaces: show only the active Space's tabs (indices stay those of the full list).
-    const sp = window.__shunnoLastState && window.__shunnoLastState.spaces ? window.__shunnoLastState.spaces.active : null;
-    const inSpace = (t) => sp === null || t.space === undefined || t.space === sp;
-    const currentIds = new Set(tabs.filter(inSpace).map(t => String(t.id)));
+    const currentIds = new Set(tabs.map(t => String(t.id)));
 
     // Closed tabs fold away (unless already folding from a click on their close button).
     Array.from(tc.children).forEach(el => {
@@ -2191,11 +2141,10 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
         foldAwayTab(el);
       }
     });
-    if (tabWidthsLocked && tabs.filter(inSpace).length > lockedTabCount) unlockTabWidths();
+    if (tabWidthsLocked && tabs.length > lockedTabCount) unlockTabWidths();
     const prevActiveId = tc.dataset.activeId;
 
     tabs.forEach((t, idx) => {
-      if (!inSpace(t)) return;
       const idStr = String(t.id);
       let el = tc.querySelector(`.tab[data-tab-id="${idStr}"]`);
       if (!el) {
@@ -2288,7 +2237,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       const closeBtn = el.querySelector('.tab-close');
       if (closeBtn) closeBtn.onclick = (ev) => { ev.stopPropagation(); closeTabFromStrip(el, idx); };
     });
-    syncTabGroups(tabs, inSpace);
+    syncTabGroups(tabs);
     markNarrowTabs();
     const act = tabs[activeIdx];
     if (act && tc.dataset.activeId !== String(act.id)) {
@@ -2444,16 +2393,15 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   })();
 
   // Tab groups: a label before each group's first tab; member tabs tinted; collapsed groups hide their tabs.
-  function syncTabGroups(tabs, inSpace) {
+  function syncTabGroups(tabs) {
     const tc = document.getElementById('tabs-container');
     const st = window.__shunnoLastState || {};
     const groups = new Map((st.tab_groups || []).map(g => [g.id, g]));
     const want = [];
     const counts = {};
-    tabs.forEach(t => { if (inSpace(t) && t.group != null) counts[t.group] = (counts[t.group] || 0) + 1; });
+    tabs.forEach(t => { if (t.group != null) counts[t.group] = (counts[t.group] || 0) + 1; });
     let prev = null;
     tabs.forEach((t, idx) => {
-      if (!inSpace(t)) return;
       const el = tc.querySelector(`.tab[data-tab-id="${t.id}"]`);
       if (!el) return;
       const g = t.group != null ? groups.get(t.group) : null;
@@ -2564,7 +2512,7 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     const st = lastState; const t = st && st.tabs[idx];
     if (!t) return;
     ctxTab = idx;
-    const groups = (st.tab_groups || []).filter(g => st.tabs.some(x => x.group === g.id && x.space === t.space) && g.id !== t.group);
+    const groups = (st.tab_groups || []).filter(g => st.tabs.some(x => x.group === g.id) && g.id !== t.group);
     let h = '';
     h += ctxRow(t.pinned ? 'Unpin Tab' : 'Pin Tab', `send('TOGGLE_PIN_TAB:${idx}')`);
     if (!t.pinned && !t.incognito) {
@@ -2677,18 +2625,9 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
       { kind: 'Action', title: 'Open Downloads Manager (Ctrl+J)', run: () => toggleDrawer('downloads') },
       { kind: 'Action', title: 'New Private Tab', run: () => send('NEW_INCOGNITO') },
       { kind: 'Action', title: 'Little Shunno Window (Ctrl+Alt+N)', run: () => send('LITTLE_OPEN') },
-      { kind: 'Action', title: 'New Space', run: () => { toggleDrawer('spaces', document.getElementById('space-pill')); setTimeout(() => spaceForm(null), 80); } },
       { kind: 'Action', title: 'Toggle Fullscreen (F11)', run: () => send('TOGGLE_FULLSCREEN') },
     ];
     actions.forEach(a => items.push(a));
-    if (st && st.spaces) {
-      st.spaces.list.forEach(spc => {
-        if (spc.id !== st.spaces.active) items.push({ kind: 'Space', title: 'Switch to Space: ' + spc.icon + ' ' + spc.name, run: () => send('SPACE_SWITCH:' + spc.id) });
-      });
-      st.spaces.list.forEach(spc => {
-        if (spc.id !== st.spaces.active) items.push({ kind: 'Space', title: 'Move Tab to Space: ' + spc.icon + ' ' + spc.name, run: () => send('TAB_TO_SPACE:' + st.active_tab + '|' + spc.id) });
-      });
-    }
 
     if (st) {
       (st.tabs || []).forEach((t, idx) => {
@@ -3069,68 +3008,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
   function extRemove(id) {
     const e = (lastState.extensions || []).find(x => x.id === id);
     if (e) askConfirm('Remove extension?', `Remove "${e.name}"? Its settings and data are deleted.`, 'Remove').then(ok => { if (ok) send('EXT_SET:' + id + '|remove'); });
-  }
-
-  // ---------------------------------------------------------------- Spaces
-  const SPACE_COLORS = ['#0A84FF', '#30B0C7', '#34C759', '#FF9F0A', '#FF375F', '#BF5AF2', '#5E5CE6', '#8E8E93'];
-  let spaceEditing = null, spaceColor = SPACE_COLORS[0];
-  function renderSpaces(state) {
-    const sv = state.spaces;
-    if (!sv) return;
-    const cur = sv.list.find(x => x.id === sv.active) || sv.list[0];
-    document.documentElement.style.setProperty('--space-accent', cur.color);
-    document.documentElement.classList.toggle('spaces-tinted', sv.list.length > 1);
-    const pill = document.getElementById('space-pill');
-    const pillHtml = `<span class="ic">${escapeHtml(cur.icon)}</span><span class="nm">${escapeHtml(cur.name)}</span>`;
-    if (pill.innerHTML !== pillHtml) pill.innerHTML = pillHtml;
-    const counts = {};
-    (state.tabs || []).forEach(t => { counts[t.space] = (counts[t.space] || 0) + 1; });
-    const list = document.getElementById('spaces-list');
-    const html = sv.list.map(x => `
-      <div class="space-row ${x.id === sv.active ? 'on' : ''}" data-k="sp${x.id}" style="--row-accent:${x.color}" onclick="send('SPACE_SWITCH:${x.id}')">
-        <div class="sw">${escapeHtml(x.icon)}</div>
-        <div class="nm">${escapeHtml(x.name)}</div>
-        <div class="ct">${counts[x.id] || 0}</div>
-        <button class="icon-btn" title="Edit" onclick="event.stopPropagation(); spaceForm(${x.id})"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
-      </div>`).join('');
-    if (list.dataset.h !== html) { list.dataset.h = html; list.innerHTML = html; }
-    const others = sv.list.filter(x => x.id !== sv.active);
-    const mv = document.getElementById('space-move');
-    const mvHtml = others.length ? 'Move this tab to: ' + others.map(x => `<a href="#" style="color:${x.color};font-weight:600;" onclick="event.preventDefault(); send('TAB_TO_SPACE:${state.active_tab}|${x.id}')">${escapeHtml(x.icon + ' ' + x.name)}</a>`).join(' · ') : '';
-    if (mv.dataset.h !== mvHtml) { mv.dataset.h = mvHtml; mv.innerHTML = mvHtml; }
-  }
-  function spaceForm(id) {
-    const sv = lastState && lastState.spaces;
-    const x = id !== null && sv ? sv.list.find(s => s.id === id) : null;
-    spaceEditing = x ? x.id : null;
-    spaceColor = x ? x.color : SPACE_COLORS[(sv ? sv.list.length : 0) % SPACE_COLORS.length];
-    document.getElementById('space-form-title').textContent = x ? 'Edit Space' : 'New Space';
-    document.getElementById('space-name').value = x ? x.name : '';
-    document.getElementById('space-icon').value = x ? x.icon : '';
-    document.getElementById('space-delete').style.display = x && sv.list.length > 1 ? '' : 'none';
-    renderSwatches();
-    document.getElementById('space-form').style.display = '';
-    document.getElementById('space-name').focus();
-  }
-  function renderSwatches() {
-    document.getElementById('space-swatches').innerHTML = SPACE_COLORS.map(c =>
-      `<button class="swatch ${c === spaceColor ? 'on' : ''}" style="background:${c}" onclick="spaceColor='${c}'; renderSwatches()" title="${c}"></button>`).join('');
-  }
-  function spaceSave() {
-    const payload = JSON.stringify({ name: document.getElementById('space-name').value, icon: document.getElementById('space-icon').value, color: spaceColor });
-    send(spaceEditing === null ? 'SPACE_NEW:' + payload : 'SPACE_EDIT:' + spaceEditing + '|' + payload);
-    document.getElementById('space-form').style.display = 'none';
-  }
-  function spaceDelete() {
-    if (spaceEditing === null) return;
-    const x = lastState.spaces.list.find(s => s.id === spaceEditing);
-    if (!x) return;
-    const id = spaceEditing;
-    askConfirm('Delete Space?', `Delete the Space "${x.name}"? Its tabs close (you can reopen them with Ctrl+Shift+T).`, 'Delete').then(ok => {
-      if (!ok) return;
-      send('SPACE_DELETE:' + id);
-      document.getElementById('space-form').style.display = 'none';
-    });
   }
 
   // One place for browser shortcuts: the toolbar's keydown and pages (via the native hook) both land here.
@@ -3550,7 +3427,6 @@ pub const CHROME_HTML: &str = r##"<!DOCTYPE html>
     `).join('');
 
     renderImport(state);
-    renderSpaces(state);
     renderPeek(state);
     const sb = document.getElementById('store-add');
     const storeId = storeExtension(state.active_url || '');

@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 /// Stored history entries (newest first).
 pub const HISTORY_CAP: usize = 250;
 
-pub const APP_VERSION: &str = "v2.37.0";
+pub const APP_VERSION: &str = "v2.38.0";
 
 /// Build a `Command` that never flashes a console window (this is a GUI subsystem app).
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -197,9 +197,6 @@ pub struct HistoryEntry {
 pub struct SavedTab {
     pub title: String,
     pub url: String,
-    /// Space the tab belongs to (0 = the first Space, for sessions saved before Spaces existed).
-    #[serde(default)]
-    pub space: u32,
     /// Tab group id (see tab_groups.json), if the tab was in a group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<u32>,
@@ -227,7 +224,7 @@ pub fn session_windows(tabs: Vec<SavedTab>) -> Vec<Vec<SavedTab>> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tab groups: named, coloured runs of tabs inside one Space that can be collapsed.
+// Tab groups: named, coloured runs of tabs that can be collapsed.
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,95 +285,6 @@ pub fn group_after_drop(groups: &[Option<u32>], to: usize) -> Option<u32> {
         Some(g) if left == Some(g) || right == Some(g) => Some(g),
         _ => None,
     }
-}
-
-/// Arc-style Space: a named, coloured set of tabs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Space {
-    pub id: u32,
-    pub name: String,
-    /// "#RRGGBB" accent.
-    pub color: String,
-    /// One emoji or character.
-    pub icon: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SpacesFile {
-    pub spaces: Vec<Space>,
-    pub active: u32,
-}
-
-impl Default for SpacesFile {
-    fn default() -> Self {
-        SpacesFile {
-            spaces: vec![Space { id: 1, name: "Personal".into(), color: "#0A84FF".into(), icon: "🏠".into() }],
-            active: 1,
-        }
-    }
-}
-
-impl SpacesFile {
-    /// Valid after load: at least one Space, `active` exists, names/colours sane.
-    pub fn normalized(mut self) -> Self {
-        self.spaces.retain(|s| s.id != 0);
-        if self.spaces.is_empty() {
-            return SpacesFile::default();
-        }
-        for sp in &mut self.spaces {
-            sp.name = sanitize_space_name(&sp.name);
-            if !is_hex_color(&sp.color) {
-                sp.color = "#0A84FF".into();
-            }
-            sp.icon = sp.icon.chars().take(2).collect();
-        }
-        if !self.spaces.iter().any(|s| s.id == self.active) {
-            self.active = self.spaces[0].id;
-        }
-        self
-    }
-
-    pub fn next_id(&self) -> u32 {
-        self.spaces.iter().map(|s| s.id).max().unwrap_or(0) + 1
-    }
-
-    /// Map a saved Space id onto an existing one (0 or unknown → the first Space).
-    pub fn resolve(&self, id: u32) -> u32 {
-        if self.spaces.iter().any(|s| s.id == id) { id } else { self.spaces[0].id }
-    }
-}
-
-pub fn sanitize_space_name(s: &str) -> String {
-    let t: String = s.chars().filter(|c| !c.is_control()).take(24).collect();
-    let t = t.trim().to_string();
-    if t.is_empty() { "Space".into() } else { t }
-}
-
-pub fn is_hex_color(c: &str) -> bool {
-    c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit())
-}
-
-/// Which tab (index) to show when entering `space`: the remembered one if it is still in that
-/// Space, else the first tab there. `tabs` = (tab id, space) in strip order.
-pub fn pick_tab_for_space(tabs: &[(usize, u32)], space: u32, remembered: Option<usize>) -> Option<usize> {
-    if let Some(id) = remembered {
-        if let Some(i) = tabs.iter().position(|&(t, s)| t == id && s == space) {
-            return Some(i);
-        }
-    }
-    tabs.iter().position(|&(_, s)| s == space)
-}
-
-/// Next/previous tab index within the same Space as `current`, wrapping around.
-pub fn step_in_space(tabs: &[(usize, u32)], current: usize, forward: bool) -> usize {
-    let Some(&(_, space)) = tabs.get(current) else { return current };
-    let members: Vec<usize> = tabs.iter().enumerate().filter(|(_, &(_, s))| s == space).map(|(i, _)| i).collect();
-    let pos = members.iter().position(|&i| i == current).unwrap_or(0);
-    let n = members.len();
-    if n <= 1 {
-        return current;
-    }
-    members[if forward { (pos + 1) % n } else { (pos + n - 1) % n }]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -522,7 +430,7 @@ impl Default for GlobalSettings {
 
 // ---------------------------------------------------------------------------------------------
 // Profiles (Safari-style): each profile is a separate Shunno process with its own data folder:
-// cookies, logins, history, bookmarks, passwords, permissions, settings, Spaces and downloads.
+// cookies, logins, history, bookmarks, passwords, permissions, settings and downloads.
 // The default profile keeps the original folder, so existing users need no migration.
 // ---------------------------------------------------------------------------------------------
 
@@ -894,16 +802,6 @@ impl BrowserStorage {
     pub fn load_session() -> Vec<SavedTab> {
         let path = Self::app_data_dir().join("session.json");
         load_json(&path).unwrap_or_default()
-    }
-
-    pub fn load_spaces() -> SpacesFile {
-        let path = Self::app_data_dir().join("spaces.json");
-        load_json::<SpacesFile>(&path).unwrap_or_default().normalized()
-    }
-
-    pub fn save_spaces(sp: &SpacesFile) {
-        let path = Self::app_data_dir().join("spaces.json");
-        save_json(&path, sp);
     }
 
     pub fn load_tab_groups() -> Vec<TabGroup> {
