@@ -1,3 +1,21 @@
+## v2.38.0
+
+### Removed
+- Spaces: the Space button next to the tab strip ("Personal"), the Spaces panel, New Space, moving tabs between Spaces, the palette entries and the commands, the Space tint on the tab bar, and `spaces.json` handling. There is one set of tabs. Ctrl+Tab and Ctrl+Shift+Tab step through all tabs. Sessions saved with Spaces still open (the old field is ignored); a leftover `spaces.json` file is not read.
+- Leftover profile state sent to the toolbar (profile list, link routing).
+
+### Fixed
+- Moving the window to a monitor with a different display scaling left the pages at their old pixel size: the layout cache added in v2.34 compared logical sizes only. The cache is now cleared when the scale factor changes.
+
+### Added
+- A fuzz test (`tests/fuzz_parsers.rs`) that feeds random hostile strings to the URL, file name, header, rule list and manifest parsers and random bytes to the history database reader; none panicked.
+
+### Audit result
+- No other defects found by clippy (style notes only), by the fuzz test, by a syntax and undefined handler check of the toolbar script, or by the browser suites. See the notes in the pull request for what was and was not examined.
+
+### Not verified
+- Nothing ran on Windows. The DPI fix and the removal of Spaces were checked by compiling, source tests and the browser simulation only.
+
 ## v2.37.0
 
 ### Removed

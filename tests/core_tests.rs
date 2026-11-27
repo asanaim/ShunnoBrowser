@@ -555,34 +555,11 @@ fn test_little_command_line_urls() {
 }
 
 #[test]
-fn test_spaces_logic() {
-    use state::{pick_tab_for_space, sanitize_space_name, step_in_space, Space, SpacesFile};
-    // (tab id, space) in strip order
-    let tabs = [(10, 1), (11, 2), (12, 1), (13, 2), (14, 1)];
-    assert_eq!(pick_tab_for_space(&tabs, 2, None), Some(1));
-    assert_eq!(pick_tab_for_space(&tabs, 2, Some(13)), Some(3)); // remembered tab
-    assert_eq!(pick_tab_for_space(&tabs, 2, Some(12)), Some(1)); // remembered tab moved away
-    assert_eq!(pick_tab_for_space(&tabs, 3, None), None); // empty Space
-    assert_eq!(step_in_space(&tabs, 0, true), 2);
-    assert_eq!(step_in_space(&tabs, 4, true), 0); // wraps within Space 1
-    assert_eq!(step_in_space(&tabs, 0, false), 4);
-    assert_eq!(step_in_space(&tabs, 3, true), 1);
-    assert_eq!(step_in_space(&[(1, 1), (2, 2)], 0, true), 0); // alone in its Space
-    // Loading: empty or broken files become one valid Space; active always exists.
-    let f = SpacesFile { spaces: vec![], active: 9 }.normalized();
-    assert_eq!(f.spaces.len(), 1);
-    assert_eq!(f.active, f.spaces[0].id);
-    let f = SpacesFile {
-        spaces: vec![Space { id: 4, name: "  \u{0007}Work ".into(), color: "red".into(), icon: "💼✨🔥".into() }],
-        active: 7,
-    }
-    .normalized();
-    assert_eq!((f.spaces[0].name.as_str(), f.spaces[0].color.as_str(), f.active), ("Work", "#0A84FF", 4));
-    assert_eq!(f.spaces[0].icon.chars().count(), 2);
-    assert_eq!(f.resolve(0), 4); // old sessions without Spaces land in the first Space
-    assert_eq!(f.next_id(), 5);
-    assert_eq!(sanitize_space_name(""), "Space");
-    assert_eq!(sanitize_space_name(&"x".repeat(40)).len(), 24);
+fn sessions_saved_with_spaces_still_load() {
+    // The Spaces feature is gone; its "space" field in old session files is ignored.
+    let t: state::SavedTab = serde_json::from_str(r#"{"title":"a","url":"https://a.b","space":3,"group":2}"#).unwrap();
+    assert_eq!((t.url.as_str(), t.group), ("https://a.b", Some(2)));
+    assert!(!serde_json::to_string(&t).unwrap().contains("space"));
 }
 
 #[test]
@@ -700,7 +677,7 @@ fn tab_groups_order_and_drop() {
 #[test]
 fn session_split_into_windows() {
     use state::*;
-    let t = |u: &str, w: u32| SavedTab { title: u.into(), url: u.into(), space: 0, group: None, window: w };
+    let t = |u: &str, w: u32| SavedTab { title: u.into(), url: u.into(), group: None, window: w };
     let ws = session_windows(vec![t("a", 0), t("b", 2), t("c", 0), t("d", 2)]);
     let urls: Vec<Vec<&str>> = ws.iter().map(|w| w.iter().map(|x| x.url.as_str()).collect()).collect();
     assert_eq!(urls, vec![vec!["a", "c"], vec!["b", "d"]]);
@@ -1122,7 +1099,7 @@ fn tab_switch_keeps_the_previous_page_until_the_next_has_drawn() {
 fn lists_animate_by_stable_keys() {
     let ui = include_str!("../src/ui_chrome.rs");
     assert!(ui.contains("function motionPlay(box)") && ui.contains("const MOTION_LISTS"));
-    for k in ["data-k=\"dl${d.id}\"", "data-k=\"pw${c.id}\"", "data-k=\"sp${x.id}\""] {
+    for k in ["data-k=\"dl${d.id}\"", "data-k=\"pw${c.id}\""] {
         assert!(ui.contains(k), "{k}");
     }
     assert!(ui.contains("flex: 0 1 240px"), "tabs share width; New Tab button follows the last tab");
@@ -1371,4 +1348,23 @@ fn download_popovers_are_compact() {
     assert!(ui.contains(".floating-sheet[data-panel=\"downloads\"] { width: 300px; }"));
     let js = include_str!("../assets/js/content_guard.js");
     assert!(js.contains("max-width: 280px;") && js.contains("Math.min(280, Math.max(120, vw - 16))"));
+}
+
+#[test]
+fn spaces_are_gone() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    let main = include_str!("../src/main.rs");
+    let st = include_str!("../src/state.rs");
+    for needle in ["space-pill", "panel-spaces", "SPACE_NEW", "SPACE_SWITCH", "TAB_TO_SPACE", "spaceForm", "renderSpaces"] {
+        assert!(!ui.contains(needle) && !main.contains(needle), "{needle} is still there");
+    }
+    assert!(!main.contains("SPACES.with") && !main.contains("fn tab_space"));
+    assert!(!st.contains("struct SpacesFile") && !st.contains("spaces.json"));
+}
+
+#[test]
+fn layout_cache_is_dropped_when_the_scale_factor_changes() {
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("LAST_SCALE.with(|c| c.replace(scale)) != scale"));
+    assert!(main.contains("TAB_APPLIED.with(|m| m.borrow_mut().clear());"));
 }
