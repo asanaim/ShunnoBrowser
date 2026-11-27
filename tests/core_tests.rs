@@ -1313,3 +1313,22 @@ fn no_connection_replaces_the_edge_error_page() {
     let page = include_str!("../assets/js/offline_page.js");
     assert!(page.contains("You are offline") && !page.to_lowercase().contains("edge"));
 }
+
+#[test]
+fn reload_sits_beside_forward_and_toolbar_glyphs_match() {
+    let ui = include_str!("../src/ui_chrome.rs");
+    let fwd = ui.find("send('FORWARD')").unwrap();
+    let rel = ui.find("id=\"btn-reload\"").unwrap();
+    let field = ui.find("class=\"firefox-capsule\"").unwrap();
+    assert!(fwd < rel && rel < field, "Reload follows Forward, before the address field");
+    assert!(ui.contains("<button class=\"tb\" id=\"btn-reload\""));
+    assert!(ui.contains("#btn-downloads > svg { width: 20px; height: 20px; }"));
+}
+
+#[test]
+fn youtube_recovers_from_a_playback_error_by_itself() {
+    let js = include_str!("../assets/js/content_guard.js");
+    assert!(js.contains("const YT_SAFE_KEY = 'shunno_yt_safe'"));
+    assert!(js.matches("if (isYouTube && !ytSafe && (ADBLOCK_ON || SPONSORBLOCK_ON))").count() == 2);
+    assert!(js.contains("YT_ERROR_RE") && js.contains("location.reload()"));
+}

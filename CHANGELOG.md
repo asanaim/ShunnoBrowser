@@ -1,3 +1,15 @@
+## v2.34.4
+
+### Changed
+- The Reload button moved from the address field to the toolbar, right after Forward.
+- The Downloads arrow is drawn at the size of the bookmark glyph (both about 11 by 14 px).
+
+### Fixed
+- YouTube showing a playback error that only went away after clearing site data and switching the blockers off and on: the cause could not be reproduced here, so the page now recovers by itself. If the player shows "something went wrong" or "an error occurred" for more than 1.5 seconds while the ad fields are being pruned, pruning is switched off for six hours (per profile, stored in the site's local storage) and the page reloads once. Clearing site data resets it. The fallback ad skipper stays on. "Video unavailable" and private video messages do not trigger it.
+
+### Not verified
+- The YouTube recovery was tested against a simulated player error page, not against real YouTube; the real cause is still unknown.
+
 ## v2.34.3
 
 ### Removed
