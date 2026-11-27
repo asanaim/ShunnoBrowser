@@ -1,3 +1,10 @@
+## v2.38.1
+
+### Leaner
+- `sha2` moved to 0.11, the version `ed25519-dalek` already uses, so the build no longer compiles a second copy of sha2, digest, block-buffer, crypto-common and cpufeatures. Hash output is unchanged (tests pass).
+- The icon file is embedded once instead of in two places.
+- The release profile was already size tuned (`opt-level = "z"`, LTO, one codegen unit, abort on panic, stripped symbols); it is unchanged.
+
 ## v2.38.0
 
 ### Removed
@@ -9,11 +16,6 @@
 
 ### Added
 - A fuzz test (`tests/fuzz_parsers.rs`) that feeds random hostile strings to the URL, file name, header, rule list and manifest parsers and random bytes to the history database reader; none panicked.
-
-### Leaner
-- `sha2` moved to 0.11, the version `ed25519-dalek` already uses, so the build no longer compiles a second copy of sha2, digest, block-buffer, crypto-common and cpufeatures. Hash output is unchanged (tests pass).
-- The icon file is embedded once instead of in two places.
-- The release profile was already size tuned (`opt-level = "z"`, LTO, one codegen unit, abort on panic, stripped symbols); it is unchanged.
 
 ### Audit result
 - No other defects found by clippy (style notes only), by the fuzz test, by a syntax and undefined handler check of the toolbar script, or by the browser suites. See the notes in the pull request for what was and was not examined.
